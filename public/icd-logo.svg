@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <!-- Dark navy/slate background -->
+  <rect width="512" height="512" rx="112" fill="#0D1522" />
+
+  <!-- Clipboard Board Outline -->
+  <path
+    d="M 188 132 H 160 C 135.7 132 116 151.7 116 176 V 408 C 116 432.3 135.7 452 160 452 H 352 C 376.3 452 396 432.3 396 408 V 176 C 396 151.7 376.3 132 352 132 H 324"
+    stroke="#FFFFFF"
+    stroke-width="24"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Top Dome Knob -->
+  <path
+    d="M 230 102 C 230 84 282 84 282 102 Z"
+    fill="#0D1522"
+    stroke="#FFFFFF"
+    stroke-width="22"
+    stroke-linejoin="round"
+  />
+
+  <!-- Top Clip Clamp Body -->
+  <rect
+    x="191"
+    y="98"
+    width="130"
+    height="64"
+    rx="20"
+    fill="#0D1522"
+    stroke="#FFFFFF"
+    stroke-width="22"
+  />
+
+  <!-- Amber/Gold Shield Outline -->
+  <path
+    d="M 256 210 C 286 220 324 228 324 240 V 296 C 324 344 288 376 256 392 C 224 376 188 344 188 296 V 240 C 188 228 226 220 256 210 Z"
+    stroke="#F59E0B"
+    stroke-width="20"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    fill="none"
+  />
+
+  <!-- Amber/Gold Checkmark inside shield -->
+  <path
+    d="M 228 300 L 248 320 L 286 274"
+    stroke="#F59E0B"
+    stroke-width="20"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

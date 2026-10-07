@@ -1,0 +1,8 @@
+{
+  "name": "CountSheet",
+  "description": "Mobile-first inventory counting PWA with Google Sheets integration, barcode scanning, offline caching, and audit monitoring.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

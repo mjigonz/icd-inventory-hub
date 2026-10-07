@@ -1,0 +1,181 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Modern High-Clarity Neutral Charcoal Dark Palette */
+  --color-canvas-bg: #FFFFFF;
+  --color-surface-card: #FFFFFF;
+  --color-surface-well: #F1F5F9;
+  --color-surface-border: #E2E8F0;
+  
+  /* Primary Action: Charcoal Gray */
+  --color-brand-primary: #18181B;
+  --color-brand-primary-hover: #27272A;
+  --color-brand-primary-light: #F4F4F5;
+
+  /* Typography */
+  --color-text-title: #0F172A;
+  --color-text-body: #334155;
+  --color-text-muted: #64748B;
+  --color-text-subtle: #94A3B8;
+
+  /* Accents */
+  --color-accent-amber: #F59E0B;
+  --color-accent-emerald: #10B981;
+}
+
+@layer base {
+  .dark {
+    /* Neutral Charcoal Dark Gray Tokens for the entire app */
+    --color-slate-950: #0e0e10;
+    --color-slate-900: #161618;
+    --color-slate-800: #222226;
+    --color-slate-700: #2e2e33;
+    --color-slate-600: #4a4a52;
+    --color-slate-500: #71717a;
+    --color-slate-400: #a1a1aa;
+    --color-slate-300: #d4d4d8;
+    --color-slate-200: #e4e4e7;
+    --color-slate-100: #f4f4f5;
+    --color-slate-50: #fafafa;
+  }
+
+  html, body {
+    height: 100%;
+    overscroll-behavior-y: none;
+    -webkit-tap-highlight-color: transparent;
+    background-color: #F8FAFC;
+    color: #0F172A;
+    transition: background-color 0.28s cubic-bezier(0.4, 0, 0.2, 1), color 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  html.dark, body.dark {
+    background-color: #121214;
+    color: #F4F4F5;
+  }
+}
+
+/* Fluid View Transitions API animations for Dark/Light theme crossfade */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 280ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 2;
+}
+
+/* Global coordinated transition for headers, main backgrounds and cards */
+#app-top-header,
+#app-main-content,
+#app-bottom-nav {
+  transition: background-color 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+              color 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* High-performance GPU-native subtle depth effect when drawer is open (no layout jank or heavy blur filter) */
+.drawer-active-blur {
+  transform: scale(0.992) translateZ(0);
+  -webkit-transform: scale(0.992) translateZ(0);
+  transform-origin: center right;
+  opacity: 0.94;
+  will-change: transform, opacity;
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Prevent double-tap zoom on buttons and inputs on iOS */
+button, input, select {
+  touch-action: manipulation;
+}
+
+/* Safe area padding helper */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
+
+/* High-performance GPU accelerated slide-up fade-in animation for all contents & cards */
+@keyframes slideUpFadeIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 24px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes fadeInUp {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 24px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.animate-slide-up-fade-in,
+.animate-fade-in-up {
+  opacity: 0;
+  animation: slideUpFadeIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.animate-slide-up-fade-in-1,
+.animate-fade-in-up-delay-1 {
+  opacity: 0;
+  animation: slideUpFadeIn 0.44s cubic-bezier(0.16, 1, 0.3, 1) 0.07s forwards;
+  will-change: transform, opacity;
+}
+
+.animate-slide-up-fade-in-2,
+.animate-fade-in-up-delay-2 {
+  opacity: 0;
+  animation: slideUpFadeIn 0.46s cubic-bezier(0.16, 1, 0.3, 1) 0.14s forwards;
+  will-change: transform, opacity;
+}
+
+.animate-slide-up-fade-in-3,
+.animate-fade-in-up-delay-3 {
+  opacity: 0;
+  animation: slideUpFadeIn 0.48s cubic-bezier(0.16, 1, 0.3, 1) 0.21s forwards;
+  will-change: transform, opacity;
+}
+
+.animate-slide-up-fade-in-4,
+.animate-fade-in-up-delay-4 {
+  opacity: 0;
+  animation: slideUpFadeIn 0.50s cubic-bezier(0.16, 1, 0.3, 1) 0.28s forwards;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes fadeInUp {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, 8px, 0);
+    }
+    100% {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+  }
+  .animate-fade-in-up,
+  .animate-fade-in-up-delay-1,
+  .animate-fade-in-up-delay-2,
+  .animate-fade-in-up-delay-3,
+  .animate-fade-in-up-delay-4 {
+    animation-duration: 0.25s !important;
+  }
+}
