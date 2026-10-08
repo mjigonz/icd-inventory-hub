@@ -43,7 +43,7 @@ export const HighlightedText: React.FC<HighlightedTextProps> = memo(({
             return (
               <mark
                 key={i}
-                className="bg-amber-300/90 dark:bg-amber-400/30 text-amber-950 dark:text-amber-200 font-extrabold px-0.5 py-0.2 rounded-xs shadow-2xs border-b border-amber-500/50"
+                className="bg-blue-100 dark:bg-blue-900/50 text-blue-950 dark:text-blue-100 font-bold px-0.5 py-0.2 rounded-xs border-b border-blue-500/40"
               >
                 {part}
               </mark>

@@ -160,7 +160,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   if (!branch) {
     return (
       <div className="max-w-md mx-auto px-4 py-16 text-center space-y-4 animate-fade-in-up">
-        <div className="w-14 h-14 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center mx-auto">
+        <div className="w-14 h-14 rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto">
           <Database className="w-7 h-7" />
         </div>
         <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">
@@ -182,7 +182,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const hasSearchQuery = keyword.trim().length > 0;
 
   return (
-    <div className="max-w-md mx-auto px-4 py-3 space-y-3 pb-32 animate-slide-up-fade-in">
+    <div className="w-full max-w-7xl mx-auto space-y-4 pb-24 md:pb-8 animate-slide-up-fade-in">
       <SEOHead
         title="Inventory Search & Catalog"
         description="Search branch local ENCODING inventory and store MASTERDATA offline by barcode, item code, or description."
@@ -192,123 +192,130 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       {/* Header Info */}
       <div className="flex items-center justify-between animate-slide-up-fade-in">
         <div>
-          <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-            <Package className="w-4 h-4 text-amber-500" />
-            <span>Product Inventory</span>
+          <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <Package className="w-4 h-4 sm:w-5 sm:h-5 text-blue-600 dark:text-blue-400" />
+            <span>Product Inventory Catalog</span>
           </h2>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400">
-            {branch.name} • Offline Snapshot
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            {branch.name} • Offline Snapshot Database
           </p>
         </div>
 
         {/* View Countsheet link */}
         <button
           onClick={onNavigateToCount}
-          className="text-xs font-semibold text-amber-600 dark:text-amber-400 hover:text-amber-700 bg-amber-50 dark:bg-amber-950/40 px-2.5 py-1 rounded-lg border border-amber-200 dark:border-amber-800 transition cursor-pointer"
+          className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 bg-blue-50 dark:bg-blue-950/40 px-3 py-1.5 rounded-xl border border-blue-200 dark:border-blue-800 transition cursor-pointer flex items-center gap-1.5"
         >
-          View Countsheet →
+          <span>View Countsheet</span>
+          <span>→</span>
         </button>
       </div>
 
-      {/* Tabs: Local (ENCODING) vs Masterdata (MASTERDATA) */}
-      <div className="grid grid-cols-2 p-1 bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl animate-slide-up-fade-in-1">
-        <button
-          onClick={() => setActiveTab('ENCODING')}
-          className={`py-2 text-xs font-bold rounded-lg transition cursor-pointer ${
-            activeTab === 'ENCODING'
-              ? 'bg-white dark:bg-slate-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
-              : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-          }`}
-        >
-          Local ({branch.encodingCount.toLocaleString()})
-        </button>
-
-        <button
-          onClick={() => setActiveTab('MASTERDATA')}
-          className={`py-2 text-xs font-bold rounded-lg transition cursor-pointer ${
-            activeTab === 'MASTERDATA'
-              ? 'bg-white dark:bg-slate-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
-              : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-          }`}
-        >
-          Masterdata ({branch.masterdataCount.toLocaleString()})
-        </button>
-      </div>
-
-      {/* Search Input with Instant Highlight feedback */}
-      <div className="relative animate-slide-up-fade-in-2">
-        <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-        <input
-          type="text"
-          placeholder={`Search ${activeTab === 'ENCODING' ? 'Local' : 'Master'} by code, barcode, name...`}
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          className="w-full pl-9 pr-8 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500 transition"
-        />
-        {keyword && (
+      {/* Unified Toolbar: Tabs (Local vs Masterdata) + Search Input */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-3 space-y-2.5 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:gap-3 transition-colors">
+        {/* Tabs: Local (ENCODING) vs Masterdata (MASTERDATA) */}
+        <div className="flex p-1 bg-slate-100 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700 rounded-xl shrink-0">
           <button
-            onClick={() => setKeyword('')}
-            className="absolute right-2.5 top-2 p-1 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer rounded-full"
-            title="Clear search"
+            onClick={() => setActiveTab('ENCODING')}
+            className={`px-3 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer ${
+              activeTab === 'ENCODING'
+                ? 'bg-white dark:bg-slate-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
           >
-            <X className="w-3.5 h-3.5" />
+            Local ({branch.encodingCount.toLocaleString()})
           </button>
-        )}
+
+          <button
+            onClick={() => setActiveTab('MASTERDATA')}
+            className={`px-3 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer ${
+              activeTab === 'MASTERDATA'
+                ? 'bg-white dark:bg-slate-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            Masterdata ({branch.masterdataCount.toLocaleString()})
+          </button>
+        </div>
+
+        {/* Search Input with Instant Highlight feedback */}
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+          <input
+            type="text"
+            placeholder={`Search ${activeTab === 'ENCODING' ? 'Local' : 'Master'} by code, barcode, name...`}
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            className="w-full pl-9 pr-8 py-2 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+          />
+          {keyword && (
+            <button
+              onClick={() => setKeyword('')}
+              className="absolute right-2.5 top-2 p-1 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer rounded-full"
+              title="Clear search"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Active Search Result Summary Chip */}
       {hasSearchQuery && !isLoading && (
-        <div className="flex items-center justify-between px-1 text-[11px] text-slate-500 dark:text-slate-400 animate-slide-up-fade-in-3">
+        <div className="flex items-center justify-between px-1 text-xs text-slate-500 dark:text-slate-400">
           <span>
-            Found <strong className="text-amber-600 dark:text-amber-400">{items.length}</strong> matching item{items.length === 1 ? '' : 's'} with highlighted matches
+            Found <strong className="text-blue-600 dark:text-blue-400 font-bold">{items.length}</strong> matching item{items.length === 1 ? '' : 's'} with highlighted terms
           </span>
           <button
             onClick={() => setKeyword('')}
-            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 underline cursor-pointer"
+            className="text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 underline cursor-pointer text-xs"
           >
-            Clear
+            Clear Search
           </button>
         </div>
       )}
 
       {/* Success Toast */}
       {successToast && (
-        <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 rounded-xl text-emerald-800 dark:text-emerald-300 text-xs font-semibold flex items-center gap-2 animate-in fade-in">
+        <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 rounded-xl text-emerald-800 dark:text-emerald-300 text-xs font-semibold flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
           <span>{successToast}</span>
         </div>
       )}
 
-      {/* Product List with Highlighted Matching Terms */}
+      {/* Product List with Highlighted Matching Terms (Responsive Grid on md+ screens) */}
       {!hasSearchQuery ? (
-        <div className="py-14 px-4 text-center text-slate-400 dark:text-slate-500 text-xs animate-slide-up-fade-in-3">
-          <Search className="w-7 h-7 mx-auto mb-2 text-slate-300 dark:text-slate-600 opacity-60" />
-          <p className="font-semibold text-slate-700 dark:text-slate-300 text-xs">Search Local Inventory</p>
-          <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1 max-w-xs mx-auto">
-            Type item code, barcode, or description above to search.
+        <div className="py-16 px-4 text-center text-slate-400 dark:text-slate-500 text-xs bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800">
+          <div className="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto mb-3">
+            <Search className="w-6 h-6" />
+          </div>
+          <p className="font-bold text-slate-800 dark:text-slate-200 text-sm">Search Product Inventory</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto">
+            Type item code, barcode, or product name in the search bar above to look up stock balance, category, and pricing.
           </p>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div>
           {isLoading ? (
-            <div className="py-12 text-center text-slate-400 text-xs">
-              Searching local database...
+            <div className="py-16 text-center text-slate-400 text-xs bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800">
+              <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+              <p>Searching local database...</p>
             </div>
           ) : items.length === 0 ? (
-            <div className="py-12 text-center text-slate-400 text-xs bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
-              <p>No products found matching "{keyword}".</p>
-              <p className="text-[11px] text-slate-400 mt-1">
+            <div className="py-14 text-center text-slate-400 text-xs bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6">
+              <p className="font-bold text-slate-700 dark:text-slate-300">No products found matching "{keyword}".</p>
+              <p className="text-xs text-slate-500 mt-1">
                 Check spelling or switch between Local and Masterdata tabs.
               </p>
             </div>
           ) : (
-            items.map((item, idx) => (
-              <div
-                key={`${item.itemCode}_${item.barcode}_${idx}`}
-                className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-3 shadow-2xs hover:border-slate-300 dark:hover:border-slate-700 transition"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
+              {items.map((item, idx) => (
+                <div
+                  key={`${item.itemCode}_${item.barcode}_${idx}`}
+                  className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/90 dark:border-slate-800 p-3.5 shadow-2xs hover:border-slate-300 dark:hover:border-slate-700 transition flex flex-col justify-between gap-3"
+                >
+                  <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[10px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200/60 dark:border-slate-700/60">
                         <HighlightedText text={item.itemCode || 'No Code'} highlight={keyword} />
@@ -320,11 +327,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       )}
                     </div>
 
-                    <h3 className="text-xs font-bold text-slate-900 dark:text-white mt-1.5 line-clamp-2 leading-relaxed">
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white mt-2 line-clamp-2 leading-snug">
                       <HighlightedText text={item.itemDescription} highlight={keyword} />
                     </h3>
 
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-500 dark:text-slate-400 mt-1.5">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400 mt-2">
                       {item.category && (
                         <span>
                           Cat: <HighlightedText text={item.category} highlight={keyword} />
@@ -335,30 +342,38 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           • <HighlightedText text={item.subCategory} highlight={keyword} />
                         </span>
                       )}
-                      <span>•</span>
-                      <span className="font-semibold text-slate-800 dark:text-slate-200">
-                        Balance: {item.balance} {item.unit}
-                      </span>
-                      {item.selling > 0 && <span>• Price: ₱{item.selling.toFixed(2)}</span>}
                     </div>
                   </div>
 
-                  {/* Count Button */}
-                  <button
-                    onClick={() => {
-                      setCountingItem(item);
-                      setCountQuantity(1);
-                      setItemCondition('Good');
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1 active:scale-95 transition shrink-0 cursor-pointer shadow-2xs"
-                    title="Count this product"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Count</span>
-                  </button>
+                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-bold text-slate-900 dark:text-white block font-mono">
+                        {item.balance} {item.unit}
+                      </span>
+                      {item.selling > 0 && (
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                          ₱{item.selling.toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Count Button */}
+                    <button
+                      onClick={() => {
+                        setCountingItem(item);
+                        setCountQuantity(1);
+                        setItemCondition('Good');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-1 active:scale-95 transition shrink-0 cursor-pointer shadow-xs"
+                      title="Count this product"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Count</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -368,7 +383,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-4">
             <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-2 py-0.5 rounded-full border border-amber-200 dark:border-amber-800">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 px-2 py-0.5 rounded-full border border-blue-200 dark:border-blue-800">
                 Add to Countsheet
               </span>
               <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-1.5 line-clamp-2">
@@ -387,7 +402,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               <select
                 value={targetCsNumber}
                 onChange={(e) => setTargetCsNumber(parseInt(e.target.value, 10))}
-                className="w-full text-xs font-bold p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                className="w-full text-xs font-bold p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 {countsheets.map((cs) => (
                   <option key={cs.cs} value={cs.cs}>
@@ -417,7 +432,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   step="any"
                   value={countQuantity}
                   onChange={(e) => setCountQuantity(parseFloat(e.target.value) || 0)}
-                  className="flex-1 h-10 text-center font-mono font-bold text-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  className="flex-1 h-10 text-center font-mono font-bold text-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <button
                   type="button"
@@ -447,8 +462,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           ? cond === 'Good'
                             ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
                             : cond === 'Bad'
-                            ? 'bg-rose-600 border-rose-600 text-white shadow-xs'
-                            : 'bg-amber-600 border-amber-600 text-white shadow-xs'
+                            ? 'bg-amber-500 border-amber-500 text-white shadow-xs'
+                            : 'bg-rose-600 border-rose-600 text-white shadow-xs'
                           : 'bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
                       }`}
                     >
@@ -471,7 +486,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </button>
               <button
                 onClick={handleAddToCountsheet}
-                className="flex-1 py-2.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition shadow-xs cursor-pointer active:scale-95"
+                className="flex-1 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition shadow-xs cursor-pointer active:scale-95"
               >
                 Confirm Add
               </button>

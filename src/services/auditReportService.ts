@@ -138,7 +138,7 @@ export async function getSpreadsheetTabs(
     throw parseGoogleApiError(res.status, errText, 'Sheets');
   }
 
-  const data = await res.json();
+  const data: any = await res.json();
   const title = data.properties?.title || 'Spreadsheet';
   const tabs: SheetTabInfo[] = (data.sheets || []).map((s: any) => ({
     sheetId: s.properties?.sheetId ?? 0,
@@ -186,7 +186,7 @@ export async function inspectSheetHeaders(
     throw parseGoogleApiError(res.status, errText, 'Sheets');
   }
 
-  const data = await res.json();
+  const data: any = await res.json();
   const rows: any[][] = data.values || [];
 
   if (rows.length === 0) {
@@ -239,7 +239,7 @@ export async function inspectSheetHeaders(
   );
   let totalDataRows = 0;
   if (countRes.ok) {
-    const countData = await countRes.json();
+    const countData: any = await countRes.json();
     const colA = countData.values?.[0] || [];
     totalDataRows = Math.max(0, colA.length - (headerRowIndex + 1));
   } else {
@@ -279,7 +279,7 @@ export async function fetchAllSheetRows(
     throw parseGoogleApiError(res.status, errText, 'Sheets');
   }
 
-  const data = await res.json();
+  const data: any = await res.json();
   const allRows: any[][] = data.values || [];
 
   const zeroIndexedHeader = Math.max(0, headerRowIndex - 1);
@@ -426,7 +426,7 @@ export async function duplicateSpreadsheet(
     });
 
     if (res.ok) {
-      const data = await res.json();
+      const data: any = await res.json();
       return {
         id: data.id,
         name: data.name,
@@ -458,7 +458,7 @@ export async function duplicateSpreadsheet(
       throw parseGoogleApiError(createRes.status, errText, 'Sheets');
     }
 
-    const createdData = await createRes.json();
+    const createdData: any = await createRes.json();
     const newSpreadsheetId = createdData.spreadsheetId;
     const defaultFirstSheetId = createdData.sheets?.[0]?.properties?.sheetId;
 
@@ -480,7 +480,7 @@ export async function duplicateSpreadsheet(
       });
 
       if (copyRes.ok) {
-        const copyData = await copyRes.json();
+        const copyData: any = await copyRes.json();
         const copiedSheetId = copyData.sheetId;
         // Rename copied sheet to match original tab name
         try {
@@ -629,7 +629,7 @@ export async function executeAuditReportMapping(
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
     if (metaRes.ok) {
-      const metaData = await metaRes.json();
+      const metaData: any = await metaRes.json();
       const currentSheet = (metaData.sheets || []).find(
         (s: any) => s.properties?.title === targetSheetTitle
       );
@@ -714,7 +714,7 @@ export async function executeAuditReportMapping(
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (formRes.ok) {
-      const formJson = await formRes.json();
+      const formJson: any = await formRes.json();
       const firstRowFormulas: any[] = formJson.values?.[0] || [];
       firstRowFormulas.forEach((cellVal, colIdx) => {
         const valStr = String(cellVal || '').trim();
@@ -872,7 +872,7 @@ export async function setupCountsheetHeadersInTemplate(
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
     if (metaRes.ok) {
-      const metaData = await metaRes.json();
+      const metaData: any = await metaRes.json();
       const currentSheet = (metaData.sheets || []).find(
         (s: any) => s.properties?.title === sheetTitle
       );
@@ -900,7 +900,7 @@ export async function setupCountsheetHeadersInTemplate(
     throw parseGoogleApiError(res.status, err, 'Sheets');
   }
 
-  const data = await res.json();
+  const data: any = await res.json();
   const currentRow: string[] = (data.values?.[0] || []).map((c: any) => String(c || '').trim());
 
   // 3. Find index of 'Remarks' column & 'CS01' column
@@ -1138,7 +1138,7 @@ export async function setupCountsheetHeadersInTemplate(
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (postHeadersRes.ok) {
-        const postData = await postHeadersRes.json();
+        const postData: any = await postHeadersRes.json();
         const fullHeaderRow: string[] = postData.values?.[0] || [];
         let maxColWithHeader = 0;
         fullHeaderRow.forEach((val, idx) => {

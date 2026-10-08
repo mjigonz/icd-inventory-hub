@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
-import { initAuth, googleSignIn, logout, saveRememberedUser, getCustomPhotoURL, setCustomPhotoURL, SignInOptions } from './services/auth';
+import { initAuth, googleSignIn, logout, saveRememberedUser, getCustomPhotoURL, setCustomPhotoURL, SignInOptions, directAuditorSignIn } from './services/auth';
 import { TopHeader } from './components/TopHeader';
 import { BottomNav, NavTab } from './components/BottomNav';
 import { CreateAuditReportModal } from './components/CreateAuditReportModal';
@@ -15,7 +15,8 @@ import { CountView } from './views/CountView';
 import { InventoryView } from './views/InventoryView';
 import { MonitoringView } from './views/MonitoringView';
 import { SelectedBranch } from './types';
-import { getSavedBranch } from './services/db';
+import { getSavedBranch, getAllSavedBranches } from './services/db';
+import { getIntegrationParams, resolveFeatureNavigation } from './utils/integration';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { useTheme } from './hooks/useTheme';
 import { WifiOff } from 'lucide-react';
@@ -46,6 +47,9 @@ export default function App() {
   // Unsent items count for badge
   const [countItemTotal, setCountItemTotal] = useState<number>(0);
 
+  // Centralized URL deep link / integration parameters
+  const integrationParams = React.useMemo(() => getIntegrationParams(), []);
+
   // 1. Initialize Firebase Auth
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -67,26 +71,86 @@ export default function App() {
     };
   }, []);
 
-  // 2. Load last selected branch from local storage on launch
+  // 2. Load branch and execute centralized feature routing on launch
   useEffect(() => {
-    const savedBranchId = localStorage.getItem('countsheet_active_branch_id');
-    const savedRole = localStorage.getItem('countsheet_active_role') as
-      | 'owner'
-      | 'encoder'
-      | 'unassigned'
-      | null;
+    let isCancelled = false;
 
-    if (savedBranchId) {
-      getSavedBranch(savedBranchId).then((b) => {
-        if (b) {
-          setSelectedBranch(b);
-          if (savedRole) setUserRole(savedRole);
-          // Default to count tab if a branch is already active
-          setCurrentTab('count');
+    async function initBranchAndFeature() {
+      const savedBranchId = localStorage.getItem('countsheet_active_branch_id');
+      const savedRole = localStorage.getItem('countsheet_active_role') as
+        | 'owner'
+        | 'encoder'
+        | 'unassigned'
+        | null;
+
+      let resolvedBranch: SelectedBranch | null = null;
+      const resolvedRole: 'owner' | 'encoder' | 'unassigned' = savedRole || 'unassigned';
+
+      // Path A: spreadsheetId provided via URL query parameter
+      if (integrationParams.spreadsheetId) {
+        const found = await getSavedBranch(integrationParams.spreadsheetId);
+        if (found) {
+          resolvedBranch = found;
+        } else {
+          // Construct preliminary branch object without performing destructive actions
+          resolvedBranch = {
+            id: integrationParams.spreadsheetId,
+            name: integrationParams.branch || `Branch (${integrationParams.spreadsheetId.slice(0, 8)}...)`,
+            encodingCount: 0,
+            masterdataCount: 0,
+          };
         }
-      });
+        localStorage.setItem('countsheet_active_branch_id', resolvedBranch.id);
+      }
+      // Path B: branch name/keyword provided via URL query parameter without spreadsheetId
+      else if (integrationParams.branch) {
+        const allSaved = await getAllSavedBranches();
+        const targetQuery = integrationParams.branch.trim().toLowerCase();
+        const match = allSaved.find(
+          (b) =>
+            b.name.trim().toLowerCase() === targetQuery ||
+            b.name.trim().toLowerCase().includes(targetQuery)
+        );
+        if (match) {
+          resolvedBranch = match;
+          localStorage.setItem('countsheet_active_branch_id', match.id);
+        } else if (savedBranchId) {
+          // If no local match by name, fall back to previously active local branch
+          const saved = await getSavedBranch(savedBranchId);
+          if (saved) resolvedBranch = saved;
+        }
+      }
+      // Path C: Standard launch - load active branch from local storage
+      else if (savedBranchId) {
+        const saved = await getSavedBranch(savedBranchId);
+        if (saved) resolvedBranch = saved;
+      }
+
+      if (isCancelled) return;
+
+      if (resolvedBranch) {
+        setSelectedBranch(resolvedBranch);
+        setUserRole(resolvedRole);
+      }
+
+      // Centralized feature routing
+      const { tab, openAuditModal } = resolveFeatureNavigation(
+        integrationParams.feature,
+        Boolean(resolvedBranch)
+      );
+
+      setCurrentTab(tab);
+      if (openAuditModal) {
+        setIsCreateAuditReportOpen(true);
+      }
     }
-  }, []);
+
+    initBranchAndFeature();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [integrationParams]);
 
   // 3. Google Sign-In Handler
   const handleSignIn = async (options?: SignInOptions | boolean) => {
@@ -102,6 +166,21 @@ export default function App() {
     } catch (err: any) {
       console.warn('Google sign-in attempt notice:', err?.message || err);
       setAuthError(err.message || 'Google Sign-In failed. Please try again.');
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  // 3b. Auditor Direct Sign-In Handler (Instant Field/Offline Mode)
+  const handleAuditorSignIn = (name: string, email?: string) => {
+    setIsSigningIn(true);
+    setAuthError(null);
+    try {
+      const result = directAuditorSignIn(name, email);
+      setUser(result.user);
+      setAccessToken(result.accessToken);
+    } catch (err: any) {
+      setAuthError(err?.message || 'Failed to start auditor session.');
     } finally {
       setIsSigningIn(false);
     }
@@ -146,8 +225,8 @@ export default function App() {
         theme === 'dark' ? 'bg-[#121214] text-white dark' : 'bg-slate-50 text-slate-900'
       }`}>
         <div className="relative mb-5">
-          <div className="w-16 h-16 rounded-2xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 flex items-center justify-center shadow-lg p-2.5">
-            <img src="/icd-logo.svg" alt="ICD Logo" className="w-full h-full object-contain" />
+          <div className="w-16 h-16 rounded-2xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 flex items-center justify-center shadow-lg p-2.5 shrink-0">
+            <img src="/icd-logo.svg" alt="ICD Logo" width="44" height="44" className="w-full h-full object-contain aspect-square shrink-0" />
           </div>
           <div className="absolute -inset-1 rounded-2xl border-2 border-zinc-400/30 animate-ping opacity-25" />
         </div>
@@ -167,8 +246,10 @@ export default function App() {
     return (
       <SignInView
         onSignIn={handleSignIn}
+        onAuditorSignIn={handleAuditorSignIn}
         isLoading={isSigningIn}
         error={authError}
+        onClearError={() => setAuthError(null)}
         onCancelSignIn={() => setIsSigningIn(false)}
         theme={theme}
         onToggleTheme={toggleTheme}
@@ -183,7 +264,7 @@ export default function App() {
         theme === 'dark' ? 'bg-[#121214] text-zinc-100 dark' : 'bg-slate-50 text-slate-900'
       }`}
     >
-      {/* Top Header with Hamburger Menu (Theme, Change Photo, Switch Email, and Log out) */}
+      {/* Top Header with Hamburger Menu and Desktop Navigation */}
       <TopHeader
         branch={selectedBranch}
         userRole={userRole}
@@ -198,6 +279,9 @@ export default function App() {
         theme={theme}
         onToggleTheme={toggleTheme}
         onOpenCreateAuditReport={() => setIsCreateAuditReportOpen(true)}
+        currentTab={currentTab}
+        onSelectTab={setCurrentTab}
+        countItemTotal={countItemTotal}
       />
 
       {/* Create Audit Report Modal (IATD -> ENCODING Mapper) */}
@@ -223,14 +307,14 @@ export default function App() {
 
       {/* Offline notification banner */}
       {!isOnline && (
-        <div className="bg-amber-500 text-slate-950 px-3 py-1 text-center text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs sticky top-[49px] z-30">
-          <WifiOff className="w-3.5 h-3.5 text-slate-950" />
-          <span>Offline Mode — All counts and searches operate from cached data</span>
+        <div className="bg-slate-900 dark:bg-zinc-800 text-white dark:text-zinc-100 border-b border-slate-700/80 px-3 py-1.5 text-center text-xs font-medium flex items-center justify-center gap-2 shadow-xs sticky top-[49px] z-30">
+          <WifiOff className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+          <span>Offline Mode &mdash; All counts and searches operate from local cache</span>
         </div>
       )}
 
       {/* Main Content Area (Branch, Count, Inventory, and Monitoring) */}
-      <main id="app-main-content" className="flex-1 w-full max-w-md mx-auto transition-all duration-300">
+      <main id="app-main-content" className="flex-1 w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2.5 sm:py-5 transition-all duration-300">
         <div key={currentTab} className="animate-slide-up-fade-in w-full">
           {currentTab === 'branch' && (
             <BranchView
@@ -242,6 +326,9 @@ export default function App() {
               onSelectBranch={handleSelectBranch}
               onDisconnect={handleSignOut}
               onNavigateToCount={() => setCurrentTab('count')}
+              initialSearchQuery={integrationParams.branch || ''}
+              initialSpreadsheetId={integrationParams.spreadsheetId || ''}
+              onTokenRefreshed={(newToken) => setAccessToken(newToken)}
             />
           )}
 

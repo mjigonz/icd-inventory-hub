@@ -39,7 +39,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   ];
 
   return (
-    <nav id="app-bottom-nav" className="fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-slate-900 border-t border-slate-200/90 dark:border-slate-800 shadow-[0_-4px_16px_rgba(0,0,0,0.04)] pb-[env(safe-area-inset-bottom,0px)] transition-colors duration-280">
+    <nav id="app-bottom-nav" className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-slate-900 border-t border-slate-200/90 dark:border-slate-800 shadow-[0_-4px_16px_rgba(0,0,0,0.04)] pb-[env(safe-area-inset-bottom,0px)] transition-colors duration-280">
       <div className="max-w-md mx-auto grid grid-cols-4 h-16">
         {tabs.map((tab) => {
           const Icon = tab.icon;

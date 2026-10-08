@@ -1,4 +1,5 @@
 import { InventoryItem, Countsheet, CountsheetItem, MonitoringBlock, UnidentifiedItemRecord, ItemCondition } from '../types';
+import { isGoogleOAuthAccessToken, clearCachedAccessToken } from './auth';
 
 export interface DriveSpreadsheetFile {
   id: string;
@@ -10,6 +11,7 @@ export interface DriveSpreadsheetFile {
 export class GoogleApiError extends Error {
   status: number;
   isAccessNotConfigured: boolean;
+  isAuthError: boolean;
   enableUrl?: string;
   apiName?: string;
   projectId?: string;
@@ -19,6 +21,7 @@ export class GoogleApiError extends Error {
     message: string,
     options?: {
       isAccessNotConfigured?: boolean;
+      isAuthError?: boolean;
       enableUrl?: string;
       apiName?: string;
       projectId?: string;
@@ -28,6 +31,7 @@ export class GoogleApiError extends Error {
     this.name = 'GoogleApiError';
     this.status = status;
     this.isAccessNotConfigured = options?.isAccessNotConfigured ?? false;
+    this.isAuthError = options?.isAuthError ?? false;
     this.enableUrl = options?.enableUrl;
     this.apiName = options?.apiName;
     this.projectId = options?.projectId;
@@ -41,6 +45,7 @@ export function parseGoogleApiError(
 ): GoogleApiError {
   let message = errText;
   let isAccessNotConfigured = false;
+  let isAuthError = false;
   let enableUrl: string | undefined;
   let projectId = '412785347562';
 
@@ -65,6 +70,14 @@ export function parseGoogleApiError(
         projectId = projMatch[1];
       }
     }
+
+    if (
+      status === 401 ||
+      parsed.error?.status === 'UNAUTHENTICATED' ||
+      parsed.error?.errors?.some((e: any) => e.reason === 'authError' || e.reason === 'invalidCredentials')
+    ) {
+      isAuthError = true;
+    }
   } catch {
     if (
       errText.includes('accessNotConfigured') ||
@@ -73,6 +86,19 @@ export function parseGoogleApiError(
     ) {
       isAccessNotConfigured = true;
     }
+  }
+
+  if (
+    status === 401 ||
+    message.toLowerCase().includes('invalid authentication credentials') ||
+    message.toLowerCase().includes('unauthenticated') ||
+    message.toLowerCase().includes('invalid credentials')
+  ) {
+    isAuthError = true;
+  }
+
+  if (isAuthError) {
+    clearCachedAccessToken();
   }
 
   if (isAccessNotConfigured && !enableUrl) {
@@ -85,6 +111,7 @@ export function parseGoogleApiError(
 
   return new GoogleApiError(status, message, {
     isAccessNotConfigured,
+    isAuthError,
     enableUrl,
     apiName: defaultApiName,
     projectId,
@@ -96,6 +123,17 @@ export async function searchDriveSpreadsheets(
   accessToken: string,
   searchQuery = ''
 ): Promise<DriveSpreadsheetFile[]> {
+  if (!accessToken || !isGoogleOAuthAccessToken(accessToken)) {
+    throw new GoogleApiError(
+      401,
+      'Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential.',
+      {
+        isAuthError: true,
+        apiName: 'Drive',
+      }
+    );
+  }
+
   let q = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
   if (searchQuery.trim()) {
     const escaped = searchQuery.replace(/'/g, "\\'");
@@ -115,7 +153,7 @@ export async function searchDriveSpreadsheets(
     throw parseGoogleApiError(res.status, errText, 'Drive');
   }
 
-  const data = await res.json();
+  const data: any = await res.json();
   const files: DriveSpreadsheetFile[] = (data.files || []).map((f: any) => ({
     id: f.id,
     name: f.name,
@@ -127,7 +165,7 @@ export async function searchDriveSpreadsheets(
 }
 
 // 2. Fetch Spreadsheet metadata (tab titles)
-export async function getSpreadsheetDetails(accessToken: string, spreadsheetId: string) {
+export async function getSpreadsheetDetails(accessToken: string, spreadsheetId: string): Promise<any> {
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties(sheetId,title,gridProperties)`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -250,7 +288,7 @@ export async function fetchEncodingSheet(accessToken: string, spreadsheetId: str
     throw new Error(`Failed to read "${sheetName}" tab: ${await res.text()}`);
   }
 
-  const data = await res.json();
+  const data: any = await res.json();
   const rows: string[][] = data.values || [];
   if (rows.length < 2) return [];
 
@@ -361,7 +399,7 @@ export async function fetchMasterdataSheet(accessToken: string, spreadsheetId: s
       return [];
     }
 
-    const data = await res.json();
+    const data: any = await res.json();
     const rows: string[][] = data.values || [];
     if (rows.length < 1) return [];
 
@@ -438,7 +476,7 @@ export async function fetchExistingCountsheets(
 
     if (!res.ok) return { csList: [], itemsByCs: {} };
 
-    const data = await res.json();
+    const data: any = await res.json();
     const rows: string[][] = data.values || [];
     if (rows.length <= 1) return { csList: [], itemsByCs: {} };
 
@@ -538,7 +576,7 @@ export async function fetchMonitoringTab(
 
     if (!res.ok) return [];
 
-    const data = await res.json();
+    const data: any = await res.json();
     const rows: string[][] = data.values || [];
     if (rows.length <= 1) return [];
 
@@ -598,7 +636,7 @@ export async function submitCountsheetToSheets(
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
-  const existingData = getRes.ok ? await getRes.json() : { values: [] };
+  const existingData: any = getRes.ok ? await getRes.json() : { values: [] };
   const allRows: string[][] = existingData.values || [];
 
   const canonicalHeader = [
@@ -795,7 +833,7 @@ export async function updateMonitoringBlockForCs(
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
-    const data = getRes.ok ? await getRes.json() : { values: [] };
+    const data: any = getRes.ok ? await getRes.json() : { values: [] };
     const rows: string[][] = data.values || [];
 
     const header = rows.length > 0 ? rows[0] : ['CS', 'Name', 'Status'];

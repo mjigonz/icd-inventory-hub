@@ -10,6 +10,8 @@ import {
   X,
   Camera,
   FileSpreadsheet,
+  QrCode,
+  Share2,
 } from 'lucide-react';
 import { ThemeMode } from '../hooks/useTheme';
 import { SelectedBranch } from '../types';
@@ -30,6 +32,7 @@ interface HeaderMenuProps {
   onInstallClick?: () => void;
   isInstallable?: boolean;
   onOpenCreateAuditReport?: () => void;
+  onOpenShare?: () => void;
 }
 
 export const HeaderMenu: React.FC<HeaderMenuProps> = ({
@@ -47,6 +50,7 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
   onInstallClick,
   isInstallable = false,
   onOpenCreateAuditReport,
+  onOpenShare,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
@@ -193,9 +197,9 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
             <div className="p-3 rounded-2xl bg-slate-100/90 dark:bg-zinc-800/60 border border-slate-200/80 dark:border-zinc-700/60 transition-colors duration-280">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-8 h-8 rounded-xl bg-amber-500/10 dark:bg-zinc-700/50 text-amber-500 dark:text-zinc-300 flex items-center justify-center shrink-0 transition-transform duration-300 ease-out">
+                  <div className="w-8 h-8 rounded-xl bg-blue-500/10 dark:bg-zinc-700/50 text-blue-600 dark:text-zinc-300 flex items-center justify-center shrink-0 transition-transform duration-300 ease-out">
                     <div className={`transition-all duration-300 ease-out transform ${theme === 'dark' ? 'rotate-180 scale-95' : 'rotate-0 scale-100'}`}>
-                      {theme === 'dark' ? <Moon className="w-4 h-4 text-zinc-300" /> : <Sun className="w-4 h-4 text-amber-500" />}
+                      {theme === 'dark' ? <Moon className="w-4 h-4 text-zinc-300" /> : <Sun className="w-4 h-4 text-sky-500" />}
                     </div>
                   </div>
                   <div>
@@ -226,13 +230,52 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                     {theme === 'dark' ? (
                       <Moon className="w-2.5 h-2.5 text-zinc-800" />
                     ) : (
-                      <Sun className="w-2.5 h-2.5 text-amber-500" />
+                      <Sun className="w-2.5 h-2.5 text-sky-500" />
                     )}
                   </span>
                 </button>
               </div>
             </div>
           </div>
+
+          {/* Section: Reports (Above Account & Tools, just below Theme Mode) */}
+          {onOpenCreateAuditReport && (
+            <div className={`transition-all duration-300 delay-130 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+              isOpen ? 'translate-x-0 opacity-100' : 'translate-x-4 opacity-0'
+            }`}>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-1 mb-1.5 flex items-center justify-between">
+                <span>Reports</span>
+              </div>
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsOpen(false);
+                    onOpenCreateAuditReport();
+                  }}
+                  className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-blue-50/80 dark:hover:bg-blue-950/40 border border-transparent hover:border-blue-200 dark:hover:border-blue-800/60 transition-all duration-150 flex items-center justify-between gap-2 cursor-pointer group active:scale-98"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform duration-200">
+                      <FileSpreadsheet className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 leading-tight truncate flex items-center gap-1.5">
+                        <span>Create Audit Report</span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200">
+                          IATD
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                        Map IATD rows into ENCODING template
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-xs text-blue-600 dark:text-blue-400 group-hover:translate-x-0.5 transition-transform duration-200 shrink-0 font-bold">&rarr;</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Section: Account & Tools */}
           <div className={`transition-all duration-300 delay-150 ease-[cubic-bezier(0.16,1,0.3,1)] ${
@@ -242,36 +285,6 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
               Account &amp; Tools
             </div>
             <div className="space-y-1">
-              {/* Create Audit Report Tool */}
-              {onOpenCreateAuditReport && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsOpen(false);
-                    onOpenCreateAuditReport();
-                  }}
-                  className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-amber-50/80 dark:hover:bg-amber-950/40 border border-transparent hover:border-amber-300 dark:hover:border-amber-700/60 transition-all duration-150 flex items-center justify-between gap-2 cursor-pointer group active:scale-98"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform duration-200">
-                      <FileSpreadsheet className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 leading-tight truncate flex items-center gap-1.5">
-                        <span>Create Audit Report</span>
-                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300">
-                          IATD
-                        </span>
-                      </div>
-                      <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                        Map IATD rows into ENCODING template
-                      </div>
-                    </div>
-                  </div>
-                  <span className="text-xs text-amber-600 dark:text-amber-400 group-hover:translate-x-0.5 transition-transform duration-200 shrink-0 font-bold">&rarr;</span>
-                </button>
-              )}
-
               {/* Change Profile Photo Setting */}
               <button
                 type="button"
@@ -321,29 +334,32 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                 </button>
               )}
 
-              {/* Install PWA */}
-              {onInstallClick && (
-                <button
-                  type="button"
-                  onClick={handleInstall}
-                  className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-800/80 transition-all duration-150 flex items-center justify-between gap-2 cursor-pointer group active:scale-98"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform duration-200">
-                      <Download className="w-4 h-4" />
+              {/* Share & QR Download */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsOpen(false);
+                  if (onOpenShare) {
+                    onOpenShare();
+                  }
+                }}
+                className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-800/80 transition-all duration-150 flex items-center justify-between gap-2 cursor-pointer group active:scale-98"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform duration-200">
+                    <QrCode className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 leading-tight truncate">
+                      Share &amp; QR Download
                     </div>
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 leading-tight truncate">
-                        Install App (PWA)
-                      </div>
-                      <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                        Home screen offline shortcut
-                      </div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                      QR code for phone scanning &amp; download
                     </div>
                   </div>
-                  <span className="text-xs text-slate-400 group-hover:translate-x-0.5 transition-transform duration-200 shrink-0">&rarr;</span>
-                </button>
-              )}
+                </div>
+                <span className="text-xs text-slate-400 group-hover:translate-x-0.5 transition-transform duration-200 shrink-0">&rarr;</span>
+              </button>
             </div>
           </div>
         </div>
@@ -375,18 +391,6 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Change Photo Modal */}
-      <ChangePhotoModal
-        isOpen={isPhotoModalOpen}
-        onClose={() => setIsPhotoModalOpen(false)}
-        currentPhoto={userPhoto || null}
-        googlePhoto={googlePhoto || null}
-        displayName={displayName}
-        onSave={(photo) => {
-          if (onUpdatePhoto) onUpdatePhoto(photo);
-        }}
-      />
     </div>
   );
 
@@ -433,8 +437,20 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
         </div>
       </button>
 
-      {/* Portaled Drawer to Body so it spans full viewport height regardless of header containing blocks */}
+      {/* Portaled Drawer to Body */}
       {mounted && createPortal(drawerContent, document.body)}
+
+      {/* Change Photo Modal */}
+      <ChangePhotoModal
+        isOpen={isPhotoModalOpen}
+        onClose={() => setIsPhotoModalOpen(false)}
+        currentPhoto={userPhoto || null}
+        googlePhoto={googlePhoto || null}
+        displayName={displayName}
+        onSave={(photo) => {
+          if (onUpdatePhoto) onUpdatePhoto(photo);
+        }}
+      />
     </div>
   );
 };

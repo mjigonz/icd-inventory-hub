@@ -81,10 +81,51 @@ let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 let activeSignInPromise: Promise<{ user: User; accessToken: string } | null> | null = null;
 
-// Initialize cached token from sessionStorage if valid
+// Validate that a token is a genuine Google OAuth 2 access token (not an auditor or Firebase ID token)
+export const isGoogleOAuthAccessToken = (token: string | null | undefined): boolean => {
+  if (!token || typeof token !== 'string') return false;
+  // Local auditor tokens are development/offline dummy tokens
+  if (token.startsWith('auditor:') || token === 'icd-local-session-token') return false;
+  
+  // Reject Firebase ID tokens: they are JWTs (3 dot-separated base64 segments)
+  const dotParts = token.split('.');
+  if (dotParts.length === 3) {
+    try {
+      const payloadStr = atob(dotParts[1].replace(/-/g, '+').replace(/_/g, '/'));
+      const payload = JSON.parse(payloadStr);
+      if (payload.iss && payload.iss.includes('securetoken.google.com')) {
+        // This is a Firebase ID token, NOT a Google OAuth 2 access token
+        return false;
+      }
+    } catch {
+      // Continue validation
+    }
+  }
+
+  // Google OAuth 2 access tokens returned by Google Identity start with ya29.
+  return token.startsWith('ya29.') || token.length > 50;
+};
+
+export const clearCachedAccessToken = () => {
+  cachedAccessToken = null;
+  try {
+    sessionStorage.removeItem('countsheet_oauth_token');
+    sessionStorage.removeItem('countsheet_oauth_token_timestamp');
+  } catch {}
+};
+
+// Initialize cached token from sessionStorage if valid and not expired (tokens expire after 1 hour)
 try {
   const storedToken = sessionStorage.getItem('countsheet_oauth_token');
-  if (storedToken) {
+  const storedTimestamp = Number(sessionStorage.getItem('countsheet_oauth_token_timestamp') || '0');
+  // 55 minutes expiration threshold to guarantee validity
+  const isExpired = storedTimestamp > 0 && Date.now() - storedTimestamp > 55 * 60 * 1000;
+
+  if (storedToken && !isExpired && isGoogleOAuthAccessToken(storedToken)) {
+    cachedAccessToken = storedToken;
+  } else if (storedToken && isExpired) {
+    clearCachedAccessToken();
+  } else if (storedToken && (storedToken.startsWith('auditor:') || storedToken === 'icd-local-session-token')) {
     cachedAccessToken = storedToken;
   }
 } catch {
@@ -95,6 +136,23 @@ export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
+  // If an auditor session was previously active in sessionStorage
+  if (cachedAccessToken && (cachedAccessToken.startsWith('auditor:') || cachedAccessToken === 'icd-local-session-token')) {
+    const remembered = getRememberedUser();
+    if (remembered) {
+      const customUser = {
+        displayName: remembered.displayName,
+        email: remembered.email,
+        uid: `auditor-${remembered.email}`,
+        photoURL: remembered.photoURL || null,
+      } as unknown as User;
+      if (onAuthSuccess) {
+        onAuthSuccess(customUser, cachedAccessToken);
+        return () => {};
+      }
+    }
+  }
+
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
       saveRememberedUser(user);
@@ -106,6 +164,20 @@ export const initAuth = (
         if (onAuthFailure) onAuthFailure();
       }
     } else {
+      if (cachedAccessToken && (cachedAccessToken.startsWith('auditor:') || cachedAccessToken === 'icd-local-session-token')) {
+        // Retain auditor session
+        const remembered = getRememberedUser();
+        if (remembered && onAuthSuccess) {
+          const customUser = {
+            displayName: remembered.displayName,
+            email: remembered.email,
+            uid: `auditor-${remembered.email}`,
+            photoURL: remembered.photoURL || null,
+          } as unknown as User;
+          onAuthSuccess(customUser, cachedAccessToken);
+          return;
+        }
+      }
       cachedAccessToken = null;
       try {
         sessionStorage.removeItem('countsheet_oauth_token');
@@ -152,6 +224,7 @@ export const googleSignIn = async (
       cachedAccessToken = credential.accessToken;
       try {
         sessionStorage.setItem('countsheet_oauth_token', credential.accessToken);
+        sessionStorage.setItem('countsheet_oauth_token_timestamp', String(Date.now()));
       } catch {}
       saveRememberedUser(result.user);
       return { user: result.user, accessToken: cachedAccessToken };
@@ -164,22 +237,38 @@ export const googleSignIn = async (
         errMsg.includes('Pending promise') ||
         errCode === 'auth/cancelled-popup-request';
 
-      if (errCode !== 'auth/popup-closed-by-user' && !isAssertionError) {
+      const isPopupClosed =
+        errCode === 'auth/popup-closed-by-user' ||
+        errCode === 'auth/user-cancelled' ||
+        errMsg.toLowerCase().includes('popup-closed-by-user') ||
+        errMsg.toLowerCase().includes('closed-by-user') ||
+        errMsg.toLowerCase().includes('cancelled') ||
+        isAssertionError;
+
+      if (!isPopupClosed && errCode !== 'auth/popup-blocked') {
         console.warn('Google sign-in notice:', errMsg);
       }
 
       let friendlyMessage = 'Sign-in window was closed or interrupted. Please try again.';
       if (errCode === 'auth/popup-blocked') {
         friendlyMessage =
-          'The Google sign-in popup was blocked by your browser. Please allow popups in your browser address bar (top-right).';
-      } else if (errCode === 'auth/popup-closed-by-user') {
-        friendlyMessage = 'The sign-in window was closed. Click "Sign in with Google" when ready.';
-      } else if (isAssertionError) {
-        friendlyMessage = 'Sign-in window was closed. Click "Sign in with Google" when ready.';
+          'The Google sign-in popup was blocked by your browser. Please allow popups in your browser address bar (top-right), or open in a full tab.';
+      } else if (errCode === 'auth/unauthorized-domain') {
+        friendlyMessage =
+          'This domain is not yet authorized in Firebase Console. Please use Auditor Field Access below to proceed.';
+      } else if (isPopupClosed) {
+        friendlyMessage =
+          'Sign-in window was closed or interrupted. Tap "Retry Google Sign-In" to try again, or use Auditor Field Access.';
+      } else if (errCode === 'auth/network-request-failed') {
+        friendlyMessage =
+          'Network connection interrupted during sign-in. Please try again or use Auditor Field Access.';
+      } else if (errMsg && !errMsg.includes('[object Object]')) {
+        const cleanMsg = errMsg.replace(/^Firebase:\s*/, '').replace(/\s*\([a-z0-9/-]+\)\.?/i, '');
+        friendlyMessage = `${cleanMsg}. Please try again or use Auditor Field Access.`;
       }
 
       const err = new Error(friendlyMessage);
-      (err as any).code = errCode || 'auth/popup-reset';
+      (err as any).code = errCode || (isPopupClosed ? 'auth/popup-closed-by-user' : 'auth/popup-reset');
       throw err;
     } finally {
       isSigningIn = false;
@@ -199,10 +288,23 @@ export const setAccessToken = (token: string | null) => {
   try {
     if (token) {
       sessionStorage.setItem('countsheet_oauth_token', token);
+      sessionStorage.setItem('countsheet_oauth_token_timestamp', String(Date.now()));
     } else {
       sessionStorage.removeItem('countsheet_oauth_token');
+      sessionStorage.removeItem('countsheet_oauth_token_timestamp');
     }
   } catch {}
+};
+
+export const refreshGoogleAccessToken = async (loginHint?: string): Promise<string> => {
+  const result = await googleSignIn({
+    forceSelectAccount: false,
+    loginHint,
+  });
+  if (!result?.accessToken) {
+    throw new Error('Google sign-in did not return an OAuth 2 access token.');
+  }
+  return result.accessToken;
 };
 
 export const directAuditorSignIn = (
@@ -215,17 +317,20 @@ export const directAuditorSignIn = (
     displayName: cleanName,
     email: cleanEmail,
     uid: `auditor-${Date.now()}`,
+    photoURL: null,
   } as unknown as User;
 
   saveRememberedUser(customUser);
-  cachedAccessToken = 'icd-local-session-token';
+  cachedAccessToken = `auditor:${encodeURIComponent(cleanEmail)}:${encodeURIComponent(cleanName)}`;
   setAccessToken(cachedAccessToken);
   return { user: customUser, accessToken: cachedAccessToken };
 };
 
 export const logout = async (clearRemembered = false) => {
   try {
-    await signOut(auth);
+    if (auth.currentUser) {
+      await signOut(auth);
+    }
   } finally {
     cachedAccessToken = null;
     try {

@@ -20,7 +20,7 @@ export const GoogleWorkspaceCard: React.FC<GoogleWorkspaceCardProps> = ({
     <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm p-4 sm:p-5 transition-all">
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-slate-900 dark:bg-slate-800 text-amber-400 flex items-center justify-center font-bold shadow-sm border border-slate-800 dark:border-slate-700">
+          <div className="w-10 h-10 rounded-xl bg-slate-900 dark:bg-slate-800 text-blue-500 dark:text-blue-400 flex items-center justify-center font-bold shadow-sm border border-slate-800 dark:border-slate-700">
             <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM19 18H6c-2.21 0-4-1.79-4-4 0-2.05 1.53-3.76 3.56-3.97l1.07-.11.5-.95C8.08 7.14 9.94 6 12 6c2.62 0 4.88 1.86 5.39 4.43l.3 1.5 1.53.11c1.56.1 2.78 1.41 2.78 2.96 0 1.65-1.35 3-3 3z" />
             </svg>
@@ -38,8 +38,8 @@ export const GoogleWorkspaceCard: React.FC<GoogleWorkspaceCardProps> = ({
             <span>Connected</span>
           </div>
         ) : (
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
-            <WifiOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border border-slate-200 dark:border-zinc-700">
+            <WifiOff className="w-3.5 h-3.5 text-slate-500 dark:text-zinc-400" />
             <span>Offline Local</span>
           </div>
         )}

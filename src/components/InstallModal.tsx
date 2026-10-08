@@ -34,7 +34,9 @@ export const InstallModal: React.FC<InstallModalProps> = ({
             <img
               src="/icon.svg"
               alt="Inventory Hub Logo"
-              className="w-12 h-12 rounded-2xl shadow-md shadow-blue-500/20 object-contain"
+              width="48"
+              height="48"
+              className="w-12 h-12 rounded-2xl shadow-md shadow-blue-500/20 object-contain aspect-square shrink-0"
               referrerPolicy="no-referrer"
             />
             <div>
@@ -75,8 +77,8 @@ export const InstallModal: React.FC<InstallModalProps> = ({
           <div className="space-y-3">
             {/* Note about iFrame preview */}
             {isInIframe && (
-              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs flex items-start gap-2">
-                <Sparkles className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+              <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-200 text-xs flex items-start gap-2">
+                <Sparkles className="w-4 h-4 shrink-0 mt-0.5 text-blue-600 dark:text-blue-400" />
                 <div className="leading-relaxed">
                   <strong>Preview Notice:</strong> Web browsers disable install prompts inside preview windows. Open the app in its own tab or on your phone to install directly!
                 </div>
@@ -122,7 +124,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                   </li>
                 </ol>
 
-                <div className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-950/30 p-2 rounded-lg leading-relaxed">
+                <div className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 text-[11px] text-slate-700 dark:text-slate-300 bg-slate-100/80 dark:bg-slate-800/60 p-2 rounded-lg leading-relaxed">
                   <strong>Reinstalling & Chrome says &ldquo;This cannot be installed&rdquo;?</strong>
                   <ul className="list-disc pl-4 mt-1 space-y-0.5 text-[10.5px]">
                     <li>
@@ -149,7 +151,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
 
             {/* Direct Link button */}
             <a
-              href="https://ais-pre-tizggrtiolfdyde7rihkax-427630934893.asia-east1.run.app"
+              href="https://icd-inventory-hub.icdsystem.workers.dev"
               target="_blank"
               rel="noopener noreferrer"
               className="w-full py-2.5 px-4 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-semibold text-xs flex items-center justify-center gap-2 transition active:scale-98"

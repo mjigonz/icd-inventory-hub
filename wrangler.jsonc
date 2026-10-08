@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "icd-inventory-hub",
+  "main": "server.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "dev": {
+    "ip": "0.0.0.0",
+    "port": 3000
+  },
+  "alias": {
+    "iconv-lite": "./src/shims/iconv-lite.cjs"
+  },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "icd-inventory-hub-db",
+      "database_id": "90a8a530-2445-4c72-8db0-a92288bfde12"
+    }
+  ]
+}
