@@ -11,33 +11,36 @@ export const HighlightedText: React.FC<HighlightedTextProps> = memo(({
   highlight,
   className = '',
 }) => {
-  if (!text) return null;
+  if (text === null || text === undefined || text === '') return null;
+  const strText = String(text);
   const trimmed = highlight?.trim();
   if (!trimmed) {
-    return <span className={className}>{text}</span>;
+    return <span className={className}>{strText}</span>;
   }
 
   // Tokenize search keywords by whitespace, filtering out empty strings
-  // and escaping special regex characters
-  const tokens = trimmed
+  const rawTokens = trimmed
     .split(/\s+/)
     .filter(Boolean)
-    .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    .map((t) => t.toLowerCase());
 
-  if (tokens.length === 0) {
-    return <span className={className}>{text}</span>;
+  if (rawTokens.length === 0) {
+    return <span className={className}>{strText}</span>;
   }
 
+  const escapedTokens = rawTokens.map((token) =>
+    token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  );
+
   try {
-    const regex = new RegExp(`(${tokens.join('|')})`, 'gi');
-    const parts = text.split(regex);
+    const regex = new RegExp(`(${escapedTokens.join('|')})`, 'gi');
+    const parts = strText.split(regex);
 
     return (
       <span className={className}>
         {parts.map((part, i) => {
-          const isMatch = tokens.some(
-            (token) => token.toLowerCase() === part.toLowerCase()
-          );
+          const partLower = part.toLowerCase();
+          const isMatch = rawTokens.some((token) => token === partLower);
 
           if (isMatch) {
             return (
@@ -55,6 +58,6 @@ export const HighlightedText: React.FC<HighlightedTextProps> = memo(({
       </span>
     );
   } catch {
-    return <span className={className}>{text}</span>;
+    return <span className={className}>{strText}</span>;
   }
 });

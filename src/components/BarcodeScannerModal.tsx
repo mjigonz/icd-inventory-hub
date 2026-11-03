@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { X, Flashlight, FlashlightOff, Camera, AlertCircle } from 'lucide-react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { X, Flashlight, FlashlightOff, Camera, AlertCircle, RefreshCw } from 'lucide-react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 
 interface BarcodeScannerModalProps {
@@ -18,6 +18,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   const [torchAvailable, setTorchAvailable] = useState<boolean>(false);
   const [torchOn, setTorchOn] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState<number>(0);
   const zxingReaderRef = useRef<BrowserMultiFormatReader | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const isScanningRef = useRef<boolean>(false);
@@ -54,16 +55,41 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
     async function initCamera() {
       try {
-        const constraints: MediaStreamConstraints = {
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-          audio: false,
-        };
+        setErrorMsg(null);
 
-        const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (!navigator?.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+          setErrorMsg('Camera access is not supported in this browser or iframe. Please enter barcode manually.');
+          return;
+        }
+
+        let mediaStream: MediaStream;
+
+        try {
+          const constraints: MediaStreamConstraints = {
+            video: {
+              facingMode: { ideal: 'environment' },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+            audio: false,
+          };
+          mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (constraintErr: any) {
+          // If ideal constraints fail (e.g. OverconstrainedError), fall back to basic video constraint
+          const errName = constraintErr?.name || '';
+          if (
+            errName === 'OverconstrainedError' ||
+            errName === 'ConstraintNotSatisfiedError'
+          ) {
+            mediaStream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: 'environment' },
+              audio: false,
+            });
+          } else {
+            throw constraintErr;
+          }
+        }
+
         localStream = mediaStream;
         setStream(mediaStream);
 
@@ -111,12 +137,28 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
         animationFrameRef.current = requestAnimationFrame(scanLoop);
       } catch (err: any) {
-        console.error('Camera init error:', err);
-        setErrorMsg(
-          err.name === 'NotAllowedError'
-            ? 'Camera access denied. Please grant camera permissions in your browser settings.'
-            : 'Unable to start camera. Please verify your device has a working camera.'
-        );
+        const name = err?.name || '';
+        const msg = String(err?.message || '').toLowerCase();
+        const isPermissionDismissedOrDenied =
+          name === 'NotAllowedError' ||
+          name === 'PermissionDeniedError' ||
+          name === 'PermissionDismissedError' ||
+          msg.includes('permission') ||
+          msg.includes('dismissed') ||
+          msg.includes('denied');
+
+        if (isPermissionDismissedOrDenied) {
+          setErrorMsg(
+            'Camera permission was dismissed or not granted. Please allow camera access in browser permissions or type the barcode manually.'
+          );
+        } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+          setErrorMsg('No camera device found. Please ensure your device has an active camera.');
+        } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+          setErrorMsg('Camera is currently in use by another application or process.');
+        } else {
+          console.debug('Camera initialization note:', err);
+          setErrorMsg('Unable to initialize camera. Tap "Try Again" or enter barcode manually.');
+        }
       }
     }
 
@@ -134,7 +176,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         zxingReaderRef.current = null;
       }
     };
-  }, [isOpen, onScan, onClose]);
+  }, [isOpen, onScan, onClose, retryKey]);
 
   const toggleTorch = async () => {
     if (!stream) return;
@@ -195,9 +237,29 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         />
 
         {errorMsg ? (
-          <div className="relative z-10 p-6 text-center text-rose-300 bg-rose-950/80 rounded-2xl border border-rose-800 m-4">
-            <AlertCircle className="w-8 h-8 mx-auto mb-2 text-rose-400" />
-            <p className="text-xs leading-relaxed">{errorMsg}</p>
+          <div className="relative z-10 p-6 text-center text-rose-300 bg-rose-950/90 rounded-2xl border border-rose-800 m-4 space-y-3.5 max-w-sm">
+            <AlertCircle className="w-8 h-8 mx-auto text-rose-400" />
+            <p className="text-xs leading-relaxed font-medium">{errorMsg}</p>
+            <div className="pt-2 flex items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMsg(null);
+                  setRetryKey((k) => k + 1);
+                }}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-md transition cursor-pointer active:scale-95"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Try Again</span>
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-xs transition cursor-pointer active:scale-95"
+              >
+                Close
+              </button>
+            </div>
           </div>
         ) : (
           <div className="relative z-10 flex flex-col items-center">

@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for Instant Preview & Field Auditor Mode with immediate popup-free entry, unrestricted global Masterdata access, and explicit gating of Google Drive/Sheets-dependent features (Branch Sheet selection, Create Encoding, and Create Countsheets/Inventory) until a Google account is connected.",
+  "updatedAt":  "2026-10-31T01:24:23.248113314Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

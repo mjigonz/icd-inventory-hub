@@ -1,0 +1,309 @@
+{
+  "ownerEmail": "icdhubsystems@gmail.com",
+  "updatedAt": "2026-10-31T14:45:07.416Z",
+  "templateFolder": {
+    "id": "hub_folder_template",
+    "name": "TEMPLATE"
+  },
+  "countsheetSubfolder": {
+    "id": "hub_folder_template_countsheet",
+    "name": "COUNTSHEET"
+  },
+  "encodingSubfolder": {
+    "id": "hub_folder_template_encoding",
+    "name": "ENCODING"
+  },
+  "icdFormsFolder": {
+    "id": "hub_folder_icd_forms",
+    "name": "ICD FORMS",
+    "ownerEmail": "icdhubsystems@gmail.com"
+  },
+  "countsheetTemplates": [
+    {
+      "id": "19eb2315c82841b7f2920f8e1a272f52095f1e72c",
+      "name": "RANDOM INVENTORY COUNTSHEET TEMPLATE",
+      "gid": "1328306184",
+      "folderPath": "TEMPLATE/COUNTSHEET",
+      "ownerEmail": "icdhubsystems@gmail.com",
+      "webViewLink": "https://docs.google.com/spreadsheets/d/19eb2315c82841b7f2920f8e1a272f52095f1e72c/edit#gid=1328306184",
+      "modifiedTime": "2026-10-31T14:45:04.872Z"
+    },
+    {
+      "id": "hub-countsheet-periodic-template",
+      "name": "PERIODIC COUNTSHEET TEMPLATE",
+      "gid": "1328306184",
+      "folderPath": "TEMPLATE/COUNTSHEET",
+      "ownerEmail": "icdhubsystems@gmail.com",
+      "webViewLink": "https://docs.google.com/spreadsheets/d/hub-countsheet-periodic-template/edit#gid=1328306184",
+      "modifiedTime": "2026-10-31T14:45:04.872Z"
+    }
+  ],
+  "encodingTemplates": [
+    {
+      "id": "hub-encoding-overall-count-template",
+      "name": "OVERALL COUNT TEMPLATE",
+      "templateType": "OVERALL COUNT TEMPLATE",
+      "folderPath": "TEMPLATE/ENCODING",
+      "ownerEmail": "icdhubsystems@gmail.com",
+      "webViewLink": "https://docs.google.com/spreadsheets/d/hub-encoding-overall-count-template/edit",
+      "modifiedTime": "2026-10-31T14:45:04.872Z",
+      "tabs": [
+        {
+          "sheetId": 0,
+          "title": "ENCODING",
+          "rowCount": 1500,
+          "columnCount": 45
+        },
+        {
+          "sheetId": 1,
+          "title": "ANALYSIS",
+          "rowCount": 200,
+          "columnCount": 20
+        },
+        {
+          "sheetId": 2,
+          "title": "UNIDENTIFIED",
+          "rowCount": 200,
+          "columnCount": 15
+        },
+        {
+          "sheetId": 3,
+          "title": "MONITORING",
+          "rowCount": 180,
+          "columnCount": 15
+        }
+      ],
+      "detectedHeaderRow": 2,
+      "sheetTitle": "ENCODING",
+      "headers": [
+        "Item Code",
+        "Barcode",
+        "Item Description",
+        "Category",
+        "SubCategory",
+        "SubsubCategory",
+        "Unit",
+        "Cost",
+        "Selling Price",
+        "Beg. Qty",
+        "In",
+        "Out",
+        "Balance",
+        "Remarks",
+        "CS01",
+        "CS02",
+        "CS03",
+        "CS04",
+        "CS05",
+        "CS06",
+        "CS07",
+        "CS08",
+        "CS09",
+        "CS10",
+        "",
+        "Total Actual",
+        "Variance Qty",
+        "Unrecorded Sales / Shortages (Cost)",
+        "Unrecorded Sales / Shortages (Selling)",
+        "Overages (Cost)",
+        "Overages (Selling)",
+        "Net Variance (Cost)",
+        "Net Variance (Selling)"
+      ],
+      "row3Formulas": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "=SUM(O3:X3)",
+        "=Z3-M3",
+        "=IF(AA3<0,ABS(AA3)*H3,0)",
+        "=IF(AA3<0,ABS(AA3)*I3,0)",
+        "=IF(AA3>0,AA3*H3,0)",
+        "=IF(AA3>0,AA3*I3,0)",
+        "=AA3*H3",
+        "=AA3*I3"
+      ],
+      "sampleRows": []
+    },
+    {
+      "id": "hub-encoding-cessation-overall-count-template",
+      "name": "CESSATION OVERALL COUNT TEMPLATE",
+      "templateType": "CESSATION OVERALL COUNT TEMPLATE",
+      "folderPath": "TEMPLATE/ENCODING",
+      "ownerEmail": "icdhubsystems@gmail.com",
+      "webViewLink": "https://docs.google.com/spreadsheets/d/hub-encoding-cessation-overall-count-template/edit",
+      "modifiedTime": "2026-10-31T14:45:04.872Z",
+      "tabs": [
+        {
+          "sheetId": 0,
+          "title": "ENCODING",
+          "rowCount": 1500,
+          "columnCount": 45
+        },
+        {
+          "sheetId": 1,
+          "title": "ANALYSIS",
+          "rowCount": 200,
+          "columnCount": 20
+        },
+        {
+          "sheetId": 2,
+          "title": "UNIDENTIFIED",
+          "rowCount": 200,
+          "columnCount": 15
+        },
+        {
+          "sheetId": 3,
+          "title": "MONITORING",
+          "rowCount": 180,
+          "columnCount": 15
+        }
+      ],
+      "detectedHeaderRow": 2,
+      "sheetTitle": "ENCODING",
+      "headers": [
+        "Item Code",
+        "Barcode",
+        "Item Description",
+        "Category",
+        "SubCategory",
+        "SubsubCategory",
+        "Unit",
+        "Cost",
+        "Selling Price",
+        "Beg. Qty",
+        "In",
+        "Out",
+        "Balance",
+        "Remarks",
+        "CS01",
+        "CS02",
+        "CS03",
+        "CS04",
+        "CS05",
+        "CS06",
+        "CS07",
+        "CS08",
+        "CS09",
+        "CS10",
+        "",
+        "Total Actual",
+        "Variance Qty",
+        "Unrecorded Sales / Shortages (Cost)",
+        "Unrecorded Sales / Shortages (Selling)",
+        "Overages (Cost)",
+        "Overages (Selling)",
+        "Net Variance (Cost)",
+        "Net Variance (Selling)"
+      ],
+      "row3Formulas": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "=SUM(O3:X3)",
+        "=Z3-M3",
+        "=IF(AA3<0,ABS(AA3)*H3,0)",
+        "=IF(AA3<0,ABS(AA3)*I3,0)",
+        "=IF(AA3>0,AA3*H3,0)",
+        "=IF(AA3>0,AA3*I3,0)",
+        "=AA3*H3",
+        "=AA3*I3"
+      ],
+      "sampleRows": []
+    }
+  ],
+  "forms": [
+    {
+      "id": "icd-form-physical-countsheet",
+      "name": "ICD Physical Inventory Countsheet Form.pdf",
+      "mimeType": "application/pdf",
+      "size": "2048",
+      "modifiedTime": "2026-10-31T14:45:04.872Z",
+      "webViewLink": "/api/hub/forms/icd-form-physical-countsheet/pdf",
+      "webContentLink": "/api/hub/forms/icd-form-physical-countsheet/pdf",
+      "ownerEmail": "icdhubsystems@gmail.com",
+      "folderPath": "ICD FORMS",
+      "hasCachedBinary": true
+    },
+    {
+      "id": "icd-form-audit-clearance-cutoff",
+      "name": "ICD Audit Cut-Off & Clearance Form.pdf",
+      "mimeType": "application/pdf",
+      "size": "2048",
+      "modifiedTime": "2026-10-31T14:45:04.872Z",
+      "webViewLink": "/api/hub/forms/icd-form-audit-clearance-cutoff/pdf",
+      "webContentLink": "/api/hub/forms/icd-form-audit-clearance-cutoff/pdf",
+      "ownerEmail": "icdhubsystems@gmail.com",
+      "folderPath": "ICD FORMS",
+      "hasCachedBinary": true
+    },
+    {
+      "id": "icd-form-variance-acknowledgment",
+      "name": "ICD Inventory Variance & Accountability Form.pdf",
+      "mimeType": "application/pdf",
+      "size": "2048",
+      "modifiedTime": "2026-10-31T14:45:04.872Z",
+      "webViewLink": "/api/hub/forms/icd-form-variance-acknowledgment/pdf",
+      "webContentLink": "/api/hub/forms/icd-form-variance-acknowledgment/pdf",
+      "ownerEmail": "icdhubsystems@gmail.com",
+      "folderPath": "ICD FORMS",
+      "hasCachedBinary": true
+    },
+    {
+      "id": "icd-form-cash-vault-verification",
+      "name": "ICD Cash & Vault Count Verification Form.pdf",
+      "mimeType": "application/pdf",
+      "size": "2048",
+      "modifiedTime": "2026-10-31T14:45:04.872Z",
+      "webViewLink": "/api/hub/forms/icd-form-cash-vault-verification/pdf",
+      "webContentLink": "/api/hub/forms/icd-form-cash-vault-verification/pdf",
+      "ownerEmail": "icdhubsystems@gmail.com",
+      "folderPath": "ICD FORMS",
+      "hasCachedBinary": true
+    }
+  ]
+}

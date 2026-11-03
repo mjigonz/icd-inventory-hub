@@ -6,14 +6,22 @@ import './index.css';
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event?.reason;
   const message = String(reason?.message || reason || '');
-  if (message.includes('INTERNAL ASSERTION FAILED') || message.includes('Pending promise')) {
+  if (
+    message.includes('INTERNAL ASSERTION FAILED') ||
+    message.includes('Pending promise') ||
+    message.includes('Could not reach Cloud Firestore backend')
+  ) {
     event.preventDefault();
   }
 });
 
 window.addEventListener('error', (event) => {
   const message = String(event?.message || event?.error?.message || '');
-  if (message.includes('INTERNAL ASSERTION FAILED') || message.includes('Pending promise')) {
+  if (
+    message.includes('INTERNAL ASSERTION FAILED') ||
+    message.includes('Pending promise') ||
+    message.includes('Could not reach Cloud Firestore backend')
+  ) {
     event.preventDefault();
   }
 });
@@ -26,11 +34,32 @@ window.addEventListener('beforeinstallprompt', (e) => {
   window.dispatchEvent(new CustomEvent('pwa-prompt-available', { detail: e }));
 });
 
+// Clear any stale Service Worker caches that may have cached older JS modules
+if ('caches' in window) {
+  caches
+    .keys()
+    .then((keys) => {
+      keys.forEach((key) => {
+        if (key !== 'countsheet-v14') {
+          caches.delete(key).catch(() => {});
+        }
+      });
+    })
+    .catch(() => {});
+}
+
 // Resilient PWA service worker registration
 if ('serviceWorker' in navigator) {
   const registerSW = async () => {
     try {
-      const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      const reg = await navigator.serviceWorker.register('/sw.js', {
+        scope: '/',
+        updateViaCache: 'none',
+      });
+      if (reg.waiting) {
+        reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      }
+      reg.update().catch(() => {});
       console.log('CountSheet ServiceWorker registered with scope:', reg.scope);
     } catch (err) {
       console.warn('CountSheet ServiceWorker registration error:', err);

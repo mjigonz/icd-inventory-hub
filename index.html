@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#0F172A" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -18,22 +18,58 @@
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <script>
       (function() {
         try {
+          var docEl = document.documentElement;
+          docEl.classList.add('preload-no-transitions');
+          var savedMode = localStorage.getItem('countsheet_appearance_mode');
           var saved = localStorage.getItem('countsheet_theme');
-          var isDark = saved === 'dark' || (!saved && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var validWinThemes = [
+            'default','minimal_monochrome','midnight_professional','emerald_operations',
+            'christmas','halloween','valentines','new_year','spring_blossom','summer_breeze',
+            'autumn_harvest','winter_frost','easter','nature_forest','ocean_breeze','sakura_dream'
+          ];
+          var rawWinTheme = localStorage.getItem('countsheet_bg_icon_theme') || 'default';
+          var savedWinTheme = validWinThemes.indexOf(rawWinTheme) !== -1 ? rawWinTheme : 'default';
+          docEl.setAttribute('data-window-theme', savedWinTheme);
+          var charAnim = localStorage.getItem('countsheet_char_anim') === 'true' ? 'on' : 'off';
+          docEl.setAttribute('data-char-anim', charAnim);
+          var rawMotion = localStorage.getItem('countsheet_motion_pref');
+          var motionPref = (rawMotion === 'off' || rawMotion === 'subtle' || rawMotion === 'smooth') ? rawMotion : 'smooth';
+          docEl.setAttribute('data-motion', motionPref);
+          var systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var isDark = savedMode === 'dark'
+            ? true
+            : savedMode === 'light'
+            ? false
+            : savedMode === 'system'
+            ? Boolean(systemDark)
+            : (saved === 'dark' || (!saved && Boolean(systemDark)));
+          var metaTheme = document.querySelector('meta[name="theme-color"]');
           if (isDark) {
-            document.documentElement.classList.add('dark');
-            document.documentElement.setAttribute('data-theme', 'dark');
-            document.documentElement.style.backgroundColor = '#090D16';
-            document.documentElement.style.color = '#F8FAFC';
+            docEl.classList.add('dark');
+            docEl.setAttribute('data-theme', 'dark');
+            docEl.style.colorScheme = 'dark';
+            docEl.style.backgroundColor = '#0B1220';
+            if (metaTheme) metaTheme.setAttribute('content', '#0B1220');
           } else {
-            document.documentElement.classList.remove('dark');
-            document.documentElement.setAttribute('data-theme', 'light');
-            document.documentElement.style.backgroundColor = '#F8FAFC';
-            document.documentElement.style.color = '#0F172A';
+            docEl.classList.remove('dark');
+            docEl.setAttribute('data-theme', 'light');
+            docEl.style.colorScheme = 'light';
+            docEl.style.backgroundColor = '#F8FAFC';
+            if (metaTheme) metaTheme.setAttribute('content', '#F8FAFC');
           }
+          window.addEventListener('DOMContentLoaded', function() {
+            requestAnimationFrame(function() {
+              requestAnimationFrame(function() {
+                docEl.classList.remove('preload-no-transitions');
+              });
+            });
+          });
         } catch(e) {}
       })();
     </script>

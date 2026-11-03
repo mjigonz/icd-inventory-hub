@@ -18,6 +18,7 @@ export interface ClaimRoleParams {
   requestedRole: 'owner' | 'encoder';
   userEmail: string;
   userName: string;
+  forceAdminOverride?: boolean;
 }
 
 export interface ClaimRoleResult {
@@ -93,7 +94,7 @@ export class D1BranchRoleRepository {
    * Claims a role ('owner' or 'encoder') for a branch.
    */
   public async claimRole(params: ClaimRoleParams): Promise<ClaimRoleResult> {
-    const { spreadsheetId, spreadsheetName, requestedRole, userEmail, userName } = params;
+    const { spreadsheetId, spreadsheetName, requestedRole, userEmail, userName, forceAdminOverride } = params;
     const cleanEmail = userEmail.trim().toLowerCase();
     const nowIso = new Date().toISOString();
 
@@ -104,7 +105,7 @@ export class D1BranchRoleRepository {
       .bind(spreadsheetId)
       .first<BranchDbRecord>();
 
-    if (requestedRole === 'owner') {
+    if (requestedRole === 'owner' && !forceAdminOverride) {
       if (
         existingBranch &&
         existingBranch.owner_email &&

@@ -7,6 +7,7 @@ import {
   X,
   Sparkles,
 } from 'lucide-react';
+import { useAnimatedPresence } from '../hooks/useAnimatedPresence';
 
 interface InstallModalProps {
   isOpen: boolean;
@@ -21,13 +22,24 @@ export const InstallModal: React.FC<InstallModalProps> = ({
   isInstallable,
   onNativeInstall,
 }) => {
-  if (!isOpen) return null;
+  const { shouldRender, isVisible } = useAnimatedPresence(isOpen, 200);
+  if (!shouldRender) return null;
 
   const isInIframe = window.self !== window.top;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/20 dark:bg-black/40 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in">
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4">
+    <div
+      onClick={onClose}
+      className={`fixed inset-0 z-50 bg-slate-900/20 dark:bg-black/40 backdrop-blur-md flex items-center justify-center p-4 ui-modal-backdrop ${
+        isVisible ? 'ui-modal-open pointer-events-auto' : 'pointer-events-none'
+      }`}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className={`bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 ui-modal-panel ${
+          isVisible ? 'ui-modal-open' : ''
+        }`}
+      >
         {/* Header */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -161,13 +173,6 @@ export const InstallModal: React.FC<InstallModalProps> = ({
             </a>
           </div>
         )}
-
-        <button
-          onClick={onClose}
-          className="w-full py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 font-medium text-xs transition cursor-pointer"
-        >
-          Close
-        </button>
       </div>
     </div>
   );

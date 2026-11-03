@@ -11,8 +11,10 @@ import {
   X,
   Sparkles,
   ExternalLink,
+  Link,
 } from 'lucide-react';
 import { SelectedBranch } from '../types';
+import { useAnimatedPresence } from '../hooks/useAnimatedPresence';
 
 interface ShareModalProps {
   isOpen: boolean;
@@ -30,6 +32,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   onNativeInstall,
 }) => {
   const [mounted, setMounted] = useState(false);
+  const { shouldRender, isVisible } = useAnimatedPresence(isOpen, 200);
   const [copied, setCopied] = useState(false);
   const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
   const [includeBranch, setIncludeBranch] = useState(false);
@@ -58,8 +61,12 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     };
   }, [isOpen, onClose]);
 
-  // Determine production share URL
-  const baseUrl = 'https://icd-inventory-hub.icdsystem.workers.dev';
+  // Determine dynamic application URL (defaulting to workers.dev for production share link)
+  const baseUrl = typeof window !== 'undefined'
+    ? (window.location.origin.includes('run.app') || window.location.origin.includes('localhost')
+        ? 'https://icd-inventory-hub.icdsystem.workers.dev'
+        : `${window.location.origin}${window.location.pathname}`)
+    : 'https://icd-inventory-hub.icdsystem.workers.dev';
 
   const shareUrl = useMemo(() => {
     if (includeBranch && branch?.id) {
@@ -133,9 +140,9 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     }
   };
 
-  // Safe native share with fallback
+  // Safe native share to all device messaging platforms
   const handleNativeShare = async () => {
-    if (navigator.share && window.self === window.top) {
+    if (navigator.share) {
       try {
         await navigator.share({
           title: 'Inventory Hub',
@@ -149,22 +156,26 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         if (err?.name === 'AbortError') return;
       }
     }
-    // Fallback: Copy link
+    // Fallback if native share is not supported
     handleCopy();
   };
 
-  if (!isOpen || !mounted) return null;
+  if (!shouldRender || !mounted) return null;
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[70] bg-slate-950/60 dark:bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 pointer-events-auto cursor-pointer animate-in fade-in"
+      className={`fixed inset-0 z-[70] bg-slate-950/60 dark:bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 cursor-pointer ui-modal-backdrop ${
+        isVisible ? 'ui-modal-open pointer-events-auto' : 'pointer-events-none'
+      }`}
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="Share and Download QR code"
     >
       <div
-        className="bg-white dark:bg-[#161618] border border-slate-200/90 dark:border-zinc-800 text-slate-900 dark:text-white rounded-3xl max-w-sm sm:max-w-md w-full p-4 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto pointer-events-auto relative cursor-default"
+        className={`bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-zinc-800 text-slate-900 dark:text-white rounded-3xl max-w-sm sm:max-w-md w-full p-4 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto relative cursor-default ui-modal-panel ${
+          isVisible ? 'ui-modal-open pointer-events-auto' : 'pointer-events-none'
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -251,54 +262,46 @@ export const ShareModal: React.FC<ShareModalProps> = ({
           </div>
         )}
 
-        {/* Share Link Input & Copy/Share Actions */}
-        <div className="space-y-2">
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-            Direct Web Link
-          </label>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 min-w-0 px-3 py-2 bg-slate-100 dark:bg-zinc-800/80 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs text-slate-700 dark:text-zinc-300 font-mono truncate select-all">
-              {shareUrl}
-            </div>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95 cursor-pointer shrink-0 ${
-                copied
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-slate-900 dark:bg-zinc-700 hover:bg-slate-800 dark:hover:bg-zinc-600 text-white'
-              }`}
-              title="Copy share link"
-            >
-              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copied ? 'Copied!' : 'Copy'}</span>
-            </button>
-          </div>
+        {/* Share, Copy & Save QR Actions */}
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          {/* Share Link button (Native Web Share API) */}
+          <button
+            type="button"
+            onClick={handleNativeShare}
+            className="py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition active:scale-98 shadow-xs cursor-pointer"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            <span>Share Link</span>
+          </button>
 
-          <div className="grid grid-cols-2 gap-2 pt-1">
-            {/* Native Share button */}
-            <button
-              type="button"
-              onClick={handleNativeShare}
-              className="py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition active:scale-98 shadow-xs cursor-pointer"
-            >
-              <Share2 className="w-3.5 h-3.5" />
-              <span>Share Link</span>
-            </button>
-
-            {/* Save QR Image button */}
-            {qrCodeUrl && (
-              <a
-                href={qrCodeUrl}
-                download="inventory-hub-qr.png"
-                className="py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 font-semibold text-xs flex items-center justify-center gap-1.5 transition active:scale-98 border border-slate-200 dark:border-zinc-700 cursor-pointer text-center"
-              >
-                <Download className="w-3.5 h-3.5 text-slate-600 dark:text-zinc-300" />
-                <span>Save QR Image</span>
-              </a>
-            )}
-          </div>
+          {/* Copy Link button */}
+          <button
+            type="button"
+            onClick={handleCopy}
+            className={`py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition active:scale-98 shadow-xs cursor-pointer ${
+              copied
+                ? 'bg-emerald-600 text-white'
+                : 'bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 border border-slate-200 dark:border-zinc-700'
+            }`}
+          >
+            {copied ? <Check className="w-3.5 h-3.5" /> : <Link className="w-3.5 h-3.5" />}
+            <span>{copied ? 'Link Copied!' : 'Copy Link'}</span>
+          </button>
         </div>
+
+        {/* Save QR Image button */}
+        {qrCodeUrl && (
+          <div>
+            <a
+              href={qrCodeUrl}
+              download="inventory-hub-qr.png"
+              className="w-full py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 font-semibold text-xs flex items-center justify-center gap-1.5 transition active:scale-98 border border-slate-200 dark:border-zinc-700 cursor-pointer text-center"
+            >
+              <Download className="w-3.5 h-3.5 text-slate-600 dark:text-zinc-300" />
+              <span>Save QR Image</span>
+            </a>
+          </div>
+        )}
 
         {/* Native Install Option on Current Device if ready */}
         {isInstallable && onNativeInstall && (
@@ -327,16 +330,6 @@ export const ShareModal: React.FC<ShareModalProps> = ({
           </div>
         )}
 
-        {/* Footer: Done Button */}
-        <div className="pt-1">
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-full py-2.5 rounded-xl bg-slate-900 dark:bg-zinc-700 hover:bg-slate-800 dark:hover:bg-zinc-600 text-white font-bold text-xs transition active:scale-98 cursor-pointer shadow-xs"
-          >
-            Done
-          </button>
-        </div>
       </div>
     </div>,
     document.body

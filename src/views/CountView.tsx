@@ -20,7 +20,9 @@ import {
 } from 'lucide-react';
 import { BarcodeScannerModal } from '../components/BarcodeScannerModal';
 import { SEOHead } from '../components/SEOHead';
+import { PanelDecoration } from '../components/PanelDecoration';
 import { HighlightedText } from '../components/HighlightedText';
+import { CustomSelect } from '../components/CustomSelect';
 import {
   Countsheet,
   CountsheetItem,
@@ -34,18 +36,24 @@ import {
   getBranchCountsheets,
   saveCountsheetLocal,
   deleteCountsheetLocal,
+  subscribeToBranchCountsheets,
+  ensureBranchInventoryHydrated,
 } from '../services/db';
 import { submitCountsheetToSheets } from '../services/googleSheets';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { useLanguage } from '../services/i18n';
 
 const MAX_ITEMS_PER_COUNTSHEET = 45;
 
 interface CountViewProps {
   branch: SelectedBranch | null;
   userRole: 'owner' | 'encoder' | 'unassigned';
+  isAdminMode?: boolean;
   userName: string | null;
   userEmail: string | null;
   accessToken: string | null;
+  isGoogleConnected?: boolean;
+  onConnectGoogle?: () => void;
   onOpenBranchTab: () => void;
   onCountItemTotalChange?: (total: number) => void;
 }
@@ -53,12 +61,16 @@ interface CountViewProps {
 export const CountView: React.FC<CountViewProps> = ({
   branch,
   userRole,
+  isAdminMode = false,
   userName,
   userEmail,
   accessToken,
+  isGoogleConnected = true,
+  onConnectGoogle,
   onOpenBranchTab,
   onCountItemTotalChange,
 }) => {
+  const { t } = useLanguage();
   const isOnline = useOnlineStatus();
 
   // Countsheets list for this branch
@@ -109,6 +121,7 @@ export const CountView: React.FC<CountViewProps> = ({
   const [submitSuccessMsg, setSubmitSuccessMsg] = useState<string | null>(null);
   const [submitErrorMsg, setSubmitErrorMsg] = useState<string | null>(null);
   const [sheetSearchFilter, setSheetSearchFilter] = useState('');
+  const [sheetStatusFilter, setSheetStatusFilter] = useState<'ALL' | 'VARIANCE' | 'MATCHED' | 'ISSUE'>('ALL');
 
   // Load countsheets from IndexedDB
   const refreshCountsheets = async (branchId: string, preferredCs?: number) => {
@@ -141,9 +154,22 @@ export const CountView: React.FC<CountViewProps> = ({
   };
 
   useEffect(() => {
-    if (branch) {
-      refreshCountsheets(branch.id);
-    }
+    if (!branch) return;
+    ensureBranchInventoryHydrated(branch).catch(() => {});
+    refreshCountsheets(branch.id);
+
+    const unsubscribe = subscribeToBranchCountsheets(branch.id, (list) => {
+      if (list.length > 0) {
+        setCountsheets(list);
+        setActiveCsNumber((prevCs) =>
+          list.some((cs) => cs.cs === prevCs) ? prevCs : list[0].cs
+        );
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, [branch?.id]);
 
   // Current active countsheet
@@ -158,15 +184,29 @@ export const CountView: React.FC<CountViewProps> = ({
 
   const filteredSheetItems = React.useMemo(() => {
     if (!currentCountsheet) return [];
-    if (!sheetSearchFilter.trim()) return currentCountsheet.items;
     const q = sheetSearchFilter.trim().toLowerCase();
-    return currentCountsheet.items.filter(
-      (item) =>
+    return currentCountsheet.items.filter((item) => {
+      if (sheetStatusFilter === 'VARIANCE' && item.actualCount === (item.balance || 0)) {
+        return false;
+      }
+      if (sheetStatusFilter === 'MATCHED' && item.actualCount !== (item.balance || 0)) {
+        return false;
+      }
+      if (
+        sheetStatusFilter === 'ISSUE' &&
+        (!item.condition || item.condition === 'Good') &&
+        !item.isUnidentified
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return (
         (item.itemDescription && item.itemDescription.toLowerCase().includes(q)) ||
         (item.itemCode && item.itemCode.toLowerCase().includes(q)) ||
         (item.barcode && item.barcode.toLowerCase().includes(q))
-    );
-  }, [currentCountsheet, sheetSearchFilter]);
+      );
+    });
+  }, [currentCountsheet, sheetSearchFilter, sheetStatusFilter]);
 
   // Select item from candidates list
   const handleSelectCandidate = (item: InventoryItem) => {
@@ -382,11 +422,11 @@ export const CountView: React.FC<CountViewProps> = ({
     await refreshCountsheets(branch.id, nextCs);
   };
 
-  // Delete Countsheet (Owner only, removes local and calls server to delete from Google Sheets)
+  // Delete Countsheet (Owner or Admin Mode, removes local and calls server to delete from Google Sheets)
   const handleDeleteCountsheet = async () => {
     if (!branch || !currentCountsheet) return;
-    if (userRole !== 'owner') {
-      alert('Only the branch Owner can delete a countsheet.');
+    if (userRole !== 'owner' && !isAdminMode) {
+      alert('Only the branch Owner or Admin can delete a countsheet.');
       return;
     }
 
@@ -403,6 +443,7 @@ export const CountView: React.FC<CountViewProps> = ({
           body: JSON.stringify({
             spreadsheetId: branch.id,
             csNumber: currentCountsheet.cs,
+            isAdminMode,
           }),
         });
 
@@ -510,19 +551,49 @@ export const CountView: React.FC<CountViewProps> = ({
   if (!branch) {
     return (
       <div className="max-w-md mx-auto px-4 py-12 text-center space-y-4 animate-fade-in-up">
-        <div className="w-14 h-14 rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto">
-          <Layers className="w-7 h-7" />
+        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto ${
+          !isGoogleConnected
+            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+            : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+        }`}>
+          {!isGoogleConnected ? <AlertCircle className="w-7 h-7" /> : <Layers className="w-7 h-7" />}
         </div>
-        <h2 className="text-lg font-bold text-slate-900 dark:text-white">No Branch Selected</h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto">
-          Please select a branch Google Spreadsheet to start physical inventory counting.
+        <PanelDecoration position="empty-state" tier="major" variant={0} />
+        <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+          {!isGoogleConnected ? 'Google Account Not Connected' : t.noBranchSelectedTitle}
+        </h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
+          {!isGoogleConnected
+            ? 'Physical counting and countsheet submission require a connected Google account and an active branch spreadsheet.'
+            : t.noBranchSelectedCountDesc}
         </p>
-        <button
-          onClick={onOpenBranchTab}
-          className="px-5 py-2.5 rounded-xl bg-slate-900 dark:bg-blue-600 hover:bg-slate-800 dark:hover:bg-blue-500 text-white font-semibold text-xs active:scale-95 transition shadow-sm cursor-pointer"
-        >
-          Select Branch
-        </button>
+        <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+          {!isGoogleConnected && onConnectGoogle ? (
+            <>
+              <button
+                type="button"
+                onClick={onConnectGoogle}
+                className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs active:scale-95 transition shadow-sm cursor-pointer"
+              >
+                Connect Google Account
+              </button>
+              <button
+                type="button"
+                onClick={onOpenBranchTab}
+                className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-semibold text-xs active:scale-95 transition cursor-pointer"
+              >
+                {t.selectBranch}
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={onOpenBranchTab}
+              className="px-5 py-2.5 rounded-xl bg-slate-900 dark:bg-blue-600 hover:bg-slate-800 dark:hover:bg-blue-500 text-white font-semibold text-xs active:scale-95 transition shadow-sm cursor-pointer"
+            >
+              {t.selectBranch}
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -531,7 +602,7 @@ export const CountView: React.FC<CountViewProps> = ({
     return (
       <div className="max-w-md mx-auto px-4 py-12 text-center text-slate-500 dark:text-slate-400 text-xs animate-fade-in-up">
         <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-        <p>Loading countsheets...</p>
+        <p>{t.loadingCountsheets}</p>
       </div>
     );
   }
@@ -540,7 +611,7 @@ export const CountView: React.FC<CountViewProps> = ({
   const isFull = itemCount >= MAX_ITEMS_PER_COUNTSHEET;
 
   return (
-    <div className="w-full max-w-7xl mx-auto space-y-4 pb-24 md:pb-8 animate-slide-up-fade-in">
+    <div className="w-full space-y-4 animate-slide-up-fade-in">
       <SEOHead
         title={`Count - ${currentCountsheet?.name || 'Inventory'}`}
         description="Physical inventory counting workflow with camera barcode scanner, 45-item limit, Google Sheets sync, and offline persistence."
@@ -550,40 +621,41 @@ export const CountView: React.FC<CountViewProps> = ({
       {/* Responsive layout: 2-column grid on desktop (lg+), stacked on mobile */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* Left Column on Desktop: CS selector, Scanner & Input, Active Item, Submit */}
-        <div className="lg:col-span-5 xl:col-span-5 space-y-4">
+        <div className="lg:col-span-5 xl:col-span-4 2xl:col-span-4 space-y-4">
           {/* 1. Countsheet Selector & Actions Row */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-3.5 transition-colors">
+          <div className="relative bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-3.5 transition-colors mt-2">
+            <PanelDecoration position="top-left" tier="secondary" variant={2} />
+            <PanelDecoration position="top-border" tier="playful" variant={3} />
             <div className="flex items-center justify-between gap-2 mb-2.5">
               {/* CS Selector Dropdown */}
               <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Sheet:</span>
-                <div className="relative">
-                  <select
-                    value={activeCsNumber}
-                    onChange={(e) => setActiveCsNumber(parseInt(e.target.value, 10))}
-                    className="appearance-none bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-950 dark:text-slate-100 font-black text-sm py-1.5 pl-3 pr-7 rounded-xl border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-                  >
-                    {countsheets.map((cs) => (
-                      <option key={cs.cs} value={cs.cs}>
-                        {cs.name}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-3 pointer-events-none text-slate-500 dark:text-slate-400" />
-                </div>
+                <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t.sheetLabel}</span>
+                <CustomSelect
+                  value={String(activeCsNumber)}
+                  onChange={(val) => setActiveCsNumber(parseInt(val, 10))}
+                  ariaLabel="Select active countsheet"
+                  menuMinWidth={185}
+                  triggerClassName="py-1.5 px-3 text-sm font-black"
+                  options={countsheets.map((cs) => ({
+                    value: String(cs.cs),
+                    label: cs.name,
+                    badge: `${cs.items.length}/${MAX_ITEMS_PER_COUNTSHEET}`,
+                    dotColor: cs.status === 'submitted' ? 'bg-emerald-500' : 'bg-blue-500',
+                  }))}
+                />
 
                 {currentCountsheet?.status === 'submitted' ? (
                   <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
-                    <Check className="w-3 h-3" /> Submitted
+                    <Check className="w-3 h-3" /> {t.submittedBadge}
                   </span>
                 ) : (
                   <span className="text-[10px] font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 px-2.5 py-0.5 rounded-full border border-slate-200 dark:border-slate-700">
-                    Draft
+                    {t.draftBadge}
                   </span>
                 )}
               </div>
 
-              {/* Action buttons: New CS & Delete CS (Owner only) */}
+              {/* Action buttons: New CS & Delete CS (Owner or Admin Mode) */}
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleCreateCountsheet}
@@ -591,11 +663,11 @@ export const CountView: React.FC<CountViewProps> = ({
                   title="Create next sequential countsheet"
                 >
                   <Plus className="w-3.5 h-3.5 text-blue-400" />
-                  <span>New CS</span>
+                  <span>{t.newCsBtn}</span>
                 </button>
 
-                {/* Delete button: Visible ONLY to Owner */}
-                {userRole === 'owner' && (
+                {/* Delete button: Visible to Owner or Admin Mode */}
+                {(userRole === 'owner' || isAdminMode) && (
                   <button
                     onClick={() => setShowDeleteModal(true)}
                     className="p-1.5 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 active:scale-95 transition cursor-pointer"
@@ -610,9 +682,9 @@ export const CountView: React.FC<CountViewProps> = ({
             {/* 45 Items Capacity Progress Bar */}
             <div className="space-y-1.5 pt-1">
               <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                <span>Sheet Capacity</span>
+                <span>{t.sheetCapacityLabel}</span>
                 <span className={isFull ? 'text-rose-600 dark:text-rose-400 font-bold' : 'text-slate-700 dark:text-slate-300 font-semibold'}>
-                  {itemCount} / {MAX_ITEMS_PER_COUNTSHEET} items {isFull && '(Full)'}
+                  {itemCount} / {MAX_ITEMS_PER_COUNTSHEET} {t.itemsWord} {isFull && `(${t.fullWord})`}
                 </span>
               </div>
               <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
@@ -631,9 +703,11 @@ export const CountView: React.FC<CountViewProps> = ({
           </div>
 
           {/* 2. Barcode Entry Row: Input + Camera Icon + Find Button */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-3.5 transition-colors">
+          <div className="relative bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-3.5 transition-colors">
+            <PanelDecoration position="top-right" tier="major" variant={0} />
+            <PanelDecoration position="top-left" tier="playful" variant={1} />
             <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
-              Scan or Lookup Item
+              {t.scanOrLookupItem}
             </h4>
             <form onSubmit={handleBarcodeSubmit} className="flex items-center gap-1.5">
               {/* Barcode text input */}
@@ -641,7 +715,7 @@ export const CountView: React.FC<CountViewProps> = ({
                 <input
                   type="text"
                   inputMode="text"
-                  placeholder="Enter or scan barcode..."
+                  placeholder={t.enterOrScanBarcodePlaceholder}
                   value={barcodeInput}
                   onChange={(e) => setBarcodeInput(e.target.value)}
                   className="w-full pl-3 pr-2 py-2.5 text-sm font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white dark:focus:bg-slate-900 transition"
@@ -665,7 +739,7 @@ export const CountView: React.FC<CountViewProps> = ({
                 className="px-4 h-11 rounded-xl bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white text-xs font-bold shrink-0 flex items-center justify-center gap-1 active:scale-95 transition disabled:opacity-50 cursor-pointer border border-transparent dark:border-zinc-700"
               >
                 <Search className="w-3.5 h-3.5" />
-                <span>Find</span>
+                <span>{t.findBtn}</span>
               </button>
             </form>
 
@@ -688,7 +762,7 @@ export const CountView: React.FC<CountViewProps> = ({
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
                     <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 dark:text-white">
-                      Matching Items Found ({candidateItems.length})
+                      {t.matchingItemsFound} ({candidateItems.length})
                     </h3>
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
@@ -735,7 +809,7 @@ export const CountView: React.FC<CountViewProps> = ({
                         {item.category && <span>{item.category}</span>}
                         {item.category && <span>•</span>}
                         <span className="font-semibold text-slate-700 dark:text-slate-300">
-                          Balance: {item.balance} {item.unit}
+                          Bal: {item.balance} {item.unit}
                         </span>
                         {item.selling > 0 && <span>• ₱{item.selling.toFixed(2)}</span>}
                       </div>
@@ -804,7 +878,7 @@ export const CountView: React.FC<CountViewProps> = ({
                           : 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200'
                       }`}
                     >
-                      {activeItem.isUnidentified ? 'Unidentified Item' : `Found in ${activeItem.source}`}
+                      {activeItem.isUnidentified ? t.unidentifiedItem : `${t.foundInPrefix} ${activeItem.source}`}
                     </span>
                     <span className="text-xs font-mono text-slate-500 dark:text-slate-400">{activeItem.barcode}</span>
                   </div>
@@ -812,7 +886,7 @@ export const CountView: React.FC<CountViewProps> = ({
                   {activeItem.isUnidentified ? (
                     <div className="mt-2">
                       <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                        Enter Item Description *
+                        {t.enterItemDescriptionLabel}
                       </label>
                       <input
                         type="text"
@@ -843,19 +917,19 @@ export const CountView: React.FC<CountViewProps> = ({
               {!activeItem.isUnidentified && (
                 <div className="grid grid-cols-3 gap-2 bg-slate-50 dark:bg-slate-800/80 rounded-xl p-2.5 text-[11px] border border-slate-100 dark:border-slate-700/80">
                   <div>
-                    <span className="text-slate-400 dark:text-slate-400 block">Item Code</span>
+                    <span className="text-slate-400 dark:text-slate-400 block">{t.itemCodeLabel}</span>
                     <span className="font-mono font-bold text-slate-800 dark:text-slate-200 truncate block">
                       {activeItem.itemCode}
                     </span>
                   </div>
                   <div>
-                    <span className="text-slate-400 dark:text-slate-400 block">Category</span>
+                    <span className="text-slate-400 dark:text-slate-400 block">{t.categoryLabel}</span>
                     <span className="font-semibold text-slate-800 dark:text-slate-200 truncate block">
                       {activeItem.category || 'General'}
                     </span>
                   </div>
                   <div>
-                    <span className="text-slate-400 dark:text-slate-400 block">Book Balance</span>
+                    <span className="text-slate-400 dark:text-slate-400 block">{t.bookBalanceLabel}</span>
                     <span className="font-bold text-slate-900 dark:text-white block">
                       {activeItem.balance} {activeItem.unit}
                     </span>
@@ -865,9 +939,28 @@ export const CountView: React.FC<CountViewProps> = ({
 
               {/* Actual Count Entry Field */}
               <div className="pt-1">
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                  Actual Count ({activeItem.unit || 'PCS'})
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                    {t.actualCountLabel} ({activeItem.unit || 'PCS'})
+                  </label>
+                  <div className="flex items-center gap-1">
+                    {[5, 10].map((stepVal) => (
+                      <button
+                        key={stepVal}
+                        type="button"
+                        onClick={() =>
+                          setActiveItem({
+                            ...activeItem,
+                            actualCount: Number(activeItem.actualCount || 0) + stepVal,
+                          })
+                        }
+                        className="px-2 py-0.5 rounded-lg bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-[11px] font-mono font-bold transition active:scale-95 cursor-pointer"
+                      >
+                        +{stepVal}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="flex items-center gap-2">
                   {/* Stepper down */}
                   <button
@@ -917,11 +1010,12 @@ export const CountView: React.FC<CountViewProps> = ({
                 {/* Item Condition Selector: Good (automatically chosen), Bad, Spoilage */}
                 <div className="mt-3">
                   <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
-                    Item Condition
+                    {t.itemConditionLabel}
                   </label>
                   <div className="grid grid-cols-3 gap-2">
                     {(['Good', 'Bad', 'Spoilage'] as const).map((cond) => {
                       const isSelected = (activeItem.condition || 'Good') === cond;
+                      const condLabel = cond === 'Good' ? t.conditionGood : cond === 'Bad' ? t.conditionBad : t.conditionSpoilage;
                       return (
                         <button
                           key={cond}
@@ -945,7 +1039,7 @@ export const CountView: React.FC<CountViewProps> = ({
                           {cond === 'Good' && <CheckCircle2 className="w-3.5 h-3.5" />}
                           {cond === 'Bad' && <AlertCircle className="w-3.5 h-3.5" />}
                           {cond === 'Spoilage' && <AlertCircle className="w-3.5 h-3.5" />}
-                          <span>{cond}</span>
+                          <span>{condLabel}</span>
                         </button>
                       );
                     })}
@@ -961,13 +1055,15 @@ export const CountView: React.FC<CountViewProps> = ({
                 className="w-full py-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white font-bold text-sm flex items-center justify-center gap-2 active:scale-98 transition shadow-xs disabled:opacity-50 cursor-pointer border border-transparent dark:border-zinc-700"
               >
                 <Plus className="w-4 h-4 stroke-[2.5]" />
-                <span>Add to {currentCountsheet.name}</span>
+                <span>{t.addToPrefix} {currentCountsheet.name}</span>
               </button>
             </div>
           )}
 
           {/* 6. Submit Actions (Placed in Left Column for Easy Accessibility) */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-3.5 space-y-2 transition-colors">
+          <div className="relative bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-3.5 space-y-2 transition-colors">
+            <PanelDecoration position="bottom-left" tier="secondary" variant={2} />
+            <PanelDecoration position="bottom-right" tier="playful" variant={3} />
             {submitSuccessMsg && (
               <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 rounded-xl text-emerald-800 dark:text-emerald-300 text-xs flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
@@ -994,17 +1090,17 @@ export const CountView: React.FC<CountViewProps> = ({
               {isSubmitting ? (
                 <>
                   <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                  <span>Submitting to Google Sheets...</span>
+                  <span>{t.submittingToSheets}</span>
                 </>
               ) : !isOnline ? (
                 <>
                   <WifiOff className="w-3.5 h-3.5" />
-                  <span>Offline: Saved locally (Online submission paused)</span>
+                  <span>{t.offlineSavedLocallyBtn}</span>
                 </>
               ) : (
                 <>
                   <Send className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Submit {currentCountsheet.name} to Google Sheets</span>
+                  <span>{t.submitToGoogleSheetsPrefix} {currentCountsheet.name} {t.submitToGoogleSheetsSuffix}</span>
                 </>
               )}
             </button>
@@ -1016,132 +1112,198 @@ export const CountView: React.FC<CountViewProps> = ({
         </div>
 
         {/* Right Column on Desktop: Items Currently Added to Selected Countsheet */}
-        <div className="lg:col-span-7 xl:col-span-7 space-y-4">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-4 space-y-3 transition-colors">
+        <div className="lg:col-span-7 xl:col-span-8 2xl:col-span-8 space-y-4">
+          <div className="relative bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs p-4 space-y-3 transition-colors mt-2">
+            <PanelDecoration position="top-left" tier="major" variant={0} />
+            <PanelDecoration position="top-border" tier="secondary" variant={1} />
+            <PanelDecoration position="top-right" tier="playful" variant={2} />
+            <PanelDecoration position="bottom-right" tier="secondary" variant={3} />
             {/* Header with Stats and in-sheet Search filter */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <Package className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
                 <h3 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">
-                  Items in {currentCountsheet.name} ({itemCount})
+                  {t.itemsInPrefix} {currentCountsheet.name} ({itemCount})
                 </h3>
               </div>
               <div className="flex items-center gap-2 text-xs">
                 <span className="font-mono text-slate-600 dark:text-slate-300 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
-                  Total Units: {currentCountsheet.items.reduce((sum, item) => sum + item.actualCount, 0).toLocaleString()}
+                  {t.totalUnitsLabel} {currentCountsheet.items.reduce((sum, item) => sum + item.actualCount, 0).toLocaleString()}
                 </span>
               </div>
             </div>
 
-            {/* Quick in-sheet filter if more than 3 items */}
-            {currentCountsheet.items.length > 3 && (
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Filter items in this countsheet..."
-                  value={sheetSearchFilter}
-                  onChange={(e) => setSheetSearchFilter(e.target.value)}
-                  className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                {sheetSearchFilter && (
-                  <button
-                    onClick={() => setSheetSearchFilter('')}
-                    className="absolute right-2 top-1.5 p-1 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                  >
-                    ✕
-                  </button>
+            {/* Quick in-sheet filter & status pills if items exist */}
+            {currentCountsheet.items.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  {[
+                    { id: 'ALL' as const, label: `${t.filterAll} (${currentCountsheet.items.length})` },
+                    {
+                      id: 'VARIANCE' as const,
+                      label: `${t.filterWithVariance} (${
+                        currentCountsheet.items.filter((i) => i.actualCount !== (i.balance || 0)).length
+                      })`,
+                    },
+                    {
+                      id: 'MATCHED' as const,
+                      label: `${t.filterMatched} (${
+                        currentCountsheet.items.filter((i) => i.actualCount === (i.balance || 0)).length
+                      })`,
+                    },
+                    {
+                      id: 'ISSUE' as const,
+                      label: `${t.filterBadUnid} (${
+                        currentCountsheet.items.filter(
+                          (i) => (i.condition && i.condition !== 'Good') || i.isUnidentified
+                        ).length
+                      })`,
+                    },
+                  ].map((pill) => {
+                    const active = sheetStatusFilter === pill.id;
+                    return (
+                      <button
+                        key={pill.id}
+                        type="button"
+                        onClick={() => setSheetStatusFilter(pill.id)}
+                        className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer border whitespace-nowrap ${
+                          active
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                            : 'bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+                        }`}
+                      >
+                        {pill.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {currentCountsheet.items.length > 3 && (
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder={t.filterItemsInCountsheetPlaceholder}
+                      value={sheetSearchFilter}
+                      onChange={(e) => setSheetSearchFilter(e.target.value)}
+                      className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    {sheetSearchFilter && (
+                      <button
+                        onClick={() => setSheetSearchFilter('')}
+                        className="absolute right-2 top-1.5 p-1 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             )}
 
             {currentCountsheet.items.length === 0 ? (
               <div className="py-12 text-center text-slate-400 dark:text-slate-500 text-xs space-y-1.5">
+                <PanelDecoration position="empty-state" tier="major" variant={2} />
                 <div className="w-10 h-10 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto text-slate-400 mb-2">
                   <Package className="w-5 h-5" />
                 </div>
-                <p className="font-semibold text-slate-600 dark:text-slate-400">No items added to {currentCountsheet.name} yet.</p>
-                <p className="text-[11px] text-slate-400 dark:text-slate-500">Scan barcode or enter item code on the left to add items.</p>
+                <p className="font-semibold text-slate-600 dark:text-slate-400">{t.noItemsAddedYetPrefix} {currentCountsheet.name}</p>
+                <p className="text-[11px] text-slate-400 dark:text-slate-500">{t.scanBarcodeToAddDesc}</p>
               </div>
             ) : filteredSheetItems.length === 0 ? (
               <div className="py-8 text-center text-slate-400 dark:text-slate-500 text-xs">
-                No items match "{sheetSearchFilter}".
+                No items match the current filter.
               </div>
             ) : (
-              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[600px] overflow-y-auto pr-1 space-y-1.5">
-                {filteredSheetItems.map((item, index) => (
-                  <div
-                    key={item.id}
-                    className="py-2.5 px-2 flex items-center justify-between gap-3 group hover:bg-slate-50/80 dark:hover:bg-slate-800/60 rounded-xl transition"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-[10px] font-mono font-bold text-slate-400 dark:text-slate-500 w-5">
-                          {index + 1}.
-                        </span>
-                        <p className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate leading-tight">
-                          {item.itemDescription || 'Unidentified Item'}
-                        </p>
-                        {item.isUnidentified && (
-                          <span className="text-[9px] bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200 font-bold px-1.5 py-0.2 rounded">
-                            UNID
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[calc(100vh-230px)] min-h-[500px] overflow-y-auto pr-1 space-y-1.5">
+                {filteredSheetItems.map((item, index) => {
+                  const diff = Number(item.actualCount || 0) - Number(item.balance || 0);
+                  return (
+                    <div
+                      key={`count_itm_${item.id || 'itm'}_${index}`}
+                      className="py-2.5 px-2 flex items-center justify-between gap-3 group hover:bg-slate-50/80 dark:hover:bg-slate-800/60 rounded-xl transition"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] font-mono font-bold text-slate-400 dark:text-slate-500 w-5">
+                            {index + 1}.
                           </span>
-                        )}
-                        {item.condition && (
+                          <p className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate leading-tight">
+                            {item.itemDescription || 'Unidentified Item'}
+                          </p>
+                          {item.isUnidentified && (
+                            <span className="text-[9px] bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200 font-bold px-1.5 py-0.2 rounded">
+                              UNID
+                            </span>
+                          )}
+                          {item.condition && (
+                            <span
+                              className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                                item.condition === 'Good'
+                                  ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                                  : item.condition === 'Bad'
+                                  ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
+                                  : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                              }`}
+                            >
+                              {item.condition}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center flex-wrap gap-2 text-[10px] text-slate-500 dark:text-slate-400 mt-1 ml-6">
+                          <span className="font-mono">{item.barcode || item.itemCode}</span>
+                          <span>·</span>
+                          <span className="font-mono">
+                            Book: {item.balance} {item.unit}
+                          </span>
+                          <span>·</span>
                           <span
-                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                              item.condition === 'Good'
-                                ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
-                                : item.condition === 'Bad'
-                                ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
-                                : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                            className={`font-mono font-bold ${
+                              diff === 0
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : diff > 0
+                                ? 'text-amber-600 dark:text-amber-400'
+                                : 'text-rose-600 dark:text-rose-400'
                             }`}
                           >
-                            {item.condition}
+                            {diff === 0 ? 'Matched' : `Var: ${diff > 0 ? `+${diff}` : diff}`}
                           </span>
-                        )}
+                          {item.category && (
+                            <>
+                              <span>·</span>
+                              <span>{item.category}</span>
+                            </>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-slate-400 mt-1 ml-6">
-                        <span className="font-mono">{item.barcode || item.itemCode}</span>
-                        <span>•</span>
-                        <span>
-                          Book: {item.balance} {item.unit}
-                        </span>
-                        {item.category && (
-                          <>
-                            <span>•</span>
-                            <span>{item.category}</span>
-                          </>
-                        )}
+                      {/* Actual Count badge and actions */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => {
+                            setEditingItem(item);
+                            setEditQty(item.actualCount);
+                            setEditCondition(item.condition || 'Good');
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-blue-500/10 dark:bg-blue-500/20 hover:bg-blue-500/20 dark:hover:bg-blue-500/30 text-blue-800 dark:text-blue-200 border border-blue-400/30 dark:border-blue-500/40 text-xs font-black font-mono flex items-center gap-1 active:scale-95 transition cursor-pointer"
+                          title="Edit quantity & condition"
+                        >
+                          <span>{item.actualCount}</span>
+                          <Edit2 className="w-2.5 h-2.5 text-slate-500 dark:text-slate-400" />
+                        </button>
+
+                        <button
+                          onClick={() => handleRemoveItem(item.id)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                          title="Remove item"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
-
-                    {/* Actual Count badge and actions */}
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={() => {
-                          setEditingItem(item);
-                          setEditQty(item.actualCount);
-                          setEditCondition(item.condition || 'Good');
-                        }}
-                        className="px-2.5 py-1.5 rounded-lg bg-blue-500/10 dark:bg-blue-500/20 hover:bg-blue-500/20 dark:hover:bg-blue-500/30 text-blue-800 dark:text-blue-200 border border-blue-400/30 dark:border-blue-500/40 text-xs font-black font-mono flex items-center gap-1 active:scale-95 transition cursor-pointer"
-                        title="Edit quantity & condition"
-                      >
-                        <span>{item.actualCount}</span>
-                        <Edit2 className="w-2.5 h-2.5 text-slate-500 dark:text-slate-400" />
-                      </button>
-
-                      <button
-                        onClick={() => handleRemoveItem(item.id)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
-                        title="Remove item"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1159,12 +1321,12 @@ export const CountView: React.FC<CountViewProps> = ({
       {editingItem && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-xs w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-4">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Edit Quantity & Condition</h3>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">{t.editQtyAndConditionTitle}</h3>
             <p className="text-xs text-slate-600 dark:text-slate-300 truncate">{editingItem.itemDescription}</p>
 
             <div>
               <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">
-                Actual Count ({editingItem.unit})
+                {t.actualCountLabel} ({editingItem.unit})
               </label>
               <input
                 type="number"
@@ -1179,11 +1341,17 @@ export const CountView: React.FC<CountViewProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
-                Item Condition
+                {t.itemConditionLabel}
               </label>
               <div className="grid grid-cols-3 gap-2">
                 {(['Good', 'Bad', 'Spoilage'] as const).map((cond) => {
                   const isSelected = editCondition === cond;
+                  const condLabel =
+                    cond === 'Good'
+                      ? t.conditionGood
+                      : cond === 'Bad'
+                      ? t.conditionBad
+                      : t.conditionSpoilage;
                   return (
                     <button
                       key={cond}
@@ -1199,10 +1367,10 @@ export const CountView: React.FC<CountViewProps> = ({
                           : 'bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
                       }`}
                     >
-                      {cond === 'Good' && <CheckCircle2 className="w-3.5 h-3.5" />}
-                      {cond === 'Bad' && <AlertCircle className="w-3.5 h-3.5" />}
-                      {cond === 'Spoilage' && <AlertCircle className="w-3.5 h-3.5" />}
-                      <span>{cond}</span>
+                      {cond === 'Good' && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+                      {cond === 'Bad' && <AlertCircle className="w-3.5 h-3.5 shrink-0" />}
+                      {cond === 'Spoilage' && <AlertCircle className="w-3.5 h-3.5 shrink-0" />}
+                      <span className="truncate">{condLabel}</span>
                     </button>
                   );
                 })}
@@ -1214,13 +1382,13 @@ export const CountView: React.FC<CountViewProps> = ({
                 onClick={() => setEditingItem(null)}
                 className="flex-1 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
               >
-                Cancel
+                {t.cancelBtn}
               </button>
               <button
                 onClick={handleSaveEditQty}
                 className="flex-1 py-2 rounded-xl text-xs font-bold bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white cursor-pointer transition shadow-xs border border-transparent dark:border-zinc-700"
               >
-                Save
+                {t.saveBtn}
               </button>
             </div>
           </div>
@@ -1237,7 +1405,7 @@ export const CountView: React.FC<CountViewProps> = ({
 
             <div className="text-center">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                Delete Countsheet {currentCountsheet.name}?
+                {t.deleteCountsheetTitlePrefix} {currentCountsheet.name}?
               </h3>
               <p className="text-xs text-slate-600 dark:text-slate-300 mt-2 leading-relaxed">
                 Are you sure you want to delete <strong className="text-slate-900 dark:text-white">{currentCountsheet.name}</strong>?
@@ -1254,14 +1422,14 @@ export const CountView: React.FC<CountViewProps> = ({
                 disabled={isDeleting}
                 className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
               >
-                Cancel
+                {t.cancelBtn}
               </button>
               <button
                 onClick={handleDeleteCountsheet}
                 disabled={isDeleting}
                 className="flex-1 py-2.5 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 transition shadow-sm cursor-pointer"
               >
-                {isDeleting ? 'Deleting...' : 'Discard & Delete'}
+                {isDeleting ? t.deletingText : t.discardAndDeleteBtn}
               </button>
             </div>
           </div>
