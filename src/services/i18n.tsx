@@ -321,7 +321,7 @@ export const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     navBranch: 'Branch',
     navCount: 'Count',
     navMonitoring: 'Monitoring',
-    navInventory: 'Inventory',
+    navInventory: 'Inventory Masterdata',
     adminMode: 'Admin Mode',
     online: 'Online',
     offline: 'Offline',

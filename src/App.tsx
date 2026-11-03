@@ -927,6 +927,8 @@ function AppContent() {
           isGoogleConnected={isGoogleConnected}
           onConnectGoogle={() => handleSignIn({ forceSelectAccount: true })}
           onTokenRefreshed={(newToken: string) => setAccessToken(newToken)}
+          userEmail={user?.email}
+          userName={user?.displayName}
         />
       )}
 
@@ -953,6 +955,8 @@ function AppContent() {
         activeBranch={selectedBranch}
         initialCountsheetType={auditReportCountsheetType}
         onTokenRefreshed={(newToken) => setAccessToken(newToken)}
+        userEmail={user?.email}
+        userName={user?.displayName}
         onBranchCreatedOrUpdated={(branchId, branchName) => {
           handleSelectBranch(
             {
@@ -980,7 +984,7 @@ function AppContent() {
       <main id="app-main-content" className="relative z-10 flex-1 w-full max-w-[1560px] mx-auto px-4 sm:px-8 lg:px-12 xl:px-16 py-4 sm:py-6 pb-[calc(7.5rem+env(safe-area-inset-bottom,16px))] md:pb-8">
         {currentTab !== 'admin' && (
           <div className="mb-5 grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4">
-            {/* Large Clickable Button 1: Overall Count (Branch, Count & Monitoring inside) */}
+            {/* Large Clickable Button 1: Inventory Count (Branch, Count & Monitoring inside) */}
             <div
               role="button"
               tabIndex={0}
@@ -1017,7 +1021,7 @@ function AppContent() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-base sm:text-lg font-extrabold tracking-tight text-slate-900 dark:text-zinc-100">
-                        Overall Count
+                        Inventory Count
                       </span>
                       {(currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring') && (
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300 border border-sky-200/80 dark:border-sky-700/60">
@@ -1031,7 +1035,7 @@ function AppContent() {
                   </div>
                 </div>
 
-                {/* Inside Overall Count: Branch, Count, and Monitoring buttons */}
+                {/* Inside Inventory Count: Branch, Count, and Monitoring buttons */}
                 <div
                   className="grid grid-cols-3 gap-1.5 sm:flex sm:items-center sm:gap-2 bg-slate-100/90 dark:bg-zinc-950/80 p-1.5 rounded-xl border border-slate-200/80 dark:border-zinc-800"
                   onClick={(e) => e.stopPropagation()}
@@ -1089,7 +1093,7 @@ function AppContent() {
               </div>
             </div>
 
-            {/* Large Clickable Button 2: Inventory for Masterdata Access */}
+            {/* Large Clickable Button 2: Inventory Masterdata (Local and Masterdata Access) */}
             <button
               type="button"
               onClick={() => setCurrentTab('inventory')}
@@ -1121,7 +1125,7 @@ function AppContent() {
                     )}
                   </div>
                   <p className="text-xs text-slate-500 dark:text-zinc-400 truncate">
-                    Masterdata Access &bull; GRO &amp; OTHERS Catalog
+                    Local IATD and Masterdata catalog access
                   </p>
                 </div>
               </div>

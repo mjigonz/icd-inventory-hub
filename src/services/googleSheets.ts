@@ -23,39 +23,81 @@ export interface DriveSpreadsheetFile {
   name: string;
   modifiedTime?: string;
   owner?: string;
+  ownerEmail?: string;
   mimeType?: string;
+  isUserOwned?: boolean;
+}
+
+export interface SearchDriveSpreadsheetsOptions {
+  userEmail?: string | null;
+  onlyUserFiles?: boolean;
+  excludeTemplates?: boolean;
+  excludeTemplateIds?: string[];
 }
 
 const CACHED_DRIVE_FILES_KEY = 'countsheet_cached_drive_files';
 
-function getDriveFilesStorageKey(): string {
-  const email = auth.currentUser?.email || getRememberedUser()?.email;
-  const userKey = email ? email.trim().toLowerCase().replace(/[^a-z0-9@._-]/g, '_') : 'default';
-  return `${CACHED_DRIVE_FILES_KEY}_${userKey}`;
-}
+export const KNOWN_TEMPLATE_IDS = new Set([
+  '19eb2315c82841b7f2920f8e1a272f52095f1e72c',
+  'hub-countsheet-periodic-template',
+  'hub-encoding-overall-template',
+  'hub-encoding-cessation-template',
+]);
 
-export function getCachedDriveFiles(searchQuery = ''): DriveSpreadsheetFile[] {
+export const TEMPLATE_NAME_PATTERN = /(?:overall\s*count\s*template|cessation\s*overall\s*count\s*template|random\s*inventory\s*countsheet|periodic\s*countsheet\s*template|blank\s*form|blank\s*template)/i;
+
+export function getAdminTemplateIdsToExclude(): string[] {
   try {
-    const raw = localStorage.getItem(getDriveFilesStorageKey());
+    const raw = localStorage.getItem('countsheet_admin_drive_links_v1');
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return parsed;
-    return parsed.filter(
-      (f: DriveSpreadsheetFile) =>
-        f.name?.toLowerCase().includes(q) || f.id?.toLowerCase().includes(q)
-    );
+    const ids: string[] = [];
+    const extractId = (url?: string) => {
+      if (!url) return;
+      const m = url.match(/\/d\/(?:e\/)?([a-zA-Z0-9-_]{15,})/) || url.match(/\/folders\/([a-zA-Z0-9_-]{15,})/);
+      if (m?.[1]) ids.push(m[1]);
+    };
+    extractId(parsed?.formsLocationLink);
+    extractId(parsed?.inventoryTemplateLink);
+    extractId(parsed?.overallCountTemplateLink);
+    return ids;
   } catch {
     return [];
   }
 }
 
-export function saveCachedDriveFiles(files: DriveSpreadsheetFile[]) {
+function getDriveFilesStorageKey(userEmail?: string | null): string {
+  const email = userEmail || auth.currentUser?.email || getRememberedUser()?.email;
+  const userKey = email ? email.trim().toLowerCase().replace(/[^a-z0-9@._-]/g, '_') : 'default';
+  return `${CACHED_DRIVE_FILES_KEY}_${userKey}`;
+}
+
+export function getCachedDriveFiles(searchQuery = '', userEmail?: string | null): DriveSpreadsheetFile[] {
+  try {
+    const raw = localStorage.getItem(getDriveFilesStorageKey(userEmail));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const q = searchQuery.trim().toLowerCase();
+    const adminTemplateIds = new Set(getAdminTemplateIdsToExclude());
+    return parsed.filter((f: DriveSpreadsheetFile) => {
+      if (!f || !f.id) return false;
+      if (adminTemplateIds.has(f.id) || KNOWN_TEMPLATE_IDS.has(f.id) || TEMPLATE_NAME_PATTERN.test(f.name || '')) {
+        return false;
+      }
+      if (!q) return true;
+      return f.name?.toLowerCase().includes(q) || f.id?.toLowerCase().includes(q);
+    });
+  } catch {
+    return [];
+  }
+}
+
+export function saveCachedDriveFiles(files: DriveSpreadsheetFile[], userEmail?: string | null) {
   if (!Array.isArray(files) || files.length === 0) return;
   try {
-    localStorage.setItem(getDriveFilesStorageKey(), JSON.stringify(files.slice(0, 80)));
-    const email = auth.currentUser?.email || getRememberedUser()?.email;
+    localStorage.setItem(getDriveFilesStorageKey(userEmail), JSON.stringify(files.slice(0, 80)));
+    const email = userEmail || auth.currentUser?.email || getRememberedUser()?.email;
     const userKey = email ? email.trim().toLowerCase().replace(/[^a-z0-9@._-]/g, '_') : null;
     if (userKey) {
       fetch(`/api/sync/workspace/${encodeURIComponent(userKey)}`, {
@@ -516,11 +558,17 @@ export function getDemoInventoryItems(): InventoryItem[] {
 // 1. Search Google Drive for branch spreadsheets
 export async function searchDriveSpreadsheets(
   accessToken: string,
-  searchQuery = ''
+  searchQuery = '',
+  options?: SearchDriveSpreadsheetsOptions
 ): Promise<DriveSpreadsheetFile[]> {
   const tokenToUse = await resolveValidOAuthToken(accessToken, { allowPopup: false });
+  const normalizedUserEmail =
+    options?.userEmail?.trim().toLowerCase() ||
+    auth.currentUser?.email?.trim().toLowerCase() ||
+    getRememberedUser()?.email?.trim().toLowerCase();
+
   if (!tokenToUse || !isGoogleOAuthAccessToken(tokenToUse)) {
-    const cached = getCachedDriveFiles(searchQuery);
+    const cached = getCachedDriveFiles(searchQuery, normalizedUserEmail);
     if (cached.length > 0) {
       return cached;
     }
@@ -532,27 +580,38 @@ export async function searchDriveSpreadsheets(
   }
 
   const queryTrimmed = searchQuery.trim();
+  const adminTemplateIds = new Set(getAdminTemplateIdsToExclude());
+  if (options?.excludeTemplateIds) {
+    options.excludeTemplateIds.forEach((id) => adminTemplateIds.add(id));
+  }
 
   // If user pasted a full Google Sheets URL or raw file ID
   const urlMatch = queryTrimmed.match(/\/d\/([a-zA-Z0-9-_]+)/);
   const directIdCandidate = urlMatch?.[1] || (/^[a-zA-Z0-9-_]{25,60}$/.test(queryTrimmed) ? queryTrimmed : null);
   if (directIdCandidate) {
     try {
-      const directUrl = `https://www.googleapis.com/drive/v3/files/${directIdCandidate}?fields=id,name,modifiedTime,owners&supportsAllDrives=true`;
+      const directUrl = `https://www.googleapis.com/drive/v3/files/${directIdCandidate}?fields=id,name,modifiedTime,owners(displayName,emailAddress,me)&supportsAllDrives=true`;
       const directRes = await fetchWithRetry(directUrl, {
         headers: { Authorization: `Bearer ${tokenToUse}` },
       });
       if (directRes.ok) {
         const directData: any = await directRes.json();
+        const firstOwner = directData.owners?.[0];
+        const isUserOwned = Boolean(
+          directData.owners?.some(
+            (o: any) =>
+              o.me ||
+              (normalizedUserEmail && o.emailAddress?.toLowerCase() === normalizedUserEmail)
+          )
+        );
         return [
           {
             id: directData.id,
             name: directData.name,
             modifiedTime: directData.modifiedTime,
-            owner:
-              directData.owners?.[0]?.displayName ||
-              directData.owners?.[0]?.emailAddress ||
-              'Google Drive',
+            owner: firstOwner?.displayName || firstOwner?.emailAddress || 'Google Drive',
+            ownerEmail: firstOwner?.emailAddress,
+            isUserOwned,
           },
         ];
       }
@@ -564,6 +623,16 @@ export async function searchDriveSpreadsheets(
   // Search Google Sheets and uploaded Excel spreadsheets
   let q =
     "(mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType = 'application/vnd.ms-excel') and trashed = false";
+
+  if (options?.onlyUserFiles) {
+    if (normalizedUserEmail) {
+      const sanitizedEmail = normalizedUserEmail.replace(/'/g, "\\'");
+      q += ` and ('me' in owners or '${sanitizedEmail}' in owners)`;
+    } else {
+      q += " and 'me' in owners";
+    }
+  }
+
   if (queryTrimmed) {
     const escaped = queryTrimmed.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     q += ` and name contains '${escaped}'`;
@@ -571,7 +640,7 @@ export async function searchDriveSpreadsheets(
 
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
     q
-  )}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType,modifiedTime,owners)&orderBy=modifiedTime desc&pageSize=100`;
+  )}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType,modifiedTime,owners(displayName,emailAddress,me))&orderBy=modifiedTime desc&pageSize=100`;
 
   let res = await fetchWithRetry(url, {
     headers: { Authorization: `Bearer ${tokenToUse}` },
@@ -581,14 +650,14 @@ export async function searchDriveSpreadsheets(
   if (!res.ok && res.status === 400) {
     const fallbackUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
       q
-    )}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType,modifiedTime,owners)&pageSize=100`;
+    )}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType,modifiedTime,owners(displayName,emailAddress,me))&pageSize=100`;
     res = await fetchWithRetry(fallbackUrl, {
       headers: { Authorization: `Bearer ${tokenToUse}` },
     });
   }
 
   if (!res.ok) {
-    const cached = getCachedDriveFiles(searchQuery);
+    const cached = getCachedDriveFiles(searchQuery, normalizedUserEmail);
     if (cached.length > 0 && res.status === 401) {
       return cached;
     }
@@ -597,16 +666,60 @@ export async function searchDriveSpreadsheets(
   }
 
   const data: any = await res.json();
-  const files: DriveSpreadsheetFile[] = (data.files || []).map((f: any) => ({
-    id: f.id,
-    name: f.name,
-    modifiedTime: f.modifiedTime,
-    owner: f.owners?.[0]?.displayName || f.owners?.[0]?.emailAddress || 'Me',
-    mimeType: f.mimeType,
-  }));
+  const rawFiles: any[] = data.files || [];
+  const files: DriveSpreadsheetFile[] = [];
 
-  if (!queryTrimmed && files.length > 0) {
-    saveCachedDriveFiles(files);
+  for (const f of rawFiles) {
+    if (!f || !f.id) continue;
+
+    // Filter out saved form sources and templates so only branch IATD files appear
+    if (options?.excludeTemplates !== false) {
+      if (adminTemplateIds.has(f.id) || KNOWN_TEMPLATE_IDS.has(f.id)) {
+        continue;
+      }
+      if (TEMPLATE_NAME_PATTERN.test(f.name || '')) {
+        continue;
+      }
+    }
+
+    const firstOwner = f.owners?.[0];
+    const isUserOwned = Boolean(
+      f.owners?.some(
+        (o: any) =>
+          o.me ||
+          (normalizedUserEmail && o.emailAddress?.toLowerCase() === normalizedUserEmail)
+      )
+    );
+
+    let displayOwner = firstOwner?.displayName || firstOwner?.emailAddress || 'Google Drive';
+    if (isUserOwned && normalizedUserEmail) {
+      displayOwner = firstOwner?.displayName
+        ? `${firstOwner.displayName} (${normalizedUserEmail})`
+        : normalizedUserEmail;
+    } else if (firstOwner?.displayName || firstOwner?.emailAddress) {
+      displayOwner = `${firstOwner.displayName || firstOwner.emailAddress} (Shared)`;
+    }
+
+    files.push({
+      id: f.id,
+      name: f.name,
+      modifiedTime: f.modifiedTime,
+      owner: displayOwner,
+      ownerEmail: firstOwner?.emailAddress,
+      mimeType: f.mimeType,
+      isUserOwned,
+    });
+  }
+
+  // Prioritize user's own files at top of list, then by modifiedTime desc
+  files.sort((a, b) => {
+    if (a.isUserOwned && !b.isUserOwned) return -1;
+    if (!a.isUserOwned && b.isUserOwned) return 1;
+    return (b.modifiedTime || '').localeCompare(a.modifiedTime || '');
+  });
+
+  if (!queryTrimmed && files.length > 0 && !options?.onlyUserFiles) {
+    saveCachedDriveFiles(files, normalizedUserEmail);
   }
 
   return files;

@@ -28,6 +28,8 @@ import {
   FileSpreadsheet,
   Link2,
   ScanBarcode,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { BarcodeScannerModal } from '../components/BarcodeScannerModal';
 import { SEOHead } from '../components/SEOHead';
@@ -358,6 +360,57 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const loadMoreRef = React.useRef<HTMLDivElement | null>(null);
   const tableScrollRef = React.useRef<HTMLDivElement | null>(null);
   const searchInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  // Floating right-edge scrollbar indicator (appears smoothly from the right)
+  const [showRightScrollIndicator, setShowRightScrollIndicator] = useState(false);
+  const [scrollPercentage, setScrollPercentage] = useState(0);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (viewLayout === 'table' && tableScrollRef.current) {
+        const el = tableScrollRef.current;
+        const total = el.scrollHeight - el.clientHeight;
+        if (total > 60) {
+          setShowRightScrollIndicator(el.scrollTop > 30);
+          setScrollPercentage(Math.round((el.scrollTop / total) * 100));
+          return;
+        }
+      }
+      const winScroll = window.scrollY || document.documentElement.scrollTop;
+      const winHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+      if (winHeight > 80) {
+        setShowRightScrollIndicator(winScroll > 60);
+        setScrollPercentage(Math.round((winScroll / winHeight) * 100));
+      } else {
+        setShowRightScrollIndicator(false);
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    const tableEl = tableScrollRef.current;
+    if (tableEl) {
+      tableEl.addEventListener('scroll', handleScroll, { passive: true });
+    }
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      if (tableEl) tableEl.removeEventListener('scroll', handleScroll);
+    };
+  }, [viewLayout, visibleCount]);
+
+  const handleScrollToTop = () => {
+    if (viewLayout === 'table' && tableScrollRef.current && tableScrollRef.current.scrollTop > 0) {
+      tableScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleScrollToBottom = () => {
+    if (viewLayout === 'table' && tableScrollRef.current) {
+      tableScrollRef.current.scrollTo({ top: tableScrollRef.current.scrollHeight, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+    }
+  };
 
   // Count / Plot modal remarks state
   const [countRemarks, setCountRemarks] = useState<string>('');
@@ -1662,10 +1715,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         <div>
           <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <Package className="w-4 h-4 sm:w-5 sm:h-5 text-blue-600 dark:text-blue-400" />
-            <span>{t.productInventoryCatalog}</span>
+            <span>Inventory Masterdata</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            {branch ? branch.name : 'Masterdata'} • {t.offlineSnapshotDatabase}
+            {branch ? branch.name : 'Masterdata Catalog'} • Local IATD and Masterdata offline database
           </p>
         </div>
       </div>
@@ -2292,7 +2345,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             <PanelDecoration position="top-right" tier="playful" variant={3} />
             <div
               ref={tableScrollRef}
-              className="overflow-x-auto max-h-[70vh] overflow-y-auto rounded-2xl select-text"
+              className="inventory-scroll-stable overflow-x-auto max-h-[70vh] overflow-y-auto rounded-2xl select-text"
             >
               <table className="w-full min-w-[680px] text-left text-xs border-collapse select-text">
                 <thead className="bg-slate-50 dark:bg-slate-800/90 sticky top-0 z-20 border-b border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
@@ -3788,6 +3841,46 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           }
         }}
       />
+
+      {/* Floating Right-Edge Scroll Controller (appears smoothly from the right without adjusting window layout) */}
+      {showRightScrollIndicator && (
+        <div
+          className="fixed right-2 sm:right-3.5 bottom-24 z-30 flex flex-col items-center gap-1 p-1 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-slate-200/90 dark:border-zinc-700/80 rounded-2xl shadow-xl transition-all duration-300 animate-in slide-in-from-right fade-in select-none group"
+          title={`Scroll position: ${scrollPercentage}%`}
+        >
+          <button
+            type="button"
+            onClick={handleScrollToTop}
+            className="p-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer"
+            title="Scroll to Top"
+            aria-label="Scroll to top"
+          >
+            <ChevronUp className="w-4 h-4" />
+          </button>
+
+          {/* Mini vertical progress rail */}
+          <div className="w-1.5 h-10 bg-slate-100 dark:bg-zinc-800 rounded-full relative overflow-hidden my-0.5">
+            <div
+              className="w-full bg-blue-600 dark:bg-blue-500 rounded-full transition-all duration-150 absolute top-0"
+              style={{ height: `${Math.max(12, scrollPercentage)}%` }}
+            />
+          </div>
+
+          <span className="text-[9px] font-mono font-bold text-slate-600 dark:text-slate-300 px-0.5">
+            {scrollPercentage}%
+          </span>
+
+          <button
+            type="button"
+            onClick={handleScrollToBottom}
+            className="p-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer"
+            title="Scroll to Bottom"
+            aria-label="Scroll to bottom"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

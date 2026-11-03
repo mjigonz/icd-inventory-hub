@@ -903,6 +903,10 @@
     }
   }
 
+  html {
+    scrollbar-gutter: stable;
+  }
+
   html,
   body {
     height: 100%;
@@ -912,6 +916,42 @@
     background-color: var(--theme-bg, #F8FAFC);
     color: var(--theme-text, #0F172A);
     transition: background-color var(--duration-theme) var(--ease-interactive), color var(--duration-theme) var(--ease-interactive);
+  }
+
+  /* Right-edge sleek scrollbar styling without window layout shifting */
+  ::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.4);
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    background-clip: padding-box;
+    transition: background-color 0.2s ease, transform 0.2s ease;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.75);
+    background-clip: padding-box;
+  }
+
+  .dark ::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.4);
+  }
+
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.75);
+  }
+
+  /* Table and Inventory custom scroll containers with stable gutter */
+  .inventory-scroll-stable {
+    scrollbar-gutter: stable;
   }
 
   html.dark,

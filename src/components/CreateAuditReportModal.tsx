@@ -108,6 +108,8 @@ interface CreateAuditReportModalProps {
   isOpen: boolean;
   onClose: () => void;
   accessToken: string | null;
+  userEmail?: string | null;
+  userName?: string | null;
   isGoogleConnected?: boolean;
   onConnectGoogle?: () => void;
   activeBranch: SelectedBranch | null;
@@ -122,6 +124,8 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   isOpen,
   onClose,
   accessToken,
+  userEmail,
+  userName,
   isGoogleConnected: isGoogleConnectedProp,
   onConnectGoogle,
   activeBranch,
@@ -169,7 +173,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   const [step, setStep] = useState<WizardStep>('SOURCE_IATD');
 
   // Drive files state (initialized from cache so spreadsheets appear immediately)
-  const [driveFiles, setDriveFiles] = useState<DriveSpreadsheetFile[]>(() => getCachedDriveFiles());
+  const [driveFiles, setDriveFiles] = useState<DriveSpreadsheetFile[]>(() => getCachedDriveFiles('', userEmail));
   const [isSearchingDrive, setIsSearchingDrive] = useState(false);
   const [driveSearchError, setDriveSearchError] = useState<string | null>(null);
   const [isRefreshingToken, setIsRefreshingToken] = useState(false);
@@ -185,7 +189,10 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
       setLocalToken(newToken);
       if (onTokenRefreshed) onTokenRefreshed(newToken);
       setIsSearchingDrive(true);
-      const files = await searchDriveSpreadsheets(newToken, searchQuery);
+      const files = await searchDriveSpreadsheets(newToken, searchQuery, {
+        userEmail,
+        excludeTemplates: true,
+      });
       setDriveFiles(files);
     } catch (err: any) {
       setDriveSearchError(err?.message || 'Failed to refresh Google Drive access.');
@@ -984,14 +991,17 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   const handleRefreshDrive = () => {
     setIsSearchingDrive(true);
     setDriveSearchError(null);
-    searchDriveSpreadsheets(effectiveToken || '', searchQuery)
+    searchDriveSpreadsheets(effectiveToken || '', searchQuery, {
+      userEmail,
+      excludeTemplates: true,
+    })
       .then((files) => {
         setDriveFiles(files);
         setDriveSearchError(null);
       })
       .catch((err) => {
         console.warn('Could not fetch drive spreadsheets:', err);
-        const cached = getCachedDriveFiles(searchQuery);
+        const cached = getCachedDriveFiles(searchQuery, userEmail);
         if (cached.length > 0) {
           setDriveFiles(cached);
           setDriveSearchError(null);
@@ -1006,20 +1016,23 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   useEffect(() => {
     const searchDriveOnOpen = async () => {
       if (!isOpen) return;
-      const cached = getCachedDriveFiles(searchQuery);
+      const cached = getCachedDriveFiles(searchQuery, userEmail);
       if (cached.length > 0) {
         setDriveFiles(cached);
       }
       setIsSearchingDrive(true);
       setDriveSearchError(null);
-      searchDriveSpreadsheets(effectiveToken || '', searchQuery)
+      searchDriveSpreadsheets(effectiveToken || '', searchQuery, {
+        userEmail,
+        excludeTemplates: true,
+      })
         .then((files) => {
           setDriveFiles(files);
           setDriveSearchError(null);
         })
         .catch((err) => {
           console.warn('Could not fetch drive spreadsheets:', err);
-          const fallbackCached = getCachedDriveFiles(searchQuery);
+          const fallbackCached = getCachedDriveFiles(searchQuery, userEmail);
           if (fallbackCached.length > 0) {
             setDriveFiles(fallbackCached);
             setDriveSearchError(null);
@@ -1031,7 +1044,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
     };
 
     searchDriveOnOpen();
-  }, [isOpen, searchQuery, effectiveToken]);
+  }, [isOpen, searchQuery, effectiveToken, userEmail]);
 
   // Reset state & load recents (local + cloud cross-device sync) when modal opens
   useEffect(() => {
@@ -1167,7 +1180,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
       setTimeout(() => setEmailConversionToast(null), 5000);
 
       // Refresh Drive list in background so it appears in Drive files too
-      searchDriveSpreadsheets(tokenToUse, searchQuery)
+      searchDriveSpreadsheets(tokenToUse, searchQuery, { userEmail, excludeTemplates: true })
         .then((files) => setDriveFiles(files))
         .catch(() => {});
 
@@ -1206,7 +1219,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
       setEmailConversionToast(`Converted "${file.name}" into Google Sheets compatible format!`);
       setTimeout(() => setEmailConversionToast(null), 5000);
 
-      searchDriveSpreadsheets(tokenToUse, searchQuery)
+      searchDriveSpreadsheets(tokenToUse, searchQuery, { userEmail, excludeTemplates: true })
         .then((files) => setDriveFiles(files))
         .catch(() => {});
 
@@ -1254,7 +1267,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         cleanId = converted.id;
         setEmailConversionToast(`Converted "${matchedDriveFile.name}" to Google Sheets compatible format!`);
         setTimeout(() => setEmailConversionToast(null), 5000);
-        searchDriveSpreadsheets(tokenToUse, searchQuery)
+        searchDriveSpreadsheets(tokenToUse, searchQuery, { userEmail, excludeTemplates: true })
           .then((files) => setDriveFiles(files))
           .catch(() => {});
       }
@@ -2835,7 +2848,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
                           }`}
                         >
                           <FileSpreadsheet className="w-3.5 h-3.5" />
-                          <span>Google Drive ({driveFiles.length})</span>
+                          <span>Google Drive ({userEmail || `${driveFiles.length} files`})</span>
                         </button>
 
                         <button
@@ -2926,12 +2939,24 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
                       </div>
                     )}
 
+                    {sourceViewMode === 'DRIVE' && (
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-2 px-1">
+                        <span className="flex items-center gap-1.5 font-medium truncate">
+                          <FolderOpen className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                          <span>Branch IATD source: searching files from <strong>{userEmail || 'signed-in user'}</strong></span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 dark:text-zinc-500 hidden sm:inline shrink-0">
+                          (Blank encoding forms are loaded from Admin Links in Step 2)
+                        </span>
+                      </div>
+                    )}
+
                     {sourceViewMode === 'DRIVE' ? (
                       <div className="max-h-52 overflow-y-auto divide-y divide-slate-100 dark:divide-zinc-800 border border-slate-200 dark:border-zinc-800 rounded-2xl bg-white dark:bg-zinc-900/40">
                         {isSearchingDrive ? (
                           <div className="p-6 text-center text-xs text-slate-400 flex flex-col items-center justify-center gap-2">
                             <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
-                            <span>Searching your Google Drive spreadsheets...</span>
+                            <span>Searching branch spreadsheets from {userEmail || 'your Google Drive'}...</span>
                           </div>
                         ) : driveFiles.length > 0 ? (
                           driveFiles.map((file) => {
@@ -3382,15 +3407,15 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
                 </div>
               )}
 
-              {/* Admin Encoding Template Selector (Overall Count Template & Cessation Overall Count Template in icdhubsystems@gmail.com) */}
+              {/* Form / Blank Template Source (Overall Count Template & Cessation Overall Count Template from Saved Admin Links) */}
               <div className="p-3.5 bg-indigo-50/60 dark:bg-indigo-950/25 border border-indigo-200/80 dark:border-indigo-800/60 rounded-2xl space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                   <span className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                    <span>Select Admin Encoding Template ({HUB_OWNER_EMAIL})</span>
+                    <span>Form / Blank Template Source (Admin Drive Links)</span>
                   </span>
                   <span className="text-[10px] text-emerald-700 dark:text-emerald-300 font-bold bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800/60">
-                    IATD from Your Drive/Email &rarr; Template from {HUB_OWNER_EMAIL}
+                    Source: Overall Count Template (Saved Admin Link)
                   </span>
                 </div>
 

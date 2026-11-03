@@ -113,6 +113,8 @@ interface CreateRandomCountsheetModalProps {
   isOpen: boolean;
   onClose: () => void;
   accessToken: string | null;
+  userEmail?: string | null;
+  userName?: string | null;
   isGoogleConnected?: boolean;
   onConnectGoogle?: () => void;
   onTokenRefreshed?: (token: string) => void;
@@ -158,6 +160,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   isOpen,
   onClose,
   accessToken,
+  userEmail,
   isGoogleConnected: isGoogleConnectedProp,
   onConnectGoogle,
   onTokenRefreshed: _onTokenRefreshed,
@@ -193,7 +196,10 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       setLocalToken(newToken);
       if (_onTokenRefreshed) _onTokenRefreshed(newToken);
       setIsSearchingDrive(true);
-      const files = await searchDriveSpreadsheets(newToken, driveQuery);
+      const files = await searchDriveSpreadsheets(newToken, driveQuery, {
+        userEmail,
+        excludeTemplates: true,
+      });
       setDriveFiles(files);
     } catch (err: any) {
       setDriveSearchError(err?.message || 'Failed to refresh Google Drive access.');
@@ -206,14 +212,17 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   const handleRefreshDrive = () => {
     setIsSearchingDrive(true);
     setDriveSearchError(null);
-    searchDriveSpreadsheets(effectiveToken || '', driveQuery)
+    searchDriveSpreadsheets(effectiveToken || '', driveQuery, {
+      userEmail,
+      excludeTemplates: true,
+    })
       .then((files) => {
         setDriveFiles(files);
         setDriveSearchError(null);
       })
       .catch((err) => {
         console.warn('Drive search error:', err);
-        const cached = getCachedDriveFiles(driveQuery);
+        const cached = getCachedDriveFiles(driveQuery, userEmail);
         if (cached.length > 0) {
           setDriveFiles(cached);
           setDriveSearchError(null);
@@ -228,7 +237,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   const [currentStep, setCurrentStep] = useState<'SELECT_FILE' | 'FILTER_ITEMS' | 'SUCCESS'>('SELECT_FILE');
 
   // Drive search & file selection (initialized from cache so spreadsheets appear immediately)
-  const [driveFiles, setDriveFiles] = useState<DriveSpreadsheetFile[]>(() => getCachedDriveFiles());
+  const [driveFiles, setDriveFiles] = useState<DriveSpreadsheetFile[]>(() => getCachedDriveFiles('', userEmail));
   const [isSearchingDrive, setIsSearchingDrive] = useState(false);
   const [driveSearchError, setDriveSearchError] = useState<string | null>(null);
   const [driveQuery, setDriveQuery] = useState('');
@@ -1111,20 +1120,23 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       handleRefreshTemplate(false);
 
       // Fetch drive files (immediately show cached files, then refresh from Drive)
-      const cached = getCachedDriveFiles(driveQuery);
+      const cached = getCachedDriveFiles(driveQuery, userEmail);
       if (cached.length > 0) {
         setDriveFiles(cached);
       }
       setIsSearchingDrive(true);
       setDriveSearchError(null);
-      searchDriveSpreadsheets(effectiveToken || '', driveQuery)
+      searchDriveSpreadsheets(effectiveToken || '', driveQuery, {
+        userEmail,
+        excludeTemplates: true,
+      })
         .then((files) => {
           setDriveFiles(files);
           setDriveSearchError(null);
         })
         .catch((err) => {
           console.warn('Drive search notice:', err);
-          const fallbackCached = getCachedDriveFiles(driveQuery);
+          const fallbackCached = getCachedDriveFiles(driveQuery, userEmail);
           if (fallbackCached.length > 0) {
             setDriveFiles(fallbackCached);
             setDriveSearchError(null);
@@ -1139,7 +1151,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
     return () => {
       document.body.style.overflow = '';
     };
-  }, [isOpen, effectiveToken]);
+  }, [isOpen, effectiveToken, userEmail]);
 
   // Search drive spreadsheets when query changes
   useEffect(() => {
@@ -1147,14 +1159,17 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       const timer = setTimeout(() => {
         setIsSearchingDrive(true);
         setDriveSearchError(null);
-        searchDriveSpreadsheets(effectiveToken || '', driveQuery)
+        searchDriveSpreadsheets(effectiveToken || '', driveQuery, {
+          userEmail,
+          excludeTemplates: true,
+        })
           .then((files) => {
             setDriveFiles(files);
             setDriveSearchError(null);
           })
           .catch((err) => {
             console.warn('Drive search error:', err);
-            const fallbackCached = getCachedDriveFiles(driveQuery);
+            const fallbackCached = getCachedDriveFiles(driveQuery, userEmail);
             if (fallbackCached.length > 0) {
               setDriveFiles(fallbackCached);
               setDriveSearchError(null);
@@ -1166,7 +1181,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       }, 350);
       return () => clearTimeout(timer);
     }
-  }, [driveQuery, isOpen, effectiveToken, currentStep, sourceViewMode]);
+  }, [driveQuery, isOpen, effectiveToken, currentStep, sourceViewMode, userEmail]);
 
   // Search Gmail branch spreadsheets when Email tab is active or emailQuery changes
   useEffect(() => {
@@ -2843,10 +2858,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                   }`}
                 >
                   <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                  <span>Google Drive Spreadsheets</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200/70 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300">
-                    {driveFiles.length}
-                  </span>
+                  <span>Google Drive ({userEmail || `${driveFiles.length} files`})</span>
                 </button>
                 <button
                   type="button"
@@ -2879,6 +2891,17 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                       placeholder="Search spreadsheet..."
                       className="w-full pl-10 pr-4 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
+                  </div>
+
+                  {/* Branch IATD user account notice */}
+                  <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400 px-1">
+                    <span className="flex items-center gap-1.5 font-medium truncate">
+                      <FolderOpen className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                      <span>Branch IATD source: searching files from <strong>{userEmail || 'signed-in user'}</strong></span>
+                    </span>
+                    <span className="text-[10px] text-slate-400 dark:text-zinc-500 hidden sm:inline shrink-0">
+                      (Countsheet blank form/template is loaded from Admin Link)
+                    </span>
                   </div>
 
                   {/* Drive files list */}
@@ -2923,6 +2946,9 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                                         Excel / CSV
                                       </span>
                                     )}
+                                  </div>
+                                  <div className="text-[10.5px] text-slate-500 dark:text-zinc-400 truncate">
+                                    Owner: {file.owner} {file.isUserOwned ? '(You)' : ''} &bull; ID: {file.id}
                                   </div>
                                 </div>
                               </div>
@@ -3363,7 +3389,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                   <div className="flex items-center gap-2 shrink-0 flex-wrap">
                     <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-800/60">
                       <span className="hidden xl:inline text-[10px] font-bold text-blue-700 dark:text-blue-300 px-1.5">
-                        Admin Template ({HUB_OWNER_EMAIL}):
+                        Form Source (Saved Admin Link):
                       </span>
                       {hubCountsheetTemplates.map((tmpl) => {
                         const isPeriodic = /periodic/i.test(tmpl.name);
