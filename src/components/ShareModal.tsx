@@ -57,12 +57,14 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     };
   }, [isOpen, onClose]);
 
-  // Determine dynamic application URL (defaulting to workers.dev for production share link)
-  const baseUrl = typeof window !== 'undefined'
-    ? (window.location.origin.includes('run.app') || window.location.origin.includes('localhost')
-        ? 'https://icd-inventory-hub.icdsystem.workers.dev'
-        : `${window.location.origin}${window.location.pathname}`)
-    : 'https://icd-inventory-hub.icdsystem.workers.dev';
+  // Primary Cloudflare Workers URL for sharing with coworkers
+  const CLOUDFLARE_WORKERS_URL = 'https://icd-inventory-hub.icdsystem.workers.dev';
+  const baseUrl =
+    typeof window !== 'undefined' &&
+    !window.location.origin.includes('run.app') &&
+    !window.location.origin.includes('localhost')
+      ? `${window.location.origin}${window.location.pathname}`
+      : CLOUDFLARE_WORKERS_URL;
 
   const shareUrl = useMemo(() => {
     if (includeBranch && branch?.id) {

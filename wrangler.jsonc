@@ -6,6 +6,9 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "build": {
+    "command": "npm run build"
+  },
   "dev": {
     "ip": "0.0.0.0",
     "port": 3000

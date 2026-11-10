@@ -1,36 +1,32 @@
-# Export to Encoding & Countsheet Direct Workflow
+# Cloudflare Worker Deployment Fix & Share Link Restoration Plan
 
-Directly integrate **Create Countsheet** with **Create Encoding** (Audit Report), placing an **Export to Encoding** button in the footer when editing a saved countsheet, auto-opening the encoding items editor without a countsheet picker, changing Cancel to Back when navigated from Export to Encoding, returning to editing countsheets when Back is clicked, and featuring quick fast-to-slow slide animations between the two modals.
+## Overview
+Resolving the `wrangler deploy` failure on Cloudflare while preserving full compatibility with the AI Studio preview/production runtime, and restoring the Cloudflare Workers URL (`https://icd-inventory-hub.icdsystem.workers.dev`) as the primary link in the Share and Install dialogs.
 
-## User Requirements & Status
+## Root Cause of the Cloudflare Deploy Failure
+1. **Unbundled Vite Dependency Error (`Could not resolve "@vitejs/devtools/config"`)**:
+   - `server.ts` includes a static literal `await import('vite')` in development mode. When Cloudflare Wrangler runs its esbuild bundler on `server.ts`, it attempts to bundle the entire `vite` package into the Worker script and fails on optional internal Vite dependencies.
+2. **Missing ES Module Worker Default Export (`Your worker has no default export`)**:
+   - `wrangler.jsonc` points `"main"` to `"server.ts"`, which starts an Express listener (`startServer()`) but does not export an ES Module `export default { fetch(request, env, ctx) }` handler. Wrangler therefore falls back to legacy Service Worker (`iife`) format and rejects Node built-in imports.
 
-- [x] **Export to Encoding Button**: Added in the footer of **Create Countsheet**, located in the middle between **Save Countsheet** and **Create**. Only visible when editing a countsheet from recent sessions (`isEditingRecent`).
-- [x] **Direct Encoding Flow**: Clicking **Export to Encoding** saves the session and immediately opens **Create Encoding** (`CreateAuditReportModal`) with the countsheet sequence and items preloaded directly into the editor (`renderPreGeneratedCountsheetEditor()`), without prompting to select a countsheet.
-- [x] **Change Cancel to Back**: When opened via **Export to Encoding**, the "Cancel" button in the footer of Create Encoding dynamically changes to **Back** (with `<ChevronLeft />`).
-- [x] **Return to Editing Countsheets**: Clicking **Back** closes Create Encoding and seamlessly re-opens **Create Countsheet** directly into editing that countsheet session, retaining all groups, filters, and items.
-- [x] **Fast-to-Slow Slide Animation**:
-  - **Forward (Countsheet -> Encoding)**: Editing Countsheet animates out to the left (`animate-slide-out-left`), while Export to Encoding animates in from the right (`animate-slide-in-right`) with quick-to-slow deceleration easing (`cubic-bezier(0.16, 1, 0.3, 1)`).
-  - **Reverse (Encoding -> Countsheet)**: Export to Encoding animates out to the right (`animate-slide-out-right`), while Editing Countsheet animates in from the left (`animate-slide-in-left`) with the same fast-to-slow easing.
-- [x] **Removed Import Countsheet in Create Encoding**: The "Import Countsheet Items" header button and the `showCountsheetImportPicker` modal have been completely removed.
-- [x] **Verification**: All TypeScript types, build artifacts, and lint checks passed with zero errors (`tsc --noEmit` and `vite build`).
+## Planned Changes
 
----
+### 1. Dual-Runtime Entry Point (`server.ts`)
+- **Cloudflare Worker Default Export (`export default { fetch }`)**:
+  - Add a standard Cloudflare Worker `fetch(request, env, ctx)` handler exported as `default` from `server.ts`.
+  - Automatically initialize D1 database tables (`branch_role_assignments`, `user_activity_logs`, `workspace_presence`, `audit_Finding_logs`, `audit_schedules`, `encoding_runs`) against `env.DB` on first request in the Worker runtime.
+  - Route `/api/*` requests through the Express application bridged to `env.DB` (using `cloudflare:node`'s `httpServerHandler`), and route static frontend requests (`!pathname.startsWith('/api/')`) through `env.ASSETS` with SPA fallback to `/index.html`.
+- **Vite Bundler Guard for Wrangler**:
+  - Replace the static `import('vite')` literal in `server.ts` with a dynamic module specifier so Wrangler's esbuild bundler skips bundling Vite into the production Cloudflare Worker while keeping local/AI Studio Vite middleware working.
+- **Node.js Runtime Guard**:
+  - Guard `fileURLToPath(import.meta.url)` and only invoke `startServer()` (`app.listen(3000)`) when running in the Node.js environment (AI Studio), preventing port binding during Worker initialization.
 
-## 1. Overview & Flow
+### 2. Build & Wrangler Configuration (`wrangler.jsonc` & `package.json`)
+- Ensure `wrangler.jsonc` includes a top-level `build.command` (`"npm run build"`) so Cloudflare automatically builds the `./dist` frontend assets before bundling and deploying the Worker.
 
-1. **User Flow in Create Countsheet**:
-   - The user opens a saved countsheet from Recents by clicking **Edit**.
-   - `isEditingRecent` is activated.
-   - At the bottom footer, three buttons appear:
-     1. **Save Countsheet** (green)
-     2. **Export to Encoding** (indigo) — in the middle
-     3. **Create** (blue)
-   - When **Export to Encoding** is clicked:
-     - The current countsheet snapshot and sequence are built via `buildSessionSavePayload()` and persisted.
-     - **Forward Animation Triggered**: Countsheet slides out to the left, and Create Encoding slides in from the right with fast-to-slow deceleration (`cubic-bezier(0.16, 1, 0.3, 1)`).
-     - In Create Encoding, the bottom button is changed from **Cancel** to **Back**.
+### 3. Primary Share & QR Code Link (`src/components/ShareModal.tsx` & `src/components/InstallModal.tsx`)
+- Update the share URL resolver so `https://icd-inventory-hub.icdsystem.workers.dev` is used as the primary share and QR code link for coworkers when opened from AI Studio (`run.app`) or local dev.
 
-2. **Back Navigation Flow**:
-   - Clicking **Back** in Create Encoding invokes `onBackToCountsheet()`.
-   - **Reverse Animation Triggered**: Create Encoding slides out to the right, and Countsheet slides back in from the left with the same fast-to-slow easing.
-   - The Create Countsheet modal re-opens with `initialSession` restoring the session directly into the `FILTER_ITEMS` editor with `isEditingRecent` active.
+## Verification Plan
+- Run `npx wrangler deploy --dry-run` to verify that Wrangler compiles the Worker bundle in ES Module format with zero errors.
+- Run `compile_applet` and `lint_applet` to ensure TypeScript compilation and linting pass cleanly.

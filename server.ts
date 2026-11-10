@@ -5,27 +5,150 @@
 
 import express from 'express';
 import type { Request as ExpressRequest, Response as ExpressResponse, NextFunction } from 'express';
+import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { D1BranchRoleRepository } from './src/services/d1Repository';
-import { createSqlJsD1Database } from './src/services/sqlJsD1Adapter';
 import { D1Database } from './src/db/d1Types';
 
-const __filename = fileURLToPath(import.meta.url);
+const __filename =
+  typeof import.meta?.url === 'string' && import.meta.url.startsWith('file:')
+    ? fileURLToPath(import.meta.url)
+    : '/server.ts';
 const __dirname = path.dirname(__filename);
 
-const PORT = parseInt(process.env.PORT || '3000', 10);
-const isProd = process.env.NODE_ENV === 'production';
+const PORT = parseInt((typeof process !== 'undefined' && process.env?.PORT) || '3000', 10);
+const isProd = typeof process !== 'undefined' && process.env?.NODE_ENV === 'production';
+const SERVER_BOOT_TIMESTAMP = Date.now();
 
-async function startServer() {
+async function ensureD1Schema(db: D1Database): Promise<void> {
+  const tableStatements = [
+    `CREATE TABLE IF NOT EXISTS branches (
+      spreadsheet_id TEXT PRIMARY KEY,
+      spreadsheet_name TEXT,
+      owner_email TEXT,
+      owner_name TEXT,
+      claimed_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS branch_members (
+      spreadsheet_id TEXT,
+      email TEXT,
+      role TEXT,
+      name TEXT,
+      assigned_at TEXT,
+      PRIMARY KEY (spreadsheet_id, email)
+    )`,
+    `CREATE TABLE IF NOT EXISTS recent_countsheets (
+      id TEXT PRIMARY KEY,
+      spreadsheet_id TEXT,
+      spreadsheet_name TEXT,
+      web_view_link TEXT,
+      created_at TEXT,
+      total_sheets INTEGER,
+      total_items INTEGER,
+      session_json TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS recent_audit_reports (
+      id TEXT PRIMARY KEY,
+      spreadsheet_id TEXT,
+      spreadsheet_name TEXT,
+      web_view_link TEXT,
+      created_at TEXT,
+      total_rows INTEGER,
+      report_json TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS user_workspace_state (
+      user_key TEXT PRIMARY KEY,
+      state_json TEXT,
+      updated_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS branch_countsheets_sync (
+      id TEXT PRIMARY KEY,
+      branch_id TEXT,
+      cs_number INTEGER,
+      updated_at TEXT,
+      countsheet_json TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS branch_monitoring_sync (
+      id TEXT PRIMARY KEY,
+      branch_id TEXT,
+      cs_range TEXT,
+      updated_at TEXT,
+      block_json TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS branch_inventory_snapshots (
+      branch_id TEXT PRIMARY KEY,
+      branch_json TEXT,
+      encoding_json TEXT,
+      masterdata_json TEXT,
+      updated_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS admin_auditor_directory (
+      id TEXT PRIMARY KEY,
+      email TEXT,
+      name TEXT,
+      role TEXT,
+      branch_name TEXT,
+      status TEXT,
+      created_at TEXT,
+      entry_json TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS admin_auditor_messages (
+      id TEXT PRIMARY KEY,
+      sender_name TEXT,
+      sender_email TEXT,
+      recipient_email TEXT,
+      recipient_name TEXT,
+      subject TEXT,
+      message TEXT,
+      priority TEXT,
+      branch_name TEXT,
+      cs_range TEXT,
+      status TEXT,
+      created_at TEXT,
+      msg_json TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS active_presence (
+      session_id TEXT PRIMARY KEY,
+      display_name TEXT,
+      email TEXT,
+      photo_url TEXT,
+      login_type TEXT,
+      role TEXT,
+      branch_name TEXT,
+      current_tab TEXT,
+      joined_at TEXT,
+      last_seen_at TEXT,
+      last_seen_ms INTEGER
+    )`,
+  ];
+
+  for (const sql of tableStatements) {
+    try {
+      await db.prepare(sql).run();
+    } catch (err) {
+      console.warn('D1 schema init warning:', err);
+    }
+  }
+}
+
+async function createServerInstance(externalDb?: D1Database) {
   const app = express();
 
   // Parse JSON bodies (up to 50MB for inventory snapshots)
   app.use(express.json({ limit: '50mb' }));
 
-  // Initialize SQLite-backed D1 Database adapter
-  const db: D1Database = await createSqlJsD1Database();
+  // Initialize D1 Database (Cloudflare D1 binding in Worker, or SQLite adapter in Node.js)
+  let db: D1Database;
+  if (externalDb) {
+    db = externalDb;
+    await ensureD1Schema(db);
+  } else {
+    const sqlJsModuleId = './src/services/sqlJsD1Adapter';
+    const { createSqlJsD1Database } = await import(/* @vite-ignore */ sqlJsModuleId);
+    db = await createSqlJsD1Database();
+  }
 
   // Google OAuth token verification helper
   async function verifyGoogleToken(token: string): Promise<{ email: string; name: string; sub: string } | null> {
@@ -4697,24 +4820,30 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid fileId' });
       }
       const xlsxFilePath = path.join(hubTemplatesXlsxDir, `${fileId}.xlsx`);
-      if (fs.existsSync(xlsxFilePath)) {
-        res.setHeader(
-          'Content-Type',
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        );
-        return fs.createReadStream(xlsxFilePath).pipe(res);
-      }
-
-      const hubToken = await getStoredHubOAuthToken();
-      if (hubToken && !fileId.startsWith('hub-')) {
-        const hasCached = await cacheSpreadsheetAsXlsxAndShareReader(hubToken, fileId);
-        if (hasCached && fs.existsSync(xlsxFilePath)) {
+      try {
+        if (fs.existsSync(xlsxFilePath)) {
+          const buf = await fs.promises.readFile(xlsxFilePath);
           res.setHeader(
             'Content-Type',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
           );
-          return fs.createReadStream(xlsxFilePath).pipe(res);
+          return res.send(buf);
         }
+      } catch {}
+
+      const hubToken = await getStoredHubOAuthToken();
+      if (hubToken && !fileId.startsWith('hub-')) {
+        const hasCached = await cacheSpreadsheetAsXlsxAndShareReader(hubToken, fileId);
+        try {
+          if (hasCached && fs.existsSync(xlsxFilePath)) {
+            const buf = await fs.promises.readFile(xlsxFilePath);
+            res.setHeader(
+              'Content-Type',
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            );
+            return res.send(buf);
+          }
+        } catch {}
       }
 
       return res.status(404).json({ error: 'Template xlsx not cached on server yet' });
@@ -4760,14 +4889,24 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid fileId' });
       }
       if (fileId.startsWith('icd-form-')) {
+        const builtIn = DEFAULT_BUILTIN_ICD_FORMS.find((f) => f.id === fileId);
+        if (builtIn) {
+          const buf = buildPrintableAuditPdfBuffer(builtIn.title, builtIn.subtitle, builtIn.lines);
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          return res.send(buf);
+        }
         await ensureDefaultHubPdfFormsOnDisk();
       }
       const pdfFilePath = path.join(hubPdfsDir, `${fileId}.pdf`);
-      if (fs.existsSync(pdfFilePath)) {
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Cache-Control', 'public, max-age=3600');
-        return fs.createReadStream(pdfFilePath).pipe(res);
-      }
+      try {
+        if (fs.existsSync(pdfFilePath)) {
+          const buf = await fs.promises.readFile(pdfFilePath);
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          return res.send(buf);
+        }
+      } catch {}
 
       // If not cached on disk yet, try downloading via caller bearer token or stored hub token
       const authHeader = req.headers.authorization;
@@ -4920,7 +5059,7 @@ async function startServer() {
     checkFile(path.resolve(__dirname, 'index.html'));
     checkFile(path.resolve(__dirname, 'public', 'sw.js'));
 
-    cachedCodeMtime = maxMtime || now;
+    cachedCodeMtime = maxMtime || SERVER_BOOT_TIMESTAMP;
     return cachedCodeMtime;
   }
 
@@ -5030,6 +5169,194 @@ async function startServer() {
     }
   });
 
+  const startBackgroundSync = () => {
+    setTimeout(async () => {
+      await loadHubAssetsCacheFromDisk();
+      void syncHubAssetsFromGoogleDrive();
+      await loadMasterdataCacheFromDisk();
+
+      // Proactively refresh Masterdata from Google Sheets on boot so server always has fresh data
+      void refreshMasterdataFromGoogle();
+
+      // Periodically sync Masterdata from Google Sheets every 3 minutes so additions in Google Sheets are picked up automatically
+      setInterval(() => {
+        void refreshMasterdataFromGoogle();
+      }, 3 * 60 * 1000);
+    }, 1000);
+  };
+
+  return { app, db, startBackgroundSync };
+}
+
+async function dispatchFetchToExpress(app: express.Express, request: Request): Promise<Response> {
+  const urlObj = new URL(request.url);
+  const headers: Record<string, string> = {};
+  request.headers.forEach((value, key) => {
+    headers[key.toLowerCase()] = value;
+  });
+
+  let parsedBody: any = {};
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    const contentType = (headers['content-type'] || '').toLowerCase();
+    try {
+      const rawText = await request.text();
+      if (rawText) {
+        if (contentType.includes('application/json')) {
+          parsedBody = JSON.parse(rawText);
+        } else {
+          parsedBody = rawText;
+        }
+      }
+    } catch {
+      parsedBody = {};
+    }
+  }
+
+  return new Promise<Response>((resolve, reject) => {
+    const req: any = new EventEmitter();
+    req.method = request.method;
+    req.url = urlObj.pathname + urlObj.search;
+    req.originalUrl = req.url;
+    req.headers = headers;
+    req.body = parsedBody;
+    req._body = true;
+    req.httpVersion = '1.1';
+    req.httpVersionMajor = 1;
+    req.httpVersionMinor = 1;
+    req.connection = { encrypted: urlObj.protocol === 'https:', remoteAddress: '127.0.0.1' };
+    req.socket = {
+      encrypted: urlObj.protocol === 'https:',
+      remoteAddress: '127.0.0.1',
+      destroy() {},
+    };
+
+    const res: any = new EventEmitter();
+    res.statusCode = 200;
+    res.statusMessage = 'OK';
+    res.headersSent = false;
+    res.finished = false;
+    res.writableEnded = false;
+
+    const resHeaders: Record<string, string | string[]> = {};
+    const chunks: Uint8Array[] = [];
+
+    res.setHeader = function (name: string, value: any) {
+      resHeaders[String(name).toLowerCase()] = value;
+      return res;
+    };
+    res.getHeader = function (name: string) {
+      return resHeaders[String(name).toLowerCase()];
+    };
+    res.getHeaders = function () {
+      return { ...resHeaders };
+    };
+    res.hasHeader = function (name: string) {
+      return String(name).toLowerCase() in resHeaders;
+    };
+    res.removeHeader = function (name: string) {
+      delete resHeaders[String(name).toLowerCase()];
+    };
+    res.writeHead = function (statusCode: number, statusMessageOrHeaders?: any, maybeHeaders?: any) {
+      res.statusCode = statusCode;
+      const hdrs =
+        typeof statusMessageOrHeaders === 'object' && statusMessageOrHeaders !== null
+          ? statusMessageOrHeaders
+          : maybeHeaders;
+      if (hdrs && typeof hdrs === 'object') {
+        for (const [k, v] of Object.entries(hdrs)) {
+          res.setHeader(k, v);
+        }
+      }
+      res.headersSent = true;
+      return res;
+    };
+    res.write = function (chunk: any, encoding?: any) {
+      if (chunk !== undefined && chunk !== null) {
+        if (chunk instanceof Uint8Array) {
+          chunks.push(chunk);
+        } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(chunk)) {
+          chunks.push(chunk);
+        } else {
+          chunks.push(
+            Buffer.from(String(chunk), typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8')
+          );
+        }
+      }
+      res.headersSent = true;
+      return true;
+    };
+    res.end = function (chunk?: any, encoding?: any, cb?: any) {
+      if (typeof chunk === 'function') {
+        cb = chunk;
+        chunk = undefined;
+      } else if (typeof encoding === 'function') {
+        cb = encoding;
+        encoding = undefined;
+      }
+      if (chunk !== undefined && chunk !== null) {
+        res.write(chunk, encoding);
+      }
+      res.headersSent = true;
+      res.finished = true;
+      res.writableEnded = true;
+      res.emit('finish');
+      if (typeof cb === 'function') cb();
+
+      const outHeaders = new Headers();
+      for (const [k, v] of Object.entries(resHeaders)) {
+        if (v === undefined || v === null) continue;
+        if (Array.isArray(v)) {
+          for (const item of v) outHeaders.append(k, String(item));
+        } else {
+          outHeaders.set(k, String(v));
+        }
+      }
+
+      const totalLength = chunks.reduce((acc, c) => acc + c.byteLength, 0);
+      const bodyBuffer = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const c of chunks) {
+        bodyBuffer.set(c, offset);
+        offset += c.byteLength;
+      }
+
+      const isNullBodyStatus = res.statusCode === 204 || res.statusCode === 205 || res.statusCode === 304;
+      resolve(
+        new Response(isNullBodyStatus ? null : bodyBuffer, {
+          status: res.statusCode || 200,
+          headers: outHeaders,
+        })
+      );
+      return res;
+    };
+
+    try {
+      app(req, res, (err: any) => {
+        if (err) {
+          resolve(
+            new Response(JSON.stringify({ error: err?.message || 'Internal server error' }), {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          );
+        } else if (!res.writableEnded) {
+          resolve(
+            new Response(JSON.stringify({ error: 'Not Found' }), {
+              status: 404,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          );
+        }
+      });
+    } catch (err: any) {
+      reject(err);
+    }
+  });
+}
+
+async function startServer() {
+  const { app, startBackgroundSync } = await createServerInstance();
+
   // Ensure HTML, Service Worker, Manifest, and source modules are never cached by proxy or browser disk cache
   app.use((req, res, next) => {
     if (
@@ -5045,13 +5372,29 @@ async function startServer() {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
+
+      const origSetHeader = res.setHeader.bind(res);
+      res.setHeader = function (name: string, value: any) {
+        const lower = String(name).toLowerCase();
+        if (lower === 'etag') {
+          return res;
+        }
+        if (lower === 'cache-control') {
+          return origSetHeader(
+            'Cache-Control',
+            'no-store, no-cache, must-revalidate, proxy-revalidate'
+          );
+        }
+        return origSetHeader(name, value);
+      };
     }
     next();
   });
 
-  // Static Assets / Vite integration
+  // Static Assets / Vite integration (dynamic specifier prevents Wrangler from bundling Vite)
   if (!isProd) {
-    const { createServer: createViteServer } = await import('vite');
+    const viteModuleId = 'vite';
+    const { createServer: createViteServer } = await import(/* @vite-ignore */ viteModuleId);
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
       appType: 'spa',
@@ -5084,23 +5427,66 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://0.0.0.0:${PORT} (${isProd ? 'production' : 'development'})`);
-    setTimeout(async () => {
-      await loadHubAssetsCacheFromDisk();
-      void syncHubAssetsFromGoogleDrive();
-      await loadMasterdataCacheFromDisk();
-
-      // Proactively refresh Masterdata from Google Sheets on boot so server always has fresh data
-      void refreshMasterdataFromGoogle();
-
-      // Periodically sync Masterdata from Google Sheets every 3 minutes so additions in Google Sheets are picked up automatically
-      setInterval(() => {
-        void refreshMasterdataFromGoogle();
-      }, 3 * 60 * 1000);
-    }, 1000);
+    startBackgroundSync();
   });
 }
 
-startServer().catch((err) => {
-  console.error('Fatal error starting server:', err);
-  process.exit(1);
-});
+// Cloudflare Worker state cache per isolate
+let workerAppPromise: Promise<{ app: express.Express }> | null = null;
+
+export default {
+  async fetch(request: Request, env: any, _ctx?: any): Promise<Response> {
+    const url = new URL(request.url);
+
+    // Handle API routes via Express + Cloudflare D1
+    if (url.pathname.startsWith('/api/') || url.pathname === '/api') {
+      if (!workerAppPromise) {
+        workerAppPromise = createServerInstance(env?.DB).catch((err) => {
+          workerAppPromise = null;
+          throw err;
+        });
+      }
+      const { app } = await workerAppPromise;
+      return dispatchFetchToExpress(app, request);
+    }
+
+    // Serve static frontend assets via Cloudflare Workers Assets binding with SPA fallback
+    if (env?.ASSETS && typeof env.ASSETS.fetch === 'function') {
+      let assetRes: Response = await env.ASSETS.fetch(request);
+      if (assetRes.status === 404 && request.method === 'GET' && !path.extname(url.pathname)) {
+        const indexUrl = new URL('/index.html', request.url);
+        assetRes = await env.ASSETS.fetch(new Request(indexUrl.toString(), request));
+      }
+      if (
+        url.pathname === '/' ||
+        url.pathname === '/index.html' ||
+        url.pathname === '/sw.js' ||
+        url.pathname === '/manifest.json'
+      ) {
+        const headers = new Headers(assetRes.headers);
+        headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        headers.set('Pragma', 'no-cache');
+        headers.set('Expires', '0');
+        return new Response(assetRes.body, {
+          status: assetRes.status,
+          statusText: assetRes.statusText,
+          headers,
+        });
+      }
+      return assetRes;
+    }
+
+    return new Response('Not Found', { status: 404 });
+  },
+};
+
+const isCloudflareWorkerRuntime =
+  typeof (globalThis as any).WebSocketPair !== 'undefined' ||
+  (typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers');
+
+if (!isCloudflareWorkerRuntime) {
+  startServer().catch((err) => {
+    console.error('Fatal error starting server:', err);
+    process.exit(1);
+  });
+}

@@ -163,7 +163,13 @@ export const InstallModal: React.FC<InstallModalProps> = ({
 
             {/* Direct Link button */}
             <a
-              href="https://icd-inventory-hub.icdsystem.workers.dev"
+              href={
+                typeof window !== 'undefined' &&
+                !window.location.origin.includes('run.app') &&
+                !window.location.origin.includes('localhost')
+                  ? window.location.origin
+                  : 'https://icd-inventory-hub.icdsystem.workers.dev'
+              }
               target="_blank"
               rel="noopener noreferrer"
               className="w-full py-2.5 px-4 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-semibold text-xs flex items-center justify-center gap-2 transition active:scale-98"

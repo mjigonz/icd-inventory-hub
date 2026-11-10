@@ -41,7 +41,7 @@ if ('caches' in window) {
     .keys()
     .then((keys) => {
       keys.forEach((key) => {
-        if (key !== 'countsheet-v15') {
+        if (key !== 'countsheet-v16') {
           caches.delete(key).catch(() => {});
         }
       });
@@ -49,8 +49,15 @@ if ('caches' in window) {
     .catch(() => {});
 }
 
-// Resilient PWA service worker registration
+// Resilient PWA service worker registration with automatic reload when a new SW claims control
 if ('serviceWorker' in navigator) {
+  let isSwRefreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (isSwRefreshing) return;
+    isSwRefreshing = true;
+    window.location.reload();
+  });
+
   const registerSW = async () => {
     try {
       const reg = await navigator.serviceWorker.register('/sw.js', {
@@ -60,6 +67,15 @@ if ('serviceWorker' in navigator) {
       if (reg.waiting) {
         reg.waiting.postMessage({ type: 'SKIP_WAITING' });
       }
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            newWorker.postMessage({ type: 'SKIP_WAITING' });
+          }
+        });
+      });
       reg.update().catch(() => {});
       console.log('CountSheet ServiceWorker registered with scope:', reg.scope);
     } catch (err) {
