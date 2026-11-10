@@ -246,9 +246,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [isSavingDriveLinks, setIsSavingDriveLinks] = useState<boolean>(false);
 
   // Masterdata Sheets State
-  const [masterdataSpreadsheetUrl, setMasterdataSpreadsheetUrl] = useState<string>(
-    'https://docs.google.com/spreadsheets/d/1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE/edit'
-  );
+  const [masterdataSpreadsheetUrl, setMasterdataSpreadsheetUrl] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('countsheet_admin_masterdata_url_v1');
+      if (saved && saved.trim()) return saved.trim();
+    } catch {}
+    return 'https://docs.google.com/spreadsheets/d/1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE/edit';
+  });
   const [masterdataSheets, setMasterdataSheets] = useState<MasterdataSheetInfo[]>([
     { name: 'GRO', count: 38864, isDefault: true },
     { name: 'OTHERS', count: 37316, isDefault: true },
@@ -666,14 +670,20 @@ export const AdminView: React.FC<AdminViewProps> = ({
     targetUrl?: string,
     options?: { silent?: boolean; syncConfigFromServer?: boolean; userInitiated?: boolean }
   ) => {
-    const urlToUse = (targetUrl ?? masterdataSpreadsheetUrl).trim();
+    const queryUrlParam =
+      options?.syncConfigFromServer && targetUrl === undefined
+        ? undefined
+        : (targetUrl ?? masterdataSpreadsheetUrl).trim() || undefined;
     if (!options?.silent) {
       setIsFetchingSpreadsheetTabs(true);
     }
     try {
-      const info = await fetchMasterdataSheetsInfo(urlToUse || undefined, accessToken);
+      const info = await fetchMasterdataSheetsInfo(queryUrlParam, accessToken);
       if (options?.syncConfigFromServer && info.spreadsheetUrl) {
         setMasterdataSpreadsheetUrl(info.spreadsheetUrl);
+        try {
+          localStorage.setItem('countsheet_admin_masterdata_url_v1', info.spreadsheetUrl);
+        } catch {}
       }
       if (Array.isArray(info.sheets)) {
         setMasterdataSheets(info.sheets);
@@ -696,7 +706,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       }
 
       // Also inspect directly via client Google Sheets API if OAuth accessToken is present
-      const cleanId = extractSpreadsheetId(urlToUse || info.spreadsheetUrl || info.spreadsheetId || '');
+      const cleanId = extractSpreadsheetId(queryUrlParam || info.spreadsheetUrl || info.spreadsheetId || '');
       if (accessToken && cleanId) {
         try {
           const clientMeta = await getSpreadsheetTabs(accessToken, cleanId);
@@ -838,6 +848,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setIsLoadingSheets(true);
     try {
       const cleanUrl = masterdataSpreadsheetUrl.trim();
+      if (cleanUrl) {
+        try {
+          localStorage.setItem('countsheet_admin_masterdata_url_v1', cleanUrl);
+        } catch {}
+      }
       if (inputSheetName.trim() && !isSelectedSheetAlreadyLoaded) {
         const res = await addMasterdataSheet(inputSheetName.trim(), cleanUrl, accessToken);
         setMasterdataSheets(res.sheets);
@@ -848,6 +863,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
         showToast('Saved Masterdata sheets configuration.');
       }
       void loadAvailableMasterdataTabs(cleanUrl, { silent: true });
+      NotifyWebsiteUpdateAvailable();
     } catch (err: any) {
       showToast(err.message || 'Failed to save Masterdata sheets', 'error');
     } finally {

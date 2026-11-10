@@ -391,9 +391,9 @@ export async function getBranchInventoryBySource(
   const effectiveBranchId = branchId || GUEST_LOCAL_BRANCH_ID;
 
   if (source === 'MASTERDATA') {
-    if (hasBothGroAndOthers(memoryMasterdataItems)) {
+    if (memoryMasterdataItems && memoryMasterdataItems.length > 0) {
       void syncMasterdataFromServerIfUpdated(null);
-      return memoryMasterdataItems!;
+      return memoryMasterdataItems;
     }
     try {
       const db = await openDB();
@@ -403,7 +403,7 @@ export async function getBranchInventoryBySource(
         req.onsuccess = () => resolve(req.result || null);
         req.onerror = () => resolve(null);
       });
-      if (snap && Array.isArray(snap.items) && hasBothGroAndOthers(snap.items)) {
+      if (snap && Array.isArray(snap.items) && snap.items.length > 0) {
         memoryMasterdataItems = snap.items;
         if (snap.updatedAt && !lastKnownServerMasterdataUpdatedAt) {
           lastKnownServerMasterdataUpdatedAt = snap.updatedAt;
@@ -412,7 +412,7 @@ export async function getBranchInventoryBySource(
         return snap.items;
       }
 
-      // Auto-hydrate combined GRO + OTHERS (76,179 items) from server /api/masterdata cache if missing or incomplete
+      // Auto-hydrate Masterdata from server /api/masterdata cache if missing
       if (!inFlightMasterdataFetch) {
         inFlightMasterdataFetch = (async () => {
           try {

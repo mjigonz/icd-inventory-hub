@@ -1208,15 +1208,115 @@ async function createServerInstance(externalDb?: D1Database) {
 
   // 6. Fast Global Masterdata Cache Endpoint (serves 76,100+ GRO & OTHERS rows in <100ms)
   const masterdataCachePath = path.resolve(process.cwd(), '.data', 'masterdata_rows_cache.json');
+  const GLOBAL_MASTERDATA_META_KEY = 'global_masterdata_meta_v1';
+  const GLOBAL_MASTERDATA_CHUNK_PREFIX = 'global_masterdata_chunk_';
+  const MASTERDATA_D1_CHUNK_SIZE = 3500;
   let cachedMasterdataPayload: { updatedAt: string; rows: string[][] } | null = null;
   let inFlightMasterdataRefresh: Promise<{ updatedAt: string; rows: string[][] } | null> | null = null;
+
+  async function saveMasterdataToD1(payload: { updatedAt: string; rows: string[][] }): Promise<void> {
+    try {
+      const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+      const chunkCount = Math.ceil(rows.length / MASTERDATA_D1_CHUNK_SIZE);
+      const now = payload.updatedAt || new Date().toISOString();
+
+      for (let i = 0; i < chunkCount; i++) {
+        const slice = rows.slice(i * MASTERDATA_D1_CHUNK_SIZE, (i + 1) * MASTERDATA_D1_CHUNK_SIZE);
+        await db
+          .prepare(
+            `INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at) VALUES (?1, ?2, ?3)`
+          )
+          .bind(`${GLOBAL_MASTERDATA_CHUNK_PREFIX}${i}`, JSON.stringify(slice), now)
+          .run();
+      }
+
+      await db
+        .prepare(
+          `INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at) VALUES (?1, ?2, ?3)`
+        )
+        .bind(
+          GLOBAL_MASTERDATA_META_KEY,
+          JSON.stringify({
+            updatedAt: now,
+            chunkCount,
+            totalRows: rows.length,
+          }),
+          now
+        )
+        .run();
+    } catch (e) {
+      console.warn('Could not persist masterdata chunks to D1:', e);
+    }
+  }
+
+  async function loadMasterdataFromD1(): Promise<{ updatedAt: string; rows: string[][] } | null> {
+    try {
+      const metaRow = await db
+        .prepare('SELECT state_json FROM user_workspace_state WHERE user_key = ?1')
+        .bind(GLOBAL_MASTERDATA_META_KEY)
+        .first<{ state_json: string }>();
+      if (!metaRow?.state_json) return null;
+
+      const meta = JSON.parse(metaRow.state_json);
+      const chunkCount = Number(meta?.chunkCount || 0);
+      const updatedAt = String(meta?.updatedAt || '');
+      if (chunkCount <= 0) {
+        return {
+          updatedAt: updatedAt || new Date().toISOString(),
+          rows: [
+            ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'UOM'],
+          ],
+        };
+      }
+
+      const chunkRes = await db
+        .prepare('SELECT user_key, state_json FROM user_workspace_state WHERE user_key LIKE ?1')
+        .bind(`${GLOBAL_MASTERDATA_CHUNK_PREFIX}%`)
+        .all<{ user_key: string; state_json: string }>();
+
+      const chunkMap = new Map<number, string[][]>();
+      for (const row of chunkRes.results || []) {
+        const idxStr = String(row.user_key || '').replace(GLOBAL_MASTERDATA_CHUNK_PREFIX, '');
+        const idx = parseInt(idxStr, 10);
+        if (!isNaN(idx) && row.state_json) {
+          try {
+            const parsedSlice = JSON.parse(row.state_json);
+            if (Array.isArray(parsedSlice)) {
+              chunkMap.set(idx, parsedSlice);
+            }
+          } catch {}
+        }
+      }
+
+      if (chunkMap.size < chunkCount) return null;
+
+      const combinedRows: string[][] = [];
+      for (let i = 0; i < chunkCount; i++) {
+        const slice = chunkMap.get(i);
+        if (!slice) return null;
+        for (let j = 0; j < slice.length; j++) {
+          combinedRows.push(slice[j]);
+        }
+      }
+
+      if (combinedRows.length > 0) {
+        return {
+          updatedAt: updatedAt || new Date().toISOString(),
+          rows: combinedRows,
+        };
+      }
+    } catch (e) {
+      console.warn('Could not load masterdata chunks from D1:', e);
+    }
+    return null;
+  }
 
   async function loadMasterdataCacheFromDisk(): Promise<void> {
     try {
       if (fs.existsSync(masterdataCachePath)) {
         const raw = await fs.promises.readFile(masterdataCachePath, 'utf8');
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed?.rows) && parsed.rows.length > 1) {
+        if (Array.isArray(parsed?.rows) && parsed.rows.length >= 1) {
           if (
             !cachedMasterdataPayload ||
             !Array.isArray(cachedMasterdataPayload.rows) ||
@@ -1230,6 +1330,19 @@ async function createServerInstance(externalDb?: D1Database) {
       }
     } catch (e) {
       console.warn('Could not load masterdata cache from disk:', e);
+    }
+
+    // Also check D1 (primary persistence on Cloudflare Workers)
+    const d1Payload = await loadMasterdataFromD1();
+    if (d1Payload && Array.isArray(d1Payload.rows) && d1Payload.rows.length >= 1) {
+      if (
+        !cachedMasterdataPayload ||
+        !Array.isArray(cachedMasterdataPayload.rows) ||
+        (d1Payload.updatedAt &&
+          (!cachedMasterdataPayload.updatedAt || d1Payload.updatedAt >= cachedMasterdataPayload.updatedAt))
+      ) {
+        cachedMasterdataPayload = d1Payload;
+      }
     }
   }
 
@@ -1276,32 +1389,90 @@ async function createServerInstance(externalDb?: D1Database) {
   }
 
   const masterdataConfigPath = path.resolve(process.cwd(), '.data', 'masterdata_config.json');
+  const GLOBAL_MASTERDATA_CONFIG_KEY = 'global_masterdata_config_v1';
 
   interface MasterdataConfig {
     spreadsheetId: string;
     spreadsheetUrl: string;
     additionalSheets: string[];
     removedSheets?: string[];
+    updatedAt?: string;
   }
 
-  function getMasterdataConfig(): MasterdataConfig {
-    const defaultConfig: MasterdataConfig = {
+  let cachedMasterdataConfig: MasterdataConfig | null = null;
+
+  function getDefaultMasterdataConfig(): MasterdataConfig {
+    return {
       spreadsheetId: '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE',
       spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE/edit',
       additionalSheets: [],
       removedSheets: [],
     };
+  }
+
+  async function ensureMasterdataConfigLoaded(): Promise<MasterdataConfig> {
+    const defaultConfig = getDefaultMasterdataConfig();
+    try {
+      const row = await db
+        .prepare('SELECT state_json FROM user_workspace_state WHERE user_key = ?1')
+        .bind(GLOBAL_MASTERDATA_CONFIG_KEY)
+        .first<{ state_json: string }>();
+      if (row?.state_json) {
+        const parsed = JSON.parse(row.state_json);
+        if (parsed && typeof parsed === 'object') {
+          cachedMasterdataConfig = {
+            spreadsheetId: parsed.spreadsheetId || defaultConfig.spreadsheetId,
+            spreadsheetUrl: parsed.spreadsheetUrl || defaultConfig.spreadsheetUrl,
+            additionalSheets: Array.isArray(parsed.additionalSheets) ? parsed.additionalSheets : [],
+            removedSheets: Array.isArray(parsed.removedSheets) ? parsed.removedSheets : [],
+            updatedAt: parsed.updatedAt,
+          };
+          return cachedMasterdataConfig;
+        }
+      }
+    } catch {}
+
     try {
       if (fs.existsSync(masterdataConfigPath)) {
         const raw = fs.readFileSync(masterdataConfigPath, 'utf8');
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
-          return {
+          cachedMasterdataConfig = {
             spreadsheetId: parsed.spreadsheetId || defaultConfig.spreadsheetId,
             spreadsheetUrl: parsed.spreadsheetUrl || defaultConfig.spreadsheetUrl,
             additionalSheets: Array.isArray(parsed.additionalSheets) ? parsed.additionalSheets : [],
             removedSheets: Array.isArray(parsed.removedSheets) ? parsed.removedSheets : [],
+            updatedAt: parsed.updatedAt,
           };
+          return cachedMasterdataConfig;
+        }
+      }
+    } catch {}
+
+    if (!cachedMasterdataConfig) {
+      cachedMasterdataConfig = defaultConfig;
+    }
+    return cachedMasterdataConfig;
+  }
+
+  function getMasterdataConfig(): MasterdataConfig {
+    if (cachedMasterdataConfig) {
+      return cachedMasterdataConfig;
+    }
+    const defaultConfig = getDefaultMasterdataConfig();
+    try {
+      if (fs.existsSync(masterdataConfigPath)) {
+        const raw = fs.readFileSync(masterdataConfigPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          cachedMasterdataConfig = {
+            spreadsheetId: parsed.spreadsheetId || defaultConfig.spreadsheetId,
+            spreadsheetUrl: parsed.spreadsheetUrl || defaultConfig.spreadsheetUrl,
+            additionalSheets: Array.isArray(parsed.additionalSheets) ? parsed.additionalSheets : [],
+            removedSheets: Array.isArray(parsed.removedSheets) ? parsed.removedSheets : [],
+            updatedAt: parsed.updatedAt,
+          };
+          return cachedMasterdataConfig;
         }
       }
     } catch {}
@@ -1309,12 +1480,27 @@ async function createServerInstance(externalDb?: D1Database) {
   }
 
   async function saveMasterdataConfig(cfg: MasterdataConfig): Promise<void> {
+    const now = new Date().toISOString();
+    const updatedCfg: MasterdataConfig = {
+      ...cfg,
+      updatedAt: now,
+    };
+    cachedMasterdataConfig = updatedCfg;
+    lastAdminDataModifiedAt = Date.now();
+    try {
+      await db
+        .prepare(
+          `INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at) VALUES (?1, ?2, ?3)`
+        )
+        .bind(GLOBAL_MASTERDATA_CONFIG_KEY, JSON.stringify(updatedCfg), now)
+        .run();
+    } catch (e) {
+      console.warn('Could not save masterdata config to D1:', e);
+    }
     try {
       await fs.promises.mkdir(path.dirname(masterdataConfigPath), { recursive: true });
-      await fs.promises.writeFile(masterdataConfigPath, JSON.stringify(cfg, null, 2));
-    } catch (e) {
-      console.warn('Could not save masterdata config:', e);
-    }
+      await fs.promises.writeFile(masterdataConfigPath, JSON.stringify(updatedCfg, null, 2));
+    } catch {}
   }
 
   function parseSheetDataWithHeaderRow(values: string[][], tabName: string): string[][] {
@@ -1462,46 +1648,85 @@ async function createServerInstance(externalDb?: D1Database) {
     inFlightMasterdataRefresh = (async () => {
       try {
         const effectiveToken = (await resolveMasterdataWriteToken(token)) || token;
-        const config = getMasterdataConfig();
+        const config = await ensureMasterdataConfigLoaded();
         const spreadsheetId = config.spreadsheetId;
-        const tabsToFetch = Array.from(new Set(['GRO', 'OTHERS', ...config.additionalSheets]));
-        const results = await Promise.all(
+        const removedSet = new Set((config.removedSheets || []).map((s) => s.toUpperCase()));
+
+        let tabsToFetch = Array.from(
+          new Set(['GRO', 'OTHERS', ...(config.additionalSheets || [])])
+        ).filter((t) => !removedSet.has(t.toUpperCase()));
+
+        // If Admin explicitly removed all sheets, keep the empty payload
+        if (tabsToFetch.length === 0) {
+          return cachedMasterdataPayload;
+        }
+
+        let results = await Promise.all(
           tabsToFetch.map(async (tabName) => {
             const values = await fetchSheetValuesWithFallback(spreadsheetId, tabName, effectiveToken);
             return { tabName, values };
           })
         );
 
-        const groResult = results.find((r) => r.tabName === 'GRO')?.values || [];
-        const othersResult = results.find((r) => r.tabName === 'OTHERS')?.values || [];
-
-        // Require both GRO and OTHERS to have rows so we never overwrite a complete cache with partial data
-        if (groResult.length > 1 && othersResult.length > 1) {
-          const combinedRows: string[][] = [
-            ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'UOM'],
-          ];
-
-          for (const { tabName, values } of results) {
-            const parsedRows = parseSheetDataWithHeaderRow(values, tabName);
-            for (const r of parsedRows) {
-              combinedRows.push(r);
+        // If a custom spreadsheet URL was set in Admin Console and doesn't have GRO/OTHERS tabs, auto-discover its tabs
+        const anyNonEmpty = results.some((r) => Array.isArray(r.values) && r.values.length > 1);
+        if (!anyNonEmpty && spreadsheetId !== '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE') {
+          const discovered = await discoverMasterdataSpreadsheetTabs(spreadsheetId, effectiveToken);
+          const customTabs = discovered.filter(
+            (t) =>
+              t.toUpperCase() !== 'GRO' &&
+              t.toUpperCase() !== 'OTHERS' &&
+              !removedSet.has(t.toUpperCase())
+          );
+          if (customTabs.length > 0) {
+            results = await Promise.all(
+              customTabs.map(async (tabName) => {
+                const values = await fetchSheetValuesWithFallback(spreadsheetId, tabName, effectiveToken);
+                return { tabName, values };
+              })
+            );
+            for (const ct of customTabs) {
+              const u = ct.toUpperCase();
+              if (!config.additionalSheets.includes(u)) {
+                config.additionalSheets.push(u);
+              }
             }
+            await saveMasterdataConfig(config);
           }
+        }
 
-          if (combinedRows.length > 50000) {
-            cachedMasterdataPayload = {
-              updatedAt: new Date().toISOString(),
-              rows: combinedRows,
-            };
-            try {
-              await fs.promises.mkdir(path.dirname(masterdataCachePath), { recursive: true });
-              await fs.promises.writeFile(masterdataCachePath, JSON.stringify(cachedMasterdataPayload));
-              console.log(
-                `[Masterdata] Cached ${combinedRows.length - 1} total items across ${results.length} sheets`
-              );
-            } catch {}
-            return cachedMasterdataPayload;
+        const combinedRows: string[][] = [
+          ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'UOM'],
+        ];
+
+        for (const { tabName, values } of results) {
+          const parsedRows = parseSheetDataWithHeaderRow(values, tabName);
+          for (const r of parsedRows) {
+            combinedRows.push(r);
           }
+        }
+
+        const groRequested = tabsToFetch.some((t) => t.toUpperCase() === 'GRO');
+        const othersRequested = tabsToFetch.some((t) => t.toUpperCase() === 'OTHERS');
+        const groResult = results.find((r) => r.tabName.toUpperCase() === 'GRO')?.values || [];
+        const othersResult = results.find((r) => r.tabName.toUpperCase() === 'OTHERS')?.values || [];
+
+        const isDefaultSheet = spreadsheetId === '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE';
+        const meetsCompletenessCheck =
+          isDefaultSheet && groRequested && othersRequested
+            ? groResult.length > 1 && othersResult.length > 1 && combinedRows.length > 1
+            : combinedRows.length > 1;
+
+        if (meetsCompletenessCheck) {
+          cachedMasterdataPayload = {
+            updatedAt: new Date().toISOString(),
+            rows: combinedRows,
+          };
+          await persistMasterdataCacheToDisk();
+          console.log(
+            `[Masterdata] Cached ${combinedRows.length - 1} total items across ${results.length} sheets`
+          );
+          return cachedMasterdataPayload;
         }
       } catch (e) {
         console.warn('Background masterdata refresh notice:', e);
@@ -1516,6 +1741,7 @@ async function createServerInstance(externalDb?: D1Database) {
 
   app.get('/api/masterdata', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       const authHeader = req.headers.authorization;
       const bearerToken =
         authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
@@ -1523,20 +1749,36 @@ async function createServerInstance(externalDb?: D1Database) {
       const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
       const metaOnly = req.query.meta === '1' || req.query.meta === 'true';
 
-      // Reload from disk if memory cache is not yet populated
+      const config = await ensureMasterdataConfigLoaded();
+      const removedSet = new Set((config.removedSheets || []).map((s) => s.toUpperCase()));
+      const activeTabsCount = ['GRO', 'OTHERS', ...(config.additionalSheets || [])].filter(
+        (t) => !removedSet.has(t.toUpperCase())
+      ).length;
+
+      // Reload from disk / D1 if memory cache is not yet populated
       if (
         !cachedMasterdataPayload ||
         !Array.isArray(cachedMasterdataPayload.rows) ||
-        cachedMasterdataPayload.rows.length < 50000
+        cachedMasterdataPayload.rows.length <= 1
       ) {
         await loadMasterdataCacheFromDisk();
+      }
+
+      // If still empty and sheets are configured, hydrate immediately from Google Sheets
+      if (
+        activeTabsCount > 0 &&
+        (!cachedMasterdataPayload ||
+          !Array.isArray(cachedMasterdataPayload.rows) ||
+          cachedMasterdataPayload.rows.length <= 1)
+      ) {
+        await refreshMasterdataFromGoogle(bearerToken || undefined);
       }
 
       if (metaOnly) {
         const ageMs = cachedMasterdataPayload?.updatedAt
           ? Date.now() - new Date(cachedMasterdataPayload.updatedAt).getTime()
           : Infinity;
-        if (ageMs > 3 * 60 * 1000) {
+        if (activeTabsCount > 0 && ageMs > 3 * 60 * 1000) {
           void refreshMasterdataFromGoogle(bearerToken || undefined);
         }
 
@@ -1552,28 +1794,20 @@ async function createServerInstance(externalDb?: D1Database) {
         });
       }
 
-      if (forceRefresh) {
+      if (forceRefresh && activeTabsCount > 0) {
         const fresh = await refreshMasterdataFromGoogle(bearerToken || undefined);
-        if (fresh && Array.isArray(fresh.rows) && fresh.rows.length > 1) {
+        if (fresh && Array.isArray(fresh.rows) && fresh.rows.length >= 1) {
           return res.json(fresh);
         }
       }
 
-      // If memory cache still has < 50,000 rows (missing OTHERS), await refresh right now so client always gets GRO + OTHERS
       if (
-        !cachedMasterdataPayload ||
-        !Array.isArray(cachedMasterdataPayload.rows) ||
-        cachedMasterdataPayload.rows.length < 50000
+        cachedMasterdataPayload &&
+        Array.isArray(cachedMasterdataPayload.rows) &&
+        cachedMasterdataPayload.rows.length >= 1
       ) {
-        const fresh = await refreshMasterdataFromGoogle(bearerToken || undefined);
-        if (fresh && Array.isArray(fresh.rows) && fresh.rows.length > 1) {
-          return res.json(fresh);
-        }
-      }
-
-      if (cachedMasterdataPayload && Array.isArray(cachedMasterdataPayload.rows) && cachedMasterdataPayload.rows.length > 1) {
         const ageMs = Date.now() - new Date(cachedMasterdataPayload.updatedAt || 0).getTime();
-        if (ageMs > 3 * 60 * 1000) {
+        if (activeTabsCount > 0 && ageMs > 3 * 60 * 1000) {
           void refreshMasterdataFromGoogle(bearerToken || undefined);
         }
         return res.json(cachedMasterdataPayload);
@@ -1708,12 +1942,12 @@ async function createServerInstance(externalDb?: D1Database) {
   async function persistMasterdataCacheToDisk(): Promise<void> {
     if (!cachedMasterdataPayload) return;
     cachedMasterdataPayload.updatedAt = new Date().toISOString();
+    lastAdminDataModifiedAt = Date.now();
+    await saveMasterdataToD1(cachedMasterdataPayload);
     try {
       await fs.promises.mkdir(path.dirname(masterdataCachePath), { recursive: true });
       await fs.promises.writeFile(masterdataCachePath, JSON.stringify(cachedMasterdataPayload));
-    } catch (e) {
-      console.warn('Could not persist updated masterdata cache to disk:', e);
-    }
+    } catch {}
   }
 
   // Admin Endpoint: Edit an existing Masterdata item in GRO or OTHERS (updates Google Sheet + Server Cache)
@@ -2175,6 +2409,7 @@ async function createServerInstance(externalDb?: D1Database) {
   // Admin: Get Masterdata sheets info
   app.get('/api/admin/masterdata/sheets', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
+      const config = await ensureMasterdataConfigLoaded();
       if (!cachedMasterdataPayload || !Array.isArray(cachedMasterdataPayload.rows)) {
         await loadMasterdataCacheFromDisk();
       }
@@ -2183,7 +2418,6 @@ async function createServerInstance(externalDb?: D1Database) {
         authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
       const token = await resolveMasterdataWriteToken(bearerToken);
 
-      const config = getMasterdataConfig();
       let targetSpreadsheetId = config.spreadsheetId;
       const queryUrl = typeof req.query.spreadsheetUrl === 'string' ? req.query.spreadsheetUrl.trim() : '';
       if (queryUrl) {
@@ -2231,7 +2465,7 @@ async function createServerInstance(externalDb?: D1Database) {
         return res.status(400).json({ error: 'Sheet name is required' });
       }
 
-      const config = getMasterdataConfig();
+      const config = await ensureMasterdataConfigLoaded();
       let spreadsheetId = config.spreadsheetId;
 
       if (spreadsheetUrl && typeof spreadsheetUrl === 'string') {
@@ -2332,6 +2566,7 @@ async function createServerInstance(externalDb?: D1Database) {
         return res.status(400).json({ error: 'Sheet name is required' });
       }
 
+      const config = await ensureMasterdataConfigLoaded();
       if (!cachedMasterdataPayload || !Array.isArray(cachedMasterdataPayload.rows)) {
         await loadMasterdataCacheFromDisk();
       }
@@ -2347,7 +2582,6 @@ async function createServerInstance(externalDb?: D1Database) {
         'UOM',
       ];
 
-      const config = getMasterdataConfig();
       if (!config.removedSheets) config.removedSheets = [];
 
       if (removeAll || normSheet === '__ALL__') {
@@ -2407,19 +2641,22 @@ async function createServerInstance(externalDb?: D1Database) {
         authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
       const token = await resolveMasterdataWriteToken(bearerToken);
 
+      const config = await ensureMasterdataConfigLoaded();
       const { sheetName, spreadsheetUrl } = req.body || {};
       if (spreadsheetUrl && typeof spreadsheetUrl === 'string') {
         const match = spreadsheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
         if (match && match[1]) {
-          const cfg = getMasterdataConfig();
-          cfg.spreadsheetId = match[1];
-          cfg.spreadsheetUrl = spreadsheetUrl.trim();
-          await saveMasterdataConfig(cfg);
+          const isDifferentSpreadsheet = config.spreadsheetId !== match[1];
+          config.spreadsheetId = match[1];
+          config.spreadsheetUrl = spreadsheetUrl.trim();
+          if (isDifferentSpreadsheet) {
+            config.removedSheets = [];
+          }
+          await saveMasterdataConfig(config);
         }
       }
       if (sheetName) {
         const normSheet = String(sheetName).trim().toUpperCase();
-        const config = getMasterdataConfig();
         const values = await fetchSheetValuesWithFallback(config.spreadsheetId, normSheet, token || undefined);
         if (values && values.length > 1) {
           const newRows = parseSheetDataWithHeaderRow(values, normSheet);
@@ -2455,7 +2692,7 @@ async function createServerInstance(externalDb?: D1Database) {
         success: true,
         totalItems:
           cachedMasterdataPayload && Array.isArray(cachedMasterdataPayload.rows)
-            ? cachedMasterdataPayload.rows.length - 1
+            ? Math.max(0, cachedMasterdataPayload.rows.length - 1)
             : 0,
         sheets: getMasterdataSheetsSummary(),
       });
@@ -3952,16 +4189,53 @@ async function createServerInstance(externalDb?: D1Database) {
     return result;
   }
 
+  const GLOBAL_HUB_ASSETS_CACHE_KEY = 'global_hub_assets_cache_v1';
   let hubAssetsCache: HubAssetsCachePayload = createDefaultHubAssetsCache();
 
   async function loadHubAssetsCacheFromDisk(): Promise<HubAssetsCachePayload> {
     await ensureDefaultHubPdfFormsOnDisk();
+    const defaults = createDefaultHubAssetsCache();
+
+    // 1. Check D1 first (persists across Cloudflare Workers isolates and restarts)
+    try {
+      const d1Row = await db
+        .prepare('SELECT state_json FROM user_workspace_state WHERE user_key = ?1')
+        .bind(GLOBAL_HUB_ASSETS_CACHE_KEY)
+        .first<{ state_json: string }>();
+      if (d1Row?.state_json) {
+        const parsed = JSON.parse(d1Row.state_json);
+        if (parsed && typeof parsed === 'object') {
+          hubAssetsCache = {
+            ...defaults,
+            ...parsed,
+            customLinks: {
+              ...(hubAssetsCache.customLinks || {}),
+              ...(parsed.customLinks || {}),
+            },
+            countsheetTemplates:
+              Array.isArray(parsed.countsheetTemplates) && parsed.countsheetTemplates.length > 0
+                ? mergeWithDefaultCountsheetTemplates(parsed.countsheetTemplates, defaults.countsheetTemplates)
+                : defaults.countsheetTemplates,
+            encodingTemplates:
+              Array.isArray(parsed.encodingTemplates) && parsed.encodingTemplates.length > 0
+                ? mergeWithDefaultEncodingTemplates(parsed.encodingTemplates, defaults.encodingTemplates)
+                : defaults.encodingTemplates,
+            forms:
+              Array.isArray(parsed.forms) && parsed.forms.length > 0
+                ? parsed.forms
+                : defaults.forms,
+          };
+          return hubAssetsCache;
+        }
+      }
+    } catch {}
+
+    // 2. Fallback to local disk (.data/hub_assets_cache.json)
     try {
       if (fs.existsSync(hubCacheFilePath)) {
         const raw = await fs.promises.readFile(hubCacheFilePath, 'utf8');
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
-          const defaults = createDefaultHubAssetsCache();
           hubAssetsCache = {
             ...defaults,
             ...parsed,
@@ -3988,12 +4262,22 @@ async function createServerInstance(externalDb?: D1Database) {
 
   async function saveHubAssetsCacheToDisk(payload: HubAssetsCachePayload): Promise<void> {
     hubAssetsCache = payload;
+    lastAdminDataModifiedAt = Date.now();
+    try {
+      const now = payload.updatedAt || new Date().toISOString();
+      await db
+        .prepare(
+          `INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at) VALUES (?1, ?2, ?3)`
+        )
+        .bind(GLOBAL_HUB_ASSETS_CACHE_KEY, JSON.stringify(payload), now)
+        .run();
+    } catch (e) {
+      console.warn('Could not save hub_assets_cache to D1:', e);
+    }
     try {
       await fs.promises.mkdir(path.dirname(hubCacheFilePath), { recursive: true });
       await fs.promises.writeFile(hubCacheFilePath, JSON.stringify(payload, null, 2), 'utf8');
-    } catch (e) {
-      console.warn('Could not save hub_assets_cache.json to disk:', e);
-    }
+    } catch {}
   }
 
   async function getStoredHubOAuthToken(): Promise<string | null> {

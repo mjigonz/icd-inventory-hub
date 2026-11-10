@@ -1152,7 +1152,7 @@ function parseMasterdataRows(rows: string[][], defaultSheetName?: string): Inven
     const subCategory = getCol(row, ['subcategory', 'sub category', 'subcat'], 3);
     const subsubCategory = getCol(row, ['subsubcategory', 'sub subcategory', 'sub sub category', 'subsubcat'], 4);
     const barcode = getCol(row, ['barcode', 'ean', 'upc', 'bar code'], 5);
-    const unit = getCol(row, ['unit', 'uom', 'pcbox'], -1) || 'PCS';
+    const unit = getCol(row, ['unit', 'uom', 'pcbox'], 7) || 'PCS';
     const cost = getNum(row, ['cost', 'unitcost', 'costprice'], -1);
     const selling = getNum(row, ['selling', 'sellingprice', 'srp', 'retail'], -1);
     const balance = getNum(row, ['balance', 'onhand', 'qty', 'quantity'], -1);
@@ -1163,9 +1163,8 @@ function parseMasterdataRows(rows: string[][], defaultSheetName?: string): Inven
     }
 
     const rawCol6 = row[6] ? String(row[6]).trim() : '';
-    const isExplicitSheet = rawCol6.toUpperCase() === 'GRO' || rawCol6.toUpperCase() === 'OTHERS';
     const sheetTag =
-      (isExplicitSheet ? rawCol6.toUpperCase() : defaultSheetName) ||
+      (rawCol6 ? rawCol6.toUpperCase() : defaultSheetName) ||
       (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
 
     items.push({
@@ -1219,9 +1218,7 @@ export async function fetchMasterdataSheet(
       const cacheData: any = await cacheRes.json();
       if (Array.isArray(cacheData?.rows) && cacheData.rows.length > 1) {
         const parsed = parseMasterdataRows(cacheData.rows);
-        const hasGro = parsed.some((it) => it.masterdataSheet === 'GRO');
-        const hasOthers = parsed.some((it) => it.masterdataSheet === 'OTHERS');
-        if (parsed.length > 0 && hasGro && hasOthers) {
+        if (parsed.length > 0) {
           return parsed;
         }
       }

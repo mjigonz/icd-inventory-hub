@@ -1262,10 +1262,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     try {
       let masterItems = await fetchMasterdataSheet(accessToken || '', branchIdForFetch, {
         forceRefresh: isManualResync,
-        strict: useStrictOAuth,
+        strict: false,
       });
 
-      // If strict resync returned 0 items and Google is connected, refresh Google token and retry once
+      // If 0 items returned and Google is connected, refresh Google token and retry once
       if (masterItems.length === 0 && useStrictOAuth) {
         const freshToken = await refreshGoogleAccessToken(userEmail || undefined);
         if (freshToken) {
@@ -1284,16 +1284,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         }
         setLocalMasterdataCount(masterItems.length);
         setHydrationTick((t) => t + 1);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('masterdata-updated', {
+              detail: { count: masterItems.length, updatedAt: new Date().toISOString() },
+            })
+          );
+        }
         if (!options?.silent) {
-          let groCount = 0;
-          let othersCount = 0;
+          const sheetSummaryMap = new Map<string, number>();
           for (let i = 0; i < masterItems.length; i++) {
             const s = getItemMasterdataSheet(masterItems[i]);
-            if (s === 'OTHERS') othersCount++;
-            else groCount++;
+            sheetSummaryMap.set(s, (sheetSummaryMap.get(s) || 0) + 1);
           }
+          const summaryStr = Array.from(sheetSummaryMap.entries())
+            .map(([name, cnt]) => `${name}: ${cnt.toLocaleString()}`)
+            .join(' • ');
           setSuccessToast(
-            `Resynced ${masterItems.length.toLocaleString()} Masterdata items from Google Sheet (GRO: ${groCount.toLocaleString()} • OTHERS: ${othersCount.toLocaleString()}).`
+            `Resynced ${masterItems.length.toLocaleString()} Masterdata items (${summaryStr}).`
           );
           setTimeout(() => setSuccessToast(null), 4000);
         }
@@ -1318,15 +1326,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               }
               setLocalMasterdataCount(retryItems.length);
               setHydrationTick((t) => t + 1);
-              let groCount = 0;
-              let othersCount = 0;
+              const sheetSummaryMap = new Map<string, number>();
               for (let i = 0; i < retryItems.length; i++) {
                 const s = getItemMasterdataSheet(retryItems[i]);
-                if (s === 'OTHERS') othersCount++;
-                else groCount++;
+                sheetSummaryMap.set(s, (sheetSummaryMap.get(s) || 0) + 1);
               }
+              const summaryStr = Array.from(sheetSummaryMap.entries())
+                .map(([name, cnt]) => `${name}: ${cnt.toLocaleString()}`)
+                .join(' • ');
               setSuccessToast(
-                `Resynced ${retryItems.length.toLocaleString()} Masterdata items (GRO: ${groCount.toLocaleString()} • OTHERS: ${othersCount.toLocaleString()}) from Google Sheets.`
+                `Resynced ${retryItems.length.toLocaleString()} Masterdata items (${summaryStr}) from Google Sheets.`
               );
               setTimeout(() => setSuccessToast(null), 4000);
               return;
@@ -1357,16 +1366,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       countBranchInventoryBySource('global_masterdata', 'MASTERDATA').then((currentMastCount) => {
         if (currentMastCount > 0) {
           setLocalMasterdataCount(currentMastCount);
-          if (currentMastCount < 70000) {
-            handleResyncMasterdata({ silent: true });
-          } else {
-            void syncMasterdataFromServerIfUpdated(null).then((res) => {
-              if (res.updated && res.count > 0) {
-                setLocalMasterdataCount(res.count);
-                setHydrationTick((t) => t + 1);
-              }
-            });
-          }
+          void syncMasterdataFromServerIfUpdated(null).then((res) => {
+            if (res.updated && res.count > 0) {
+              setLocalMasterdataCount(res.count);
+              setHydrationTick((t) => t + 1);
+            }
+          });
         } else {
           handleResyncMasterdata({ silent: true });
         }
@@ -1383,18 +1388,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       setLocalEncodingCount(currentEncCount);
       if (currentMastCount > 0) {
         setLocalMasterdataCount(currentMastCount);
-        if (currentMastCount < 70000) {
-          // Upgrade Masterdata cache to include both GRO and OTHERS sheets
-          handleResyncMasterdata({ silent: true });
-        } else {
-          const syncRes = await syncMasterdataFromServerIfUpdated(branch);
-          if (syncRes.updated && syncRes.count > 0) {
-            setLocalMasterdataCount(syncRes.count);
-            if (syncRes.updatedBranch) {
-              onUpdateBranch?.(syncRes.updatedBranch);
-            }
-            setHydrationTick((t) => t + 1);
+        const syncRes = await syncMasterdataFromServerIfUpdated(branch);
+        if (syncRes.updated && syncRes.count > 0) {
+          setLocalMasterdataCount(syncRes.count);
+          if (syncRes.updatedBranch) {
+            onUpdateBranch?.(syncRes.updatedBranch);
           }
+          setHydrationTick((t) => t + 1);
         }
       } else {
         // Automatically resync Masterdata when opening Inventory if Masterdata is empty
