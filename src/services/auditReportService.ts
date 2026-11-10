@@ -960,13 +960,13 @@ const DEFAULT_HUB_ENCODING_TEMPLATES: HubEncodingTemplateInfo[] = [
 
 export const DEFAULT_HUB_COUNTSHEET_TEMPLATES: HubCountsheetTemplateInfo[] = [
   {
-    id: '19eb2315c82841b7f2920f8e1a272f52095f1e72c',
+    id: '1vaA4Tv8Be_R7LLsYMGiUrHQg1M3qtftejYCGIudSA5w',
     name: 'RANDOM INVENTORY COUNTSHEET TEMPLATE',
     gid: '1328306184',
     folderPath: 'TEMPLATE/COUNTSHEET',
     ownerEmail: HUB_OWNER_EMAIL,
     webViewLink:
-      'https://docs.google.com/spreadsheets/d/19eb2315c82841b7f2920f8e1a272f52095f1e72c/edit?gid=1328306184#gid=1328306184',
+      'https://docs.google.com/spreadsheets/d/1vaA4Tv8Be_R7LLsYMGiUrHQg1M3qtftejYCGIudSA5w/edit?gid=1328306184#gid=1328306184',
   },
   {
     id: 'hub-countsheet-periodic-template',
@@ -1694,28 +1694,55 @@ export async function inspectSheetHeaders(
     };
   }
 
-  let headerRowIndex = forceHeaderRow ? forceHeaderRow - 1 : 0;
+  let headerRowIndex = forceHeaderRow ? Math.max(0, forceHeaderRow - 1) : 0;
 
-  // Auto-detect header row if not forced
-  if (!forceHeaderRow) {
-    // Check if row 0 has meaningful column names
-    const row0 = rows[0] || [];
-    const row1 = rows[1] || [];
+  const scoreHeaderRow = (row: any[] | undefined): number => {
+    if (!Array.isArray(row) || row.length < 2) return 0;
+    const nonEmptyCount = row.filter((c) => c !== null && c !== undefined && String(c).trim().length > 0).length;
+    if (nonEmptyCount < 2) return 0;
+    const strRow = row.map((c) => String(c || '').trim());
+    const detected = detectIatdColumnIndices(strRow);
+    const matchedCols = [
+      detected.codeIdx,
+      detected.barcodeIdx,
+      detected.descIdx,
+      detected.catIdx,
+      detected.subCatIdx,
+      detected.subSubCatIdx,
+      detected.costIdx,
+      detected.sellingIdx,
+      detected.unitIdx,
+      detected.balanceIdx,
+      detected.amountIdx,
+    ].filter((idx) => idx >= 0).length;
+    if (matchedCols >= 2) return matchedCols * 10 + nonEmptyCount;
+    const hasKeywords = row.some((c) =>
+      /code|desc|bar|item|cost|sell|price|qty|balance|amount|unit|cat/i.test(String(c || ''))
+    );
+    return hasKeywords ? matchedCols * 10 + 1 : 0;
+  };
 
-    const isRow0Header =
-      row0.length >= 2 &&
-      row0.filter((c) => typeof c === 'string' && c.trim().length > 0).length >= 2;
-
-    const isRow1Header =
-      row1.length >= 2 &&
-      row1.some((c) =>
-        /code|desc|bar|item|cost|price|qty|balance|unit|cat/i.test(String(c))
-      );
-
-    if (!isRow0Header && isRow1Header) {
-      headerRowIndex = 1;
-    } else {
-      headerRowIndex = 0;
+  // Auto-detect header row if not forced OR if the forced row doesn't look like the main IATD header row
+  const currentScore = scoreHeaderRow(rows[headerRowIndex]);
+  if (!forceHeaderRow || currentScore < 20) {
+    const maxScan = Math.min(rows.length, 10);
+    let bestIdx = -1;
+    let bestScore = currentScore;
+    for (let r = 0; r < maxScan; r++) {
+      const s = scoreHeaderRow(rows[r]);
+      if (s > bestScore) {
+        bestScore = s;
+        bestIdx = r;
+      }
+    }
+    if (bestIdx !== -1 && bestScore > 0) {
+      headerRowIndex = bestIdx;
+    } else if (!forceHeaderRow && currentScore === 0) {
+      const row0 = rows[0] || [];
+      const isRow0Header =
+        row0.length >= 2 &&
+        row0.filter((c) => typeof c === 'string' && c.trim().length > 0).length >= 2;
+      headerRowIndex = isRow0Header ? 0 : Math.min(1, rows.length - 1);
     }
   }
 
@@ -1832,7 +1859,47 @@ export async function fetchAllSheetRows(
         const data: any = await res.json();
         const allRows: any[][] = data.values || [];
 
-        const zeroIndexedHeader = Math.max(0, headerRowIndex - 1);
+        let zeroIndexedHeader = Math.max(0, headerRowIndex - 1);
+        const scoreRow = (row: any[] | undefined): number => {
+          if (!Array.isArray(row) || row.length < 2) return 0;
+          const nonEmptyCount = row.filter((c) => c !== null && c !== undefined && String(c).trim().length > 0).length;
+          if (nonEmptyCount < 2) return 0;
+          const strRow = row.map((c) => String(c || '').trim());
+          const detected = detectIatdColumnIndices(strRow);
+          const matchedCols = [
+            detected.codeIdx,
+            detected.barcodeIdx,
+            detected.descIdx,
+            detected.catIdx,
+            detected.subCatIdx,
+            detected.subSubCatIdx,
+            detected.costIdx,
+            detected.sellingIdx,
+            detected.unitIdx,
+            detected.balanceIdx,
+            detected.amountIdx,
+          ].filter((idx) => idx >= 0).length;
+          if (matchedCols >= 2) return matchedCols * 10 + nonEmptyCount;
+          const hasKeywords = row.some((c) =>
+            /code|desc|bar|item|cost|sell|price|qty|balance|amount|unit|cat/i.test(String(c || ''))
+          );
+          return hasKeywords ? matchedCols * 10 + 1 : 0;
+        };
+        const initialScore = scoreRow(allRows[zeroIndexedHeader]);
+        if (initialScore < 20) {
+          const maxScan = Math.min(allRows.length, 10);
+          let bestIdx = zeroIndexedHeader;
+          let bestScore = initialScore;
+          for (let r = 0; r < maxScan; r++) {
+            const s = scoreRow(allRows[r]);
+            if (s > bestScore) {
+              bestScore = s;
+              bestIdx = r;
+            }
+          }
+          zeroIndexedHeader = bestIdx;
+        }
+
         const headers = (allRows[zeroIndexedHeader] || []).map((h) => String(h || '').trim());
         const rawDataRows = allRows.slice(zeroIndexedHeader + 1);
         const { rows: dataRows } = trimIatdRowsAfterVersionFooter(rawDataRows);
@@ -2082,6 +2149,8 @@ export interface UserDriveFolderInfo {
  * Guarantees that generated Countsheets ("Generated Countsheet") and Encodings ("Generated Encoding")
  * are stored in the user's Google Drive folder.
  */
+const userDriveFolderCache = new Map<string, UserDriveFolderInfo>();
+
 export async function ensureUserDriveFolder(
   rawAccessToken: string,
   folderName: string
@@ -2093,6 +2162,12 @@ export async function ensureUserDriveFolder(
   }
 
   const cleanName = folderName.trim();
+  const cacheKey = `${resolvedToken.slice(-16)}:${cleanName.toLowerCase()}`;
+  const cachedFolder = userDriveFolderCache.get(cacheKey);
+  if (cachedFolder) {
+    return cachedFolder;
+  }
+
   const escapedName = cleanName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
   // 1. Check if folder already exists in the user's Google Drive
@@ -2110,12 +2185,14 @@ export async function ensureUserDriveFolder(
       const searchData: any = await searchRes.json();
       const existing = searchData.files?.[0];
       if (existing?.id) {
-        return {
+        const info: UserDriveFolderInfo = {
           folderId: existing.id,
           folderName: existing.name || cleanName,
           webViewLink:
             existing.webViewLink || `https://drive.google.com/drive/folders/${existing.id}`,
         };
+        userDriveFolderCache.set(cacheKey, info);
+        return info;
       }
     }
   } catch (searchErr) {
@@ -2142,12 +2219,14 @@ export async function ensureUserDriveFolder(
     if (createRes.ok) {
       const created: any = await createRes.json();
       if (created?.id) {
-        return {
+        const info: UserDriveFolderInfo = {
           folderId: created.id,
           folderName: created.name || cleanName,
           webViewLink:
             created.webViewLink || `https://drive.google.com/drive/folders/${created.id}`,
         };
+        userDriveFolderCache.set(cacheKey, info);
+        return info;
       }
     }
   } catch (createErr) {
@@ -2627,9 +2706,14 @@ export async function executeAuditReportMapping(
   iatdRows: any[][],
   mapping: Record<string, string | null>,
   clearOldData: boolean = true,
-  autoAdjustDimensions: boolean = true
+  autoAdjustDimensions: boolean = true,
+  options?: {
+    skipFormulaReplication?: boolean;
+    skipFolderMove?: boolean;
+  }
 ): Promise<{
   totalRowsWritten: number;
+  footerRowCount: number;
   spreadsheetId: string;
   webViewLink: string;
   mappedColumnsCount: number;
@@ -2789,28 +2873,31 @@ export async function executeAuditReportMapping(
   }
 
   // 1. Fetch template formulas from Row `startRow` (Row 3) for unmapped formula columns
+  //    (Skipped when setupCountsheetHeadersInTemplate runs right after, as it handles all post-CS formulas in one pass)
   let templateFormulasByCol: Map<number, string> = new Map();
-  try {
-    const formulaFetchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cleanTargetId}/values/${encodeURIComponent(
-      `${safeTabName}!A${startRow}:ZZ${startRow}`
-    )}?valueRenderOption=FORMULA`;
-    const formRes = await fetch(formulaFetchUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (formRes.ok) {
-      const formJson: any = await formRes.json();
-      const firstRowFormulas: any[] = formJson.values?.[0] || [];
-      firstRowFormulas.forEach((cellVal, colIdx) => {
-        const valStr = String(cellVal || '').trim();
-        // If it is a formula and not mapped from IATD
-        const isMapped = activeColumns.some((c) => c.encIndex === colIdx);
-        if (valStr.startsWith('=') && !isMapped) {
-          templateFormulasByCol.set(colIdx, valStr);
-        }
+  if (!options?.skipFormulaReplication) {
+    try {
+      const formulaFetchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cleanTargetId}/values/${encodeURIComponent(
+        `${safeTabName}!A${startRow}:ZZ${startRow}`
+      )}?valueRenderOption=FORMULA`;
+      const formRes = await fetch(formulaFetchUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
+      if (formRes.ok) {
+        const formJson: any = await formRes.json();
+        const firstRowFormulas: any[] = formJson.values?.[0] || [];
+        firstRowFormulas.forEach((cellVal, colIdx) => {
+          const valStr = String(cellVal || '').trim();
+          // If it is a formula and not mapped from IATD
+          const isMapped = activeColumns.some((c) => c.encIndex === colIdx);
+          if (valStr.startsWith('=') && !isMapped) {
+            templateFormulasByCol.set(colIdx, valStr);
+          }
+        });
+      }
+    } catch (formulaInspectErr) {
+      console.warn('Could not inspect template row formulas:', formulaInspectErr);
     }
-  } catch (formulaInspectErr) {
-    console.warn('Could not inspect template row formulas:', formulaInspectErr);
   }
 
   // 2. Clear old data in mapped columns
@@ -2901,14 +2988,18 @@ export async function executeAuditReportMapping(
   }
 
   const webViewLink = `https://docs.google.com/spreadsheets/d/${cleanTargetId}/edit`;
-  // Ensure the generated encoding spreadsheet is stored inside the user's "Generated Encoding" folder in Google Drive
-  const encodingFolder = await ensureUserDriveFolder(accessToken, GENERATED_ENCODING_FOLDER_NAME);
-  if (encodingFolder?.folderId) {
-    await moveFileToDriveFolder(accessToken, cleanTargetId, encodingFolder.folderId);
+  let encodingFolder: UserDriveFolderInfo | null = null;
+  if (!options?.skipFolderMove) {
+    // Ensure the generated encoding spreadsheet is stored inside the user's "Generated Encoding" folder in Google Drive
+    encodingFolder = await ensureUserDriveFolder(accessToken, GENERATED_ENCODING_FOLDER_NAME);
+    if (encodingFolder?.folderId) {
+      await moveFileToDriveFolder(accessToken, cleanTargetId, encodingFolder.folderId);
+    }
   }
 
   return {
     totalRowsWritten: totalRowCount,
+    footerRowCount,
     spreadsheetId: cleanTargetId,
     webViewLink,
     mappedColumnsCount: activeColumns.length,
@@ -2962,7 +3053,8 @@ export async function setupCountsheetHeadersInTemplate(
   headerRow: number = 2,
   numCountsheets: number = 70,
   totalDataRows: number = 500,
-  autoAdjustColumns: boolean = true
+  autoAdjustColumns: boolean = true,
+  knownFooterRowCount?: number
 ): Promise<{
   startColLetter: string;
   endColLetter: string;
@@ -2974,19 +3066,32 @@ export async function setupCountsheetHeadersInTemplate(
   const cleanId = extractSpreadsheetId(spreadsheetId);
   const safeTabName = `'${sheetTitle.replace(/'/g, "''")}'`;
 
-  // 1. Fetch sheet metadata (sheetId, rowCount, columnCount)
+  // 1 & 2. Fetch sheet metadata AND rows 1..(headerRow + 1) concurrently in a single parallel roundtrip
   let sheetId = 0;
   let gridRowCount = 1000;
   let gridColCount = 50;
+  let allSheetsMeta: any[] = [];
 
-  try {
-    const metaRes = await fetch(
+  const dataStartRow = headerRow + 1;
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${encodeURIComponent(
+    `${safeTabName}!A1:ZZ${dataStartRow}`
+  )}?majorDimension=ROWS&valueRenderOption=FORMULA`;
+
+  const [metaRes, res] = await Promise.all([
+    fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}?fields=sheets.properties(sheetId,title,gridProperties)`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (metaRes.ok) {
+    ).catch(() => null),
+    fetch(getUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }),
+  ]);
+
+  if (metaRes && metaRes.ok) {
+    try {
       const metaData: any = await metaRes.json();
-      const currentSheet = (metaData.sheets || []).find(
+      allSheetsMeta = metaData.sheets || [];
+      const currentSheet = allSheetsMeta.find(
         (s: any) => s.properties?.title === sheetTitle
       );
       if (currentSheet?.properties) {
@@ -2994,26 +3099,23 @@ export async function setupCountsheetHeadersInTemplate(
         gridRowCount = currentSheet.properties.gridProperties?.rowCount || 1000;
         gridColCount = currentSheet.properties.gridProperties?.columnCount || 50;
       }
-    }
-  } catch (err) {
-    console.warn('Could not fetch sheet properties:', err);
+    } catch {}
   }
-
-  // 2. Fetch rows 1..(headerRow + 1) with FORMULA render option so we can inspect
-  //    headerRow, any merged top headers in Row 1, and Row 3 formulas (e.g. =SUM for Total Actual)
-  const dataStartRow = headerRow + 1;
-  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${encodeURIComponent(
-    `${safeTabName}!A1:ZZ${dataStartRow}`
-  )}?majorDimension=ROWS&valueRenderOption=FORMULA`;
-
-  const res = await fetch(getUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
 
   if (!res.ok) {
     const err = await res.text();
     throw parseGoogleApiError(res.status, err, 'Sheets');
   }
+
+  // Start MONITORING tab configuration in parallel using the already-fetched sheets metadata
+  const monitoringPromise = setupMonitoringTabInTemplate(
+    accessToken,
+    cleanId,
+    numCountsheets,
+    allSheetsMeta
+  ).catch((monErr) => {
+    console.warn('Could not configure MONITORING tab countsheet ranges:', monErr);
+  });
 
   const data: any = await res.json();
   const fetchedRows: any[][] = data.values || [];
@@ -3082,101 +3184,71 @@ export async function setupCountsheetHeadersInTemplate(
       ? existingCsCount + 1
       : 0;
 
-  // 4. Adjust Columns so that [CS01..CS{N}] + [1 space column] sit strictly before [Total Actual]
-  if (autoAdjustColumns || templateTotalActualIdx !== -1 || existingCsCount > 0) {
-    const colDiff = desiredColsBeforeTotalActual - existingColsBeforeTotalActual;
+  const colDiff =
+    autoAdjustColumns || templateTotalActualIdx !== -1 || existingCsCount > 0
+      ? desiredColsBeforeTotalActual - existingColsBeforeTotalActual
+      : 0;
 
-    if (colDiff > 0) {
-      // ADD / INSERT columns before Total Actual
-      const colsToInsert = colDiff;
-      const insertStartIndex = cs01Idx + existingCsCount;
+  const rowsToPopulate = Math.max(1, totalDataRows);
+  const exactEndRow = dataStartRow + rowsToPopulate - 1;
 
-      try {
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cleanId}:batchUpdate`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
+  // 4. Adjust Columns & Row Count in a single combined batchUpdate call
+  const dimensionRequests: any[] = [];
+  if (colDiff > 0) {
+    const insertStartIndex = cs01Idx + existingCsCount;
+    dimensionRequests.push({
+      insertDimension: {
+        range: {
+          sheetId,
+          dimension: 'COLUMNS',
+          startIndex: insertStartIndex,
+          endIndex: insertStartIndex + colDiff,
+        },
+        inheritFromBefore: existingCsCount > 0,
+      },
+    });
+  } else if (colDiff < 0) {
+    const colsToDelete = Math.abs(colDiff);
+    const deleteStartIndex = cs01Idx + numCountsheets;
+    dimensionRequests.push({
+      deleteDimension: {
+        range: {
+          sheetId,
+          dimension: 'COLUMNS',
+          startIndex: deleteStartIndex,
+          endIndex: deleteStartIndex + colsToDelete,
+        },
+      },
+    });
+  }
+
+  if (exactEndRow !== gridRowCount && sheetId !== undefined) {
+    dimensionRequests.push({
+      updateSheetProperties: {
+        properties: {
+          sheetId,
+          gridProperties: {
+            rowCount: exactEndRow,
           },
-          body: JSON.stringify({
-            requests: [
-              {
-                insertDimension: {
-                  range: {
-                    sheetId,
-                    dimension: 'COLUMNS',
-                    startIndex: insertStartIndex,
-                    endIndex: insertStartIndex + colsToInsert,
-                  },
-                  inheritFromBefore: existingCsCount > 0,
-                },
-              },
-            ],
-          }),
-        });
-      } catch (insertErr) {
-        console.warn('Could not insertDimension, fallback to expanding column count:', insertErr);
-        const requiredTotalCols = insertStartIndex + colsToInsert + 10;
-        if (requiredTotalCols > gridColCount) {
-          try {
-            await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cleanId}:batchUpdate`, {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                requests: [
-                  {
-                    updateSheetProperties: {
-                      properties: {
-                        sheetId,
-                        gridProperties: {
-                          columnCount: requiredTotalCols,
-                        },
-                      },
-                      fields: 'gridProperties.columnCount',
-                    },
-                  },
-                ],
-              }),
-            });
-          } catch (e) {
-            console.warn('Could not expand grid column count:', e);
-          }
-        }
-      }
-    } else if (colDiff < 0) {
-      // DELETE excess columns before Total Actual, leaving numCountsheets CS columns + 1 space column
-      const colsToDelete = Math.abs(colDiff);
-      const deleteStartIndex = cs01Idx + numCountsheets;
-      const deleteEndIndex = deleteStartIndex + colsToDelete;
+        },
+        fields: 'gridProperties.rowCount',
+      },
+    });
+  }
 
-      try {
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cleanId}:batchUpdate`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            requests: [
-              {
-                deleteDimension: {
-                  range: {
-                    sheetId,
-                    dimension: 'COLUMNS',
-                    startIndex: deleteStartIndex,
-                    endIndex: deleteEndIndex,
-                  },
-                },
-              },
-            ],
-          }),
-        });
-      } catch (deleteErr) {
-        console.warn('Could not deleteDimension for excess CS columns:', deleteErr);
-      }
+  if (dimensionRequests.length > 0) {
+    try {
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cleanId}:batchUpdate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ requests: dimensionRequests }),
+      });
+      gridRowCount = exactEndRow;
+    } catch (dimErr) {
+      console.warn('Could not apply combined column/row dimension update:', dimErr);
     }
   }
 
@@ -3196,63 +3268,9 @@ export async function setupCountsheetHeadersInTemplate(
   const spacerLetter = numberToColumnLetter(spacerColIdx);
   const totalActualLetter = numberToColumnLetter(totalActualColIdx);
 
-  // Clear the spacer column completely so it acts as a clean space column before Total Actual
-  try {
-    await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values:batchClear`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ranges: [`${safeTabName}!${spacerLetter}${headerRow}:${spacerLetter}`],
-        }),
-      }
-    );
-  } catch (clearSpacerErr) {
-    console.warn('Could not clear spacer column:', clearSpacerErr);
-  }
-
-  // 6. Ensure exact row count matching the last row (e.g. v.1.26.26) with zero extra rows after it
-  const rowsToPopulate = Math.max(1, totalDataRows);
-  const exactEndRow = dataStartRow + rowsToPopulate - 1;
-
-  if (exactEndRow !== gridRowCount && sheetId !== undefined) {
-    try {
-      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cleanId}:batchUpdate`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          requests: [
-            {
-              updateSheetProperties: {
-                properties: {
-                  sheetId,
-                  gridProperties: {
-                    rowCount: exactEndRow,
-                  },
-                },
-                fields: 'gridProperties.rowCount',
-              },
-            },
-          ],
-        }),
-      });
-      gridRowCount = exactEndRow;
-    } catch (e) {
-      console.warn('Could not adjust row count for formulas:', e);
-    }
-  }
-
-  // Inspect the last 2 rows of the sheet to check if they are IATD footer rows ("Total Quantity:" and "v.X.X.X")
-  // so item-level =SUM(CS01:CSn) and variance formulas do not overwrite the footer rows
-  let detectedFooterRows = 0;
-  if (rowsToPopulate >= 2) {
+  // 6. Determine footer rows (use knownFooterRowCount when passed to avoid an extra network roundtrip)
+  let detectedFooterRows = knownFooterRowCount ?? 0;
+  if (knownFooterRowCount === undefined && rowsToPopulate >= 2) {
     try {
       const tailStartRow = Math.max(dataStartRow, exactEndRow - 1);
       const tailRes = await fetch(
@@ -3282,37 +3300,54 @@ export async function setupCountsheetHeadersInTemplate(
 
   const formulaRowsToPopulate = Math.max(1, rowsToPopulate - detectedFooterRows);
 
-  // Re-fetch Row `dataStartRow` formulas after column insertion/deletion so we have the
-  // exact post-shift column positions and formulas for all columns after Total Actual
+  // Inspect post-CS formulas (only re-fetch over network if colDiff !== 0; otherwise reuse firstDataRowFormulas)
   const postCsFormulasByCol: Map<number, string> = new Map();
-  try {
-    const postShiftFormulaRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${encodeURIComponent(
-        `${safeTabName}!A${dataStartRow}:ZZ${dataStartRow}`
-      )}?majorDimension=ROWS&valueRenderOption=FORMULA`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (postShiftFormulaRes.ok) {
-      const postShiftJson: any = await postShiftFormulaRes.json();
-      const rowFormulas: any[] = postShiftJson.values?.[0] || [];
-      for (let colIdx = totalActualColIdx + 1; colIdx < rowFormulas.length; colIdx++) {
-        let fStr = String(rowFormulas[colIdx] || '').trim();
-        if (fStr.startsWith('=')) {
-          // If a post-CS formula accidentally pointed to the spacer column instead of Total Actual, point it to Total Actual
-          const spacerRefRegex = new RegExp(
-            `(?<![A-Za-z0-9_$])(\\$?)${spacerLetter}(\\$?${dataStartRow})(?![A-Za-z0-9_(!])`,
-            'g'
-          );
-          fStr = fStr.replace(spacerRefRegex, `$1${totalActualLetter}$2`);
-          postCsFormulasByCol.set(colIdx, fStr);
-        }
+  let rowFormulasForPostCs: any[] = firstDataRowFormulas;
+
+  if (colDiff !== 0) {
+    try {
+      const postShiftFormulaRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${encodeURIComponent(
+          `${safeTabName}!A${dataStartRow}:ZZ${dataStartRow}`
+        )}?majorDimension=ROWS&valueRenderOption=FORMULA`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (postShiftFormulaRes.ok) {
+        const postShiftJson: any = await postShiftFormulaRes.json();
+        rowFormulasForPostCs = postShiftJson.values?.[0] || [];
       }
+    } catch (postFormulaErr) {
+      console.warn('Could not inspect post-CS formulas after column shift:', postFormulaErr);
     }
-  } catch (postFormulaErr) {
-    console.warn('Could not inspect post-CS formulas after column shift:', postFormulaErr);
   }
 
-  // 7. Write Row 2 Headers, Total Actual Formulas, and Post-CS Formula Columns in chunked batchUpdate calls
+  for (let colIdx = totalActualColIdx + 1; colIdx < rowFormulasForPostCs.length; colIdx++) {
+    let fStr = String(rowFormulasForPostCs[colIdx] || '').trim();
+    if (fStr.startsWith('=')) {
+      const spacerRefRegex = new RegExp(
+        `(?<![A-Za-z0-9_$])(\\$?)${spacerLetter}(\\$?${dataStartRow})(?![A-Za-z0-9_(!])`,
+        'g'
+      );
+      fStr = fStr.replace(spacerRefRegex, `$1${totalActualLetter}$2`);
+      postCsFormulasByCol.set(colIdx, fStr);
+    }
+  }
+
+  // Clear spacer column and any trailing footer formula cells in a single batchClear request
+  const rangesToClear: string[] = [`${safeTabName}!${spacerLetter}${headerRow}:${spacerLetter}`];
+  if (detectedFooterRows > 0) {
+    const footerStartRow = dataStartRow + formulaRowsToPopulate;
+    const maxFormulaColIdx = Math.max(
+      totalActualColIdx,
+      ...Array.from(postCsFormulasByCol.keys())
+    );
+    const maxFormulaColLetter = numberToColumnLetter(maxFormulaColIdx);
+    rangesToClear.push(
+      `${safeTabName}!${totalActualLetter}${footerStartRow}:${maxFormulaColLetter}${exactEndRow}`
+    );
+  }
+
+  // 7. Write Row 2 Headers, Total Actual Formulas, and Post-CS Formula Columns
   const headersToWrite = [...csHeaders, '', 'Total Actual'];
   const targetHeaderRange = `${safeTabName}!${startLetter}${headerRow}:${totalActualLetter}${headerRow}`;
 
@@ -3343,7 +3378,6 @@ export async function setupCountsheetHeadersInTemplate(
       values: [totalActualFormulas],
     });
 
-    // Populate all formula columns after Total Actual with properly adjusted row references ($L3 -> $L4, etc.)
     if (postCsFormulasByCol.size > 0) {
       postCsFormulasByCol.forEach((baseFormula, colIdx) => {
         const colLetter = numberToColumnLetter(colIdx);
@@ -3379,92 +3413,18 @@ export async function setupCountsheetHeadersInTemplate(
     }
   }
 
-  // Clear any formula cells on the trailing IATD footer rows ("Total Quantity:" and "v.X.X.X") in Total Actual & post-CS columns
-  if (detectedFooterRows > 0) {
-    const footerStartRow = dataStartRow + formulaRowsToPopulate;
-    const maxFormulaColIdx = Math.max(
-      totalActualColIdx,
-      ...Array.from(postCsFormulasByCol.keys())
-    );
-    const maxFormulaColLetter = numberToColumnLetter(maxFormulaColIdx);
-    try {
-      await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values:batchClear`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            ranges: [
-              `${safeTabName}!${totalActualLetter}${footerStartRow}:${maxFormulaColLetter}${exactEndRow}`,
-            ],
-          }),
-        }
-      );
-    } catch {}
-  }
-
-  // 8. Auto-adjust grid column count and strictly lock rowCount to exactEndRow (zero rows after v.X.X.X)
-  if (sheetId !== undefined) {
-    try {
-      const postHeadersRes = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${encodeURIComponent(
-          `${safeTabName}!A${headerRow}:ZZ${headerRow}`
-        )}?majorDimension=ROWS`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-      if (postHeadersRes.ok) {
-        const postData: any = await postHeadersRes.json();
-        const fullHeaderRow: string[] = postData.values?.[0] || [];
-        let maxColWithHeader = 0;
-        fullHeaderRow.forEach((val, idx) => {
-          if (String(val || '').trim().length > 0) {
-            maxColWithHeader = Math.max(maxColWithHeader, idx);
-          }
-        });
-        postCsFormulasByCol.forEach((_, colIdx) => {
-          maxColWithHeader = Math.max(maxColWithHeader, colIdx);
-        });
-        const targetColCount = Math.max(maxColWithHeader + 3, totalActualColIdx + 5, 26);
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cleanId}:batchUpdate`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            requests: [
-              {
-                updateSheetProperties: {
-                  properties: {
-                    sheetId,
-                    gridProperties: {
-                      rowCount: exactEndRow,
-                      ...(autoAdjustColumns ? { columnCount: targetColCount } : {}),
-                    },
-                  },
-                  fields: autoAdjustColumns
-                    ? 'gridProperties(rowCount,columnCount)'
-                    : 'gridProperties.rowCount',
-                },
-              },
-            ],
-          }),
-        });
-      }
-    } catch (trimErr) {
-      console.warn('Could not trim grid dimensions:', trimErr);
-    }
-  }
-
-  // 9. Also synchronize the MONITORING tab so its Countsheet No. rows under Row 6 match numCountsheets (e.g. 1-5 .. 21-25) + 3 blank buffer rows
-  try {
-    await setupMonitoringTabInTemplate(accessToken, cleanId, numCountsheets);
-  } catch (monErr) {
-    console.warn('Could not configure MONITORING tab countsheet ranges:', monErr);
-  }
+  // Run batchClear for spacer & footer cells and wait for parallel MONITORING setup
+  await Promise.all([
+    fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values:batchClear`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ranges: rangesToClear }),
+    }).catch(() => null),
+    monitoringPromise,
+  ]);
 
   return {
     startColLetter: startLetter,
@@ -3523,7 +3483,8 @@ export async function renameSpreadsheetInDrive(
 export async function setupMonitoringTabInTemplate(
   rawAccessToken: string,
   spreadsheetId: string,
-  numCountsheets: number = 100
+  numCountsheets: number = 100,
+  preloadedSheetsMeta?: any[]
 ): Promise<{
   monitoringSheetTitle?: string;
   rangeRowsWritten: number;
@@ -3537,22 +3498,25 @@ export async function setupMonitoringTabInTemplate(
   const neededRangeRows = Math.max(1, Math.ceil(effectiveCs / 5));
   const totalTableRows = neededRangeRows + BUFFER_BLANK_ROWS;
 
-  // 1. Find the MONITORING sheet tab metadata
+  // 1. Find the MONITORING sheet tab metadata (reuse preloadedSheetsMeta when available)
   let monitoringSheetId: number | undefined;
   let monitoringSheetTitle = 'MONITORING';
   let monitoringRowCount = 100;
   let monitoringColCount = 20;
 
   try {
-    const metaRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}?fields=sheets.properties(sheetId,title,gridProperties)`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (!metaRes.ok) {
-      return { rangeRowsWritten: 0, bufferBlankRows: BUFFER_BLANK_ROWS };
+    let sheets: any[] = preloadedSheetsMeta && preloadedSheetsMeta.length > 0 ? preloadedSheetsMeta : [];
+    if (sheets.length === 0) {
+      const metaRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}?fields=sheets.properties(sheetId,title,gridProperties)`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (!metaRes.ok) {
+        return { rangeRowsWritten: 0, bufferBlankRows: BUFFER_BLANK_ROWS };
+      }
+      const metaData: any = await metaRes.json();
+      sheets = metaData.sheets || [];
     }
-    const metaData: any = await metaRes.json();
-    const sheets: any[] = metaData.sheets || [];
     const monSheet = sheets.find((s: any) => {
       const t = String(s.properties?.title || '')
         .trim()
@@ -3966,7 +3930,8 @@ export interface GroupCountsheetPlanItem {
   itemDescription?: string;
   cost?: number;
   selling?: number;
-  balance?: number;
+  balance?: number | null;
+  actual?: number | null;
   unit?: string;
   barcode?: string;
   category?: string;
@@ -3979,6 +3944,7 @@ export interface GroupCountsheetPlan {
   groupName: string;
   baseSheetName: string; // Last selected category, subcategory, or subsubcategory
   items: GroupCountsheetPlanItem[];
+  insertCategorySpacers?: boolean;
 }
 
 export interface CreateCountsheetFromTemplateOptions {
@@ -4128,7 +4094,7 @@ export interface CountsheetTemplateSpec {
   fetchedAt: string;
 }
 
-const TEMPLATE_SPEC_STORAGE_KEY = 'audit_countsheet_template_spec_v3';
+const TEMPLATE_SPEC_STORAGE_KEY = 'audit_countsheet_template_spec_v4';
 const CUSTOM_TEMPLATE_URL_STORAGE_KEY = 'audit_countsheet_template_url_v1';
 
 export function getSavedCountsheetTemplateUrl(): string {
@@ -4282,42 +4248,86 @@ export const DEFAULT_COUNTSHEET_TEMPLATE_SPEC: CountsheetTemplateSpec = {
   fetchedAt: '',
 };
 
+export function sanitizeCountsheetTemplateSpec(raw: any): CountsheetTemplateSpec {
+  if (!raw || typeof raw !== 'object') {
+    return DEFAULT_COUNTSHEET_TEMPLATE_SPEC;
+  }
+  const isFromMonitoringOrCorrupted =
+    /monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(String(raw.sheetTitle || '')) ||
+    /counted\s*by|recounted\s*by|lot\s*no|sheet\s*no/i.test(String(raw.printHeaders?.stockDescription || '')) ||
+    /counted\s*by|recounted\s*by|lot\s*no/i.test(String(raw.row5Left || '')) ||
+    /counted\s*by|recounted\s*by/i.test(String(raw.row6Left || '')) ||
+    /counted\s*by|recounted\s*by/i.test(String(raw.declarationLine1 || ''));
+
+  if (isFromMonitoringOrCorrupted) {
+    return DEFAULT_COUNTSHEET_TEMPLATE_SPEC;
+  }
+
+  const rawColWidths = raw.colWidths || {};
+  const hasCorruptedColWidths =
+    (typeof rawColWidths.D === 'number' && rawColWidths.D > 120) ||
+    (typeof rawColWidths.K === 'number' && rawColWidths.K < 150) ||
+    (typeof rawColWidths.C === 'number' && rawColWidths.C < 180);
+
+  const validCutoffRows =
+    Array.isArray(raw.cutoffRows) &&
+    raw.cutoffRows.length >= 5 &&
+    !/recounted\s*by|counted\s*by/i.test(String(raw.cutoffRows[0]?.docLabel || ''))
+      ? raw.cutoffRows
+      : DEFAULT_COUNTSHEET_TEMPLATE_SPEC.cutoffRows;
+
+  return {
+    ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC,
+    ...raw,
+    cutoffRows: validCutoffRows,
+    printHeaders: {
+      ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.printHeaders,
+      ...(raw.printHeaders || {}),
+    },
+    dataHeaders: {
+      ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.dataHeaders,
+      ...(raw.dataHeaders || {}),
+    },
+    colWidths: hasCorruptedColWidths
+      ? DEFAULT_COUNTSHEET_TEMPLATE_SPEC.colWidths
+      : { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.colWidths, ...rawColWidths },
+    rowHeights: {
+      ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.rowHeights,
+      ...(raw.rowHeights || {}),
+    },
+    fontStyles: {
+      ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles,
+      ...(raw.fontStyles || {}),
+      formTitle: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.formTitle, ...(raw.fontStyles?.formTitle || {}) },
+      docCode: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.docCode, ...(raw.fontStyles?.docCode || {}) },
+      revisionLine1: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.revisionLine1, ...(raw.fontStyles?.revisionLine1 || {}) },
+      revisionLine2: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.revisionLine2, ...(raw.fontStyles?.revisionLine2 || {}) },
+      privacyNotice: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.privacyNotice, ...(raw.fontStyles?.privacyNotice || {}) },
+      branchInfo: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.branchInfo, ...(raw.fontStyles?.branchInfo || {}) },
+      printTableHeader: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.printTableHeader, ...(raw.fontStyles?.printTableHeader || {}) },
+      dataTableHeader: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.dataTableHeader, ...(raw.fontStyles?.dataTableHeader || {}) },
+      itemCodeCell: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.itemCodeCell, ...(raw.fontStyles?.itemCodeCell || {}) },
+      itemDescCell: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.itemDescCell, ...(raw.fontStyles?.itemDescCell || {}) },
+      itemUnitCell: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.itemUnitCell, ...(raw.fontStyles?.itemUnitCell || {}) },
+      dataSourceCell: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.dataSourceCell, ...(raw.fontStyles?.dataSourceCell || {}) },
+      declaration: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.declaration, ...(raw.fontStyles?.declaration || {}) },
+      cutoffRow: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.cutoffRow, ...(raw.fontStyles?.cutoffRow || {}) },
+      signatoryHeader: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.signatoryHeader, ...(raw.fontStyles?.signatoryHeader || {}) },
+      signatoryTitle: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.signatoryTitle, ...(raw.fontStyles?.signatoryTitle || {}) },
+    },
+    signatoryHeaders: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.signatoryHeaders, ...(raw.signatoryHeaders || {}) },
+    signatoryLines: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.signatoryLines, ...(raw.signatoryLines || {}) },
+    signatoryTitles: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.signatoryTitles, ...(raw.signatoryTitles || {}) },
+  };
+}
+
 export function getCachedCountsheetTemplateSpec(): CountsheetTemplateSpec {
   try {
+    localStorage.removeItem('audit_countsheet_template_spec_v3');
     const raw = localStorage.getItem(TEMPLATE_SPEC_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return {
-        ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC,
-        ...parsed,
-        printHeaders: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.printHeaders, ...(parsed.printHeaders || {}) },
-        dataHeaders: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.dataHeaders, ...(parsed.dataHeaders || {}) },
-        colWidths: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.colWidths, ...(parsed.colWidths || {}) },
-        rowHeights: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.rowHeights, ...(parsed.rowHeights || {}) },
-        fontStyles: {
-          ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles,
-          ...(parsed.fontStyles || {}),
-          formTitle: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.formTitle, ...(parsed.fontStyles?.formTitle || {}) },
-          docCode: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.docCode, ...(parsed.fontStyles?.docCode || {}) },
-          revisionLine1: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.revisionLine1, ...(parsed.fontStyles?.revisionLine1 || {}) },
-          revisionLine2: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.revisionLine2, ...(parsed.fontStyles?.revisionLine2 || {}) },
-          privacyNotice: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.privacyNotice, ...(parsed.fontStyles?.privacyNotice || {}) },
-          branchInfo: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.branchInfo, ...(parsed.fontStyles?.branchInfo || {}) },
-          printTableHeader: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.printTableHeader, ...(parsed.fontStyles?.printTableHeader || {}) },
-          dataTableHeader: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.dataTableHeader, ...(parsed.fontStyles?.dataTableHeader || {}) },
-          itemCodeCell: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.itemCodeCell, ...(parsed.fontStyles?.itemCodeCell || {}) },
-          itemDescCell: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.itemDescCell, ...(parsed.fontStyles?.itemDescCell || {}) },
-          itemUnitCell: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.itemUnitCell, ...(parsed.fontStyles?.itemUnitCell || {}) },
-          dataSourceCell: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.dataSourceCell, ...(parsed.fontStyles?.dataSourceCell || {}) },
-          declaration: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.declaration, ...(parsed.fontStyles?.declaration || {}) },
-          cutoffRow: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.cutoffRow, ...(parsed.fontStyles?.cutoffRow || {}) },
-          signatoryHeader: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.signatoryHeader, ...(parsed.fontStyles?.signatoryHeader || {}) },
-          signatoryTitle: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.fontStyles.signatoryTitle, ...(parsed.fontStyles?.signatoryTitle || {}) },
-        },
-        signatoryHeaders: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.signatoryHeaders, ...(parsed.signatoryHeaders || {}) },
-        signatoryLines: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.signatoryLines, ...(parsed.signatoryLines || {}) },
-        signatoryTitles: { ...DEFAULT_COUNTSHEET_TEMPLATE_SPEC.signatoryTitles, ...(parsed.signatoryTitles || {}) },
-      };
+      return sanitizeCountsheetTemplateSpec(parsed);
     }
   } catch {
     // ignore storage errors
@@ -4360,10 +4370,11 @@ export async function fetchCountsheetTemplateSpec(
             (isPeriodicRequested ? /periodic/i.test(t.name) : /random/i.test(t.name))
         ) || hubData.countsheetTemplates?.[0];
       if (matchedCs?.spec && typeof matchedCs.spec === 'object') {
+        const sanitized = sanitizeCountsheetTemplateSpec(matchedCs.spec);
         try {
-          localStorage.setItem(TEMPLATE_SPEC_STORAGE_KEY, JSON.stringify(matchedCs.spec));
+          localStorage.setItem(TEMPLATE_SPEC_STORAGE_KEY, JSON.stringify(sanitized));
         } catch {}
-        return applyTemplateVariantOverrides(getCachedCountsheetTemplateSpec());
+        return applyTemplateVariantOverrides(sanitized);
       }
     } catch {}
   }
@@ -4438,21 +4449,39 @@ export async function fetchCountsheetTemplateSpec(
     const simpleData = await simpleRes.json();
     const sheets: any[] = simpleData.sheets || [];
     const targetSheet =
-      sheets.find((s: any) => String(s.properties?.sheetId) === String(requestedGid)) ||
-      sheets.find((s: any) => /countsheet|template|random|periodic|copy/i.test(s.properties?.title || '')) ||
+      sheets.find(
+        (s: any) =>
+          String(s.properties?.sheetId) === String(requestedGid) &&
+          !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+            s.properties?.title || ''
+          )
+      ) ||
+      sheets.find(
+        (s: any) =>
+          !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+            s.properties?.title || ''
+          ) && /template|countsheet|random|periodic|actual|original|copy/i.test(s.properties?.title || '')
+      ) ||
+      sheets.find(
+        (s: any) =>
+          !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+            s.properties?.title || ''
+          )
+      ) ||
       sheets[0];
 
     if (!targetSheet) {
       return applyTemplateVariantOverrides(getCachedCountsheetTemplateSpec());
     }
 
-    const liveSpec = await buildTemplateSpecFromValues(
+    const rawLiveSpec = await buildTemplateSpecFromValues(
       accessToken,
       cleanTemplateId,
       simpleData.properties?.title ||
         (isPeriodicRequested ? 'PERIODIC COUNTSHEET TEMPLATE' : 'RANDOM INVENTORY COUNTSHEET TEMPLATE'),
       targetSheet
     );
+    const liveSpec = sanitizeCountsheetTemplateSpec(rawLiveSpec);
     void syncHubAssetsToServer({ countsheetSpec: liveSpec });
     return applyTemplateVariantOverrides(liveSpec);
   } catch {
@@ -4749,13 +4778,14 @@ async function buildTemplateSpecFromValues(
     fetchedAt: new Date().toISOString(),
   };
 
+  const sanitizedSpec = sanitizeCountsheetTemplateSpec(spec);
   try {
-    localStorage.setItem(TEMPLATE_SPEC_STORAGE_KEY, JSON.stringify(spec));
+    localStorage.setItem(TEMPLATE_SPEC_STORAGE_KEY, JSON.stringify(sanitizedSpec));
   } catch {
     // ignore storage errors
   }
 
-  return spec;
+  return sanitizedSpec;
 }
 
 export interface SheetPhysicalRowSlot<T> {
@@ -4960,6 +4990,25 @@ export function buildCountsheetRowBorderRequests<T>(
         },
       },
       fields: 'userEnteredFormat.backgroundColor',
+    },
+  });
+
+  // 1b. Format Column J (Item Code, col index 9) on Rows 9..42 as plain TEXT so leading zeros are never stripped
+  requests.push({
+    repeatCell: {
+      range: {
+        sheetId,
+        startRowIndex: 8,
+        endRowIndex: 8 + chunkSize,
+        startColumnIndex: 9,  // Col J
+        endColumnIndex: 10,   // Col J exclusive
+      },
+      cell: {
+        userEnteredFormat: {
+          numberFormat: { type: 'TEXT' },
+        },
+      },
+      fields: 'userEnteredFormat.numberFormat',
     },
   });
 
@@ -5260,11 +5309,13 @@ export async function createCountsheetFromTemplate(
   for (let gIdx = 0; gIdx < activeGroups.length; gIdx++) {
     const grp = activeGroups[gIdx];
     const grpItems = grp.items;
+    const grpInsertSpacers =
+      grp.insertCategorySpacers !== undefined ? grp.insertCategorySpacers : insertCategorySpacers;
     const packedPages = packItemsInto34RowSheets(
       grpItems,
       CHUNK_SIZE,
       COUNTSHEET_DESC_MAX_CHARS,
-      insertCategorySpacers
+      grpInsertSpacers
     );
     const totalParts = Math.max(1, packedPages.length);
     const defaultCsName = `CS${String(runningCsCounter).padStart(2, '0')}`;
@@ -5434,8 +5485,25 @@ export async function createCountsheetFromTemplate(
         const srcMeta = await srcMetaRes.json();
         const srcSheets: any[] = srcMeta.sheets || [];
         const matchedSrcSheet =
-          srcSheets.find((s: any) => String(s.properties?.sheetId) === String(resolvedGid)) ||
-          srcSheets.find((s: any) => /countsheet|template|copy/i.test(s.properties?.title || '')) ||
+          srcSheets.find(
+            (s: any) =>
+              String(s.properties?.sheetId) === String(resolvedGid) &&
+              !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+                s.properties?.title || ''
+              )
+          ) ||
+          srcSheets.find(
+            (s: any) =>
+              !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+                s.properties?.title || ''
+              ) && /countsheet|template|random|periodic|copy/i.test(s.properties?.title || '')
+          ) ||
+          srcSheets.find(
+            (s: any) =>
+              !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+                s.properties?.title || ''
+              )
+          ) ||
           srcSheets[0];
         if (matchedSrcSheet?.properties?.sheetId !== undefined) {
           targetGidNum = Number(matchedSrcSheet.properties.sheetId);
@@ -5572,24 +5640,100 @@ export async function createCountsheetFromTemplate(
         },
       });
 
-      // Add full grid borders on B8:H42
-      formatReqs.push({
-        updateBorders: {
-          range: {
-            sheetId: initialSheetId,
-            startRowIndex: 7,
-            endRowIndex: 42,
-            startColumnIndex: 1,
-            endColumnIndex: 8,
+      // Merge header cells (B2:B3 Logo, C2:G3 Form Title, B8:C8 Stock Description Header) to match template & Print Preview
+      formatReqs.push(
+        {
+          mergeCells: {
+            range: {
+              sheetId: initialSheetId,
+              startRowIndex: 1,
+              endRowIndex: 3,
+              startColumnIndex: 1,
+              endColumnIndex: 2,
+            },
+            mergeType: 'MERGE_ALL',
           },
-          top: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
-          bottom: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
-          left: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
-          right: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
-          innerHorizontal: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
-          innerVertical: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
         },
-      });
+        {
+          mergeCells: {
+            range: {
+              sheetId: initialSheetId,
+              startRowIndex: 1,
+              endRowIndex: 3,
+              startColumnIndex: 2,
+              endColumnIndex: 7,
+            },
+            mergeType: 'MERGE_ALL',
+          },
+        },
+        {
+          mergeCells: {
+            range: {
+              sheetId: initialSheetId,
+              startRowIndex: 7,
+              endRowIndex: 8,
+              startColumnIndex: 1,
+              endColumnIndex: 3,
+            },
+            mergeType: 'MERGE_ALL',
+          },
+        },
+        {
+          updateBorders: {
+            range: {
+              sheetId: initialSheetId,
+              startRowIndex: 1,
+              endRowIndex: 3,
+              startColumnIndex: 1,
+              endColumnIndex: 8,
+            },
+            top: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            bottom: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            left: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            right: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            innerHorizontal: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            innerVertical: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+          },
+        }
+      );
+
+      // Add full grid borders on B8:H42 and J8:O42
+      formatReqs.push(
+        {
+          updateBorders: {
+            range: {
+              sheetId: initialSheetId,
+              startRowIndex: 7,
+              endRowIndex: 42,
+              startColumnIndex: 1,
+              endColumnIndex: 8,
+            },
+            top: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            bottom: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            left: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            right: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            innerHorizontal: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            innerVertical: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+          },
+        },
+        {
+          updateBorders: {
+            range: {
+              sheetId: initialSheetId,
+              startRowIndex: 7,
+              endRowIndex: 42,
+              startColumnIndex: 9,
+              endColumnIndex: 15,
+            },
+            top: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            bottom: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            left: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            right: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            innerHorizontal: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+            innerVertical: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } },
+          },
+        }
+      );
 
       await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${newSpreadsheetId}:batchUpdate`, {
         method: 'POST',
@@ -5600,45 +5744,45 @@ export async function createCountsheetFromTemplate(
         body: JSON.stringify({ requests: formatReqs }),
       });
 
-      // Populate template rows 1..59 (including Row 8 headers and Rows 9..42 formulas linking B..G to J..O)
+      // Populate template rows 1..59 (including Row 8 headers and Rows 9..42 formulas linking B..D to J, K, O)
       const isPeriodicTemplate = /periodic/i.test(templateSpreadsheetId || '') || /periodic/i.test(finalTitle || '');
       const gridRows: any[][] = Array.from({ length: 60 }, () => new Array(15).fill(''));
       gridRows[1][2] = isPeriodicTemplate
         ? 'Periodic Inventory Count Sheet'
         : spec.formTitle || 'Random Inventory Count Sheet';
-      gridRows[1][7] = spec.docCode || 'FM-ICD-001';
-      gridRows[2][7] = `${spec.revisionLine1 || 'Rev. 00'} ${spec.revisionLine2 || ''}`.trim();
+      gridRows[1][7] = spec.docCode || 'SIDC-SS-F-ICD-005';
+      gridRows[2][7] = `${spec.revisionLine1 || 'REVISION 01'}\n${spec.revisionLine2 || '(Effectivity Date: January 2, 2026)'}`.trim();
       gridRows[3][1] = spec.privacyNotice || '';
-      gridRows[4][1] = spec.row5Left || 'Branch / Warehouse: ________________________';
-      gridRows[4][6] = spec.row5Right || 'Date of Count: ________________';
-      gridRows[5][1] = spec.row6Left || 'Location / Area: ___________________________';
-      gridRows[5][6] = spec.row6Right || 'Countsheet No.: _______________';
+      gridRows[4][1] = spec.row5Left || 'Branch/Project:__________________________________';
+      gridRows[4][6] = spec.row5Right || 'Name of Sales Clerk: ___________________________';
+      gridRows[5][1] = spec.row6Left || 'As of:___________________________________________';
+      gridRows[5][6] = spec.row6Right || 'Stockman/Warehouseman: _____________________';
 
-      // Row 8 (index 7): Printable Headers (B8:H8) + Data Headers (J8:O8)
-      gridRows[7][1] = 'Item Code';
-      gridRows[7][2] = spec.printHeaders?.stockDescription || 'Stock Description';
-      gridRows[7][3] = spec.printHeaders?.unit || 'Unit';
+      // Row 8 (index 7): Printable Headers (B8:H8, with B8:C8 merged as Stock Description) + Data Headers (J8:O8)
+      gridRows[7][1] = spec.printHeaders?.stockDescription || 'Stock Description';
+      gridRows[7][2] = '';
+      gridRows[7][3] = spec.printHeaders?.unit || 'Pc/Box';
       gridRows[7][4] = spec.printHeaders?.actualCount || 'Actual Count';
       gridRows[7][5] = spec.printHeaders?.perPos || 'Per POS';
       gridRows[7][6] = spec.printHeaders?.variance || 'Variance';
       gridRows[7][7] = spec.printHeaders?.remarks || 'Remarks';
 
       gridRows[7][9] = spec.dataHeaders?.itemCode || 'Item Code';
-      gridRows[7][10] = spec.dataHeaders?.itemDescription || 'Stock Description';
+      gridRows[7][10] = spec.dataHeaders?.itemDescription || 'Item Description';
       gridRows[7][11] = spec.dataHeaders?.cost || 'Cost';
       gridRows[7][12] = spec.dataHeaders?.selling || 'Selling';
       gridRows[7][13] = spec.dataHeaders?.balance || 'Balance';
       gridRows[7][14] = spec.dataHeaders?.unit || 'Unit';
 
-      // Rows 9..42 (indices 8..41): Formulas in B..G referencing J..O
+      // Rows 9..42 (indices 8..41): Formulas in B..D referencing J, K, O (E..H blank for physical count entry)
       for (let rNum = 9; rNum <= 42; rNum++) {
         const rIdx = rNum - 1;
         gridRows[rIdx][1] = `=IF(ISBLANK(J${rNum}),"",J${rNum})`; // Col B: Item Code
         gridRows[rIdx][2] = `=IF(ISBLANK(K${rNum}),"",K${rNum})`; // Col C: Stock Description
-        gridRows[rIdx][3] = `=IF(ISBLANK(O${rNum}),"",O${rNum})`; // Col D: Unit
-        gridRows[rIdx][4] = ''; // Col E: Actual Count (blank for physical count entry)
-        gridRows[rIdx][5] = `=IF(ISBLANK(N${rNum}),"",N${rNum})`; // Col F: Per POS (Balance)
-        gridRows[rIdx][6] = `=IF(ISBLANK(E${rNum}),"",E${rNum}-F${rNum})`; // Col G: Variance
+        gridRows[rIdx][3] = `=IF(ISBLANK(O${rNum}),"",O${rNum})`; // Col D: Pc/Box (Unit)
+        gridRows[rIdx][4] = ''; // Col E: Actual Count
+        gridRows[rIdx][5] = ''; // Col F: Per POS
+        gridRows[rIdx][6] = ''; // Col G: Variance
         gridRows[rIdx][7] = ''; // Col H: Remarks
       }
 
@@ -5698,12 +5842,28 @@ export async function createCountsheetFromTemplate(
   const sheets: any[] = metaData.sheets || [];
 
   let templateSheetObj = sheets.find(
-    (s: any) => String(s.properties.sheetId) === String(resolvedGid)
+    (s: any) =>
+      String(s.properties.sheetId) === String(resolvedGid) &&
+      !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+        s.properties.title || ''
+      )
   );
   if (!templateSheetObj) {
-    // If not found by exact GID, find first or matching name
+    // If not found by exact GID, find first non-monitoring countsheet/template tab
     templateSheetObj =
-      sheets.find((s: any) => /countsheet|template|copy/i.test(s.properties.title)) || sheets[0];
+      sheets.find(
+        (s: any) =>
+          !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+            s.properties.title || ''
+          ) && /countsheet|template|random|periodic|copy/i.test(s.properties.title || '')
+      ) ||
+      sheets.find(
+        (s: any) =>
+          !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+            s.properties.title || ''
+          )
+      ) ||
+      sheets[0];
   }
 
   if (!templateSheetObj) {
@@ -6054,11 +6214,13 @@ export async function updateExistingCountsheetSpreadsheet(
 
   for (let gIdx = 0; gIdx < activeGroups.length; gIdx++) {
     const grp = activeGroups[gIdx];
+    const grpInsertSpacers =
+      grp.insertCategorySpacers !== undefined ? grp.insertCategorySpacers : insertCategorySpacers;
     const packedPages = packItemsInto34RowSheets(
       grp.items,
       CHUNK_SIZE,
       COUNTSHEET_DESC_MAX_CHARS,
-      insertCategorySpacers
+      grpInsertSpacers
     );
     const totalParts = Math.max(1, packedPages.length);
     const defaultCsName = `CS${String(runningCsCounter).padStart(2, '0')}`;
@@ -6148,8 +6310,25 @@ export async function updateExistingCountsheetSpreadsheet(
       const srcMeta = await srcMetaRes.json();
       const srcSheets: any[] = srcMeta.sheets || [];
       const matchedSrcSheet =
-        srcSheets.find((s: any) => String(s.properties?.sheetId) === String(requestedGid)) ||
-        srcSheets.find((s: any) => /countsheet|template|random|copy/i.test(s.properties?.title || '')) ||
+        srcSheets.find(
+          (s: any) =>
+            String(s.properties?.sheetId) === String(requestedGid) &&
+            !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+              s.properties?.title || ''
+            )
+        ) ||
+        srcSheets.find(
+          (s: any) =>
+            !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+              s.properties?.title || ''
+            ) && /countsheet|template|random|periodic|copy/i.test(s.properties?.title || '')
+        ) ||
+        srcSheets.find(
+          (s: any) =>
+            !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+              s.properties?.title || ''
+            )
+        ) ||
         srcSheets[0];
       if (matchedSrcSheet?.properties?.sheetId !== undefined) {
         targetGidNum = Number(matchedSrcSheet.properties.sheetId);
@@ -6408,7 +6587,8 @@ export interface PreGeneratedCountsheetItem {
   unit: string;
   cost: number;
   selling: number;
-  balance: number;
+  balance: number | null;
+  amount?: number;
   actual?: number | null;
   csCode: string; // e.g. "CS01", "CS02"
   sheetTitle?: string;
@@ -6427,7 +6607,13 @@ export interface SavedCountsheetGroupState {
   selectedSubCats?: string[];
   selectedSubSubCats?: string[];
   lastSelectedHierarchy: string;
+  activeHeaderButton?: 'itemDescription' | 'cat' | 'subCat' | 'subSubCat';
+  itemSearchQuery?: string;
   hierarchySearchQuery?: string;
+  onlyItemsWithBalance?: boolean;
+  insertCategorySpacers?: boolean;
+  showSelectedItemsOnly?: boolean;
+  itemSortBy?: 'itemCode' | 'itemDescription';
   selectedItemIds: string[];
   selectedRowIndices?: number[];
   selectedItemCodes?: string[];
@@ -6479,6 +6665,7 @@ function sanitizeCountsheetSessionForStorage(session: RecentCountsheetSession): 
       orderedCountsheetItems: (session.orderedCountsheetItems || []).map(
         ({ raw: _raw, ...rest }) => rest
       ),
+      rawItems: (session.rawItems || []).map(({ raw: _raw, ...rest }) => rest),
     })
   );
 }
@@ -6499,6 +6686,31 @@ function notifyCountsheetsListeners(sessions: RecentCountsheetSession[]) {
       l(sessions);
     } catch {}
   });
+}
+
+function saveSessionsToLocalStorageSafely(storageKey: string, sessions: RecentCountsheetSession[]) {
+  try {
+    // Keep full rawItems only on the 2 most recent sessions in localStorage to stay well under the 5MB browser quota
+    const compact = sessions.map((s, idx) =>
+      idx < 2 ? s : { ...s, rawItems: undefined }
+    );
+    localStorage.setItem(storageKey, JSON.stringify(compact));
+  } catch {
+    try {
+      // Fallback if even 2 full catalogs exceed quota: keep rawItems only on the single latest session if <= 2500 items, otherwise strip rawItems from localStorage copies (sourceFile & server SQLite still have full data)
+      const ultraCompact = sessions.map((s, idx) =>
+        idx === 0 && (s.rawItems?.length || 0) <= 2500 ? s : { ...s, rawItems: undefined }
+      );
+      localStorage.setItem(storageKey, JSON.stringify(ultraCompact));
+    } catch {
+      try {
+        const strippedAll = sessions.map((s) => ({ ...s, rawItems: undefined }));
+        localStorage.setItem(storageKey, JSON.stringify(strippedAll));
+      } catch (err) {
+        console.warn('Failed to save recent countsheet sessions to localStorage:', err);
+      }
+    }
+  }
 }
 
 export async function syncRecentCountsheetsFromCloud(): Promise<RecentCountsheetSession[]> {
@@ -6571,7 +6783,18 @@ export async function syncRecentCountsheetsFromCloud(): Promise<RecentCountsheet
   const seenIds = new Set<string>();
   const seenSpreadsheetIds = new Set<string>();
   const map = new Map<string, RecentCountsheetSession>();
-  [...serverSessions, ...driveSessions, ...local].forEach((s) => {
+  const isRecentLocalMutation = Date.now() - lastCountsheetMutationAt < 5000;
+  const allCandidates = isRecentLocalMutation
+    ? [
+        ...local,
+        ...[...serverSessions, ...driveSessions].sort(
+          (a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime()
+        ),
+      ]
+    : [...local, ...serverSessions, ...driveSessions].sort(
+        (a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime()
+      );
+  allCandidates.forEach((s) => {
     if (!s || (!s.spreadsheetId && !s.id)) return;
     if (s.ownerEmail && s.ownerEmail.trim().toLowerCase() !== activeEmail) {
       driveHadUnverifiedItems = true;
@@ -6591,9 +6814,7 @@ export async function syncRecentCountsheetsFromCloud(): Promise<RecentCountsheet
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 30);
 
-  try {
-    localStorage.setItem(getRecentCountsheetsStorageKey(), JSON.stringify(merged));
-  } catch {}
+  saveSessionsToLocalStorageSafely(getRecentCountsheetsStorageKey(), merged);
 
   notifyCountsheetsListeners(merged);
 
@@ -6664,7 +6885,7 @@ export async function saveRecentCountsheet(
     spreadsheetId: session.spreadsheetId,
     spreadsheetName: session.spreadsheetName,
     webViewLink: session.webViewLink,
-    createdAt: session.createdAt || new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     ownerEmail: activeEmail || session.ownerEmail,
     totalSheets: session.totalSheets,
     totalItems: session.totalItems,
@@ -6677,6 +6898,7 @@ export async function saveRecentCountsheet(
     iatdHeaders: session.iatdHeaders || [],
     headerRow: session.headerRow ?? 2,
     orderedCountsheetItems: session.orderedCountsheetItems || [],
+    rawItems: session.rawItems || [],
   };
 
   const newSession = sanitizeCountsheetSessionForStorage(rawSession);
@@ -6692,24 +6914,22 @@ export async function saveRecentCountsheet(
   });
   const updated = [newSession, ...filtered].slice(0, 30);
 
-  try {
-    localStorage.setItem(getRecentCountsheetsStorageKey(), JSON.stringify(updated));
-  } catch (e) {
-    console.warn('Failed to save recent countsheet session to localStorage:', e);
-  }
+  saveSessionsToLocalStorageSafely(getRecentCountsheetsStorageKey(), updated);
 
   notifyCountsheetsListeners(updated);
 
-  // 1. Save to server SQLite API (non-blocking)
-  fetch('/api/recent-countsheets', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(newSession),
-  }).catch((e) => {
+  // 1. Save to server SQLite API
+  try {
+    await fetch('/api/recent-countsheets', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(newSession),
+    });
+  } catch (e) {
     console.warn('Failed to save recent countsheet to server:', e);
-  });
+  }
 
   // 2. Save to Google Drive Cloud Sync file
   writeRecentsToGoogleDrive(undefined, updated).catch(() => {});
@@ -6799,6 +7019,7 @@ export interface IatdDetectedColumns {
   sellingIdx: number;
   unitIdx: number;
   balanceIdx: number;
+  amountIdx: number;
   actualIdx: number;
 }
 
@@ -6813,6 +7034,7 @@ export function detectIatdColumnIndices(headers: string[]): IatdDetectedColumns 
   let sellingIdx = -1;
   let unitIdx = -1;
   let balanceIdx = -1;
+  let amountIdx = -1;
   let actualIdx = -1;
 
   headers.forEach((h, idx) => {
@@ -6830,14 +7052,16 @@ export function detectIatdColumnIndices(headers: string[]): IatdDetectedColumns 
       subCatIdx = idx;
     } else if (subSubCatIdx === -1 && /^(subsubcategory|subsubcat|subsubgroup|subsubclass)$/i.test(norm)) {
       subSubCatIdx = idx;
-    } else if (costIdx === -1 && /^(cost|unitcost|ucost|costprice|buyprice|stdcost)$/i.test(norm)) {
+    } else if (costIdx === -1 && /^(cost|unitcost|ucost|costprice|buyprice|stdcost|avecost|averagecost)$/i.test(norm)) {
       costIdx = idx;
-    } else if (sellingIdx === -1 && /^(selling|sellingprice|sprice|sellprice|retail|srp|unitprice)$/i.test(norm)) {
+    } else if (sellingIdx === -1 && /^(selling|sellingprice|sprice|sellprice|retail|srp|unitprice|retailprice)$/i.test(norm)) {
       sellingIdx = idx;
     } else if (unitIdx === -1 && /^(unit|uom|unitofmeasure|pack|package)$/i.test(norm)) {
       unitIdx = idx;
-    } else if (balanceIdx === -1 && /^(balance|qty|quantity|begqty|onhand|stock|endingbalance|perpos)$/i.test(norm)) {
+    } else if (balanceIdx === -1 && /^(balance|qty|quantity|onhand|stock|endingbalance|endingqty|currentbalance|bookbalance|soh|perpos)$/i.test(norm)) {
       balanceIdx = idx;
+    } else if (amountIdx === -1 && /^(amount|totalamount|costamount|totalcost|totalvalue|value|extendedcost|extcost|invamount|inventoryamount)$/i.test(norm)) {
+      amountIdx = idx;
     } else if (actualIdx === -1 && /^(actual|actualcount|actualqty|physicalcount|totalactual)$/i.test(norm)) {
       actualIdx = idx;
     }
@@ -6849,10 +7073,14 @@ export function detectIatdColumnIndices(headers: string[]): IatdDetectedColumns 
   if (catIdx === -1) catIdx = headers.findIndex((h) => /cat/i.test(h) && !/sub/i.test(h));
   if (subCatIdx === -1) subCatIdx = headers.findIndex((h) => /sub.*cat/i.test(h) && !/sub.*sub/i.test(h));
   if (subSubCatIdx === -1) subSubCatIdx = headers.findIndex((h) => /sub.*sub/i.test(h));
+  if (costIdx === -1) costIdx = headers.findIndex((h) => /cost/i.test(h) && !/total|amount|ext/i.test(h));
   if (costIdx === -1) costIdx = headers.findIndex((h) => /cost/i.test(h));
+  if (sellingIdx === -1) sellingIdx = headers.findIndex((h) => /sell|retail|srp|price/i.test(h) && !/total|amount|ext|cost/i.test(h));
   if (sellingIdx === -1) sellingIdx = headers.findIndex((h) => /sell|retail|srp|price/i.test(h));
   if (unitIdx === -1) unitIdx = headers.findIndex((h) => /unit|uom|pc\/box/i.test(h));
+  if (balanceIdx === -1) balanceIdx = headers.findIndex((h) => /bal|qty|onhand|pos/i.test(h) && !/beg/i.test(h));
   if (balanceIdx === -1) balanceIdx = headers.findIndex((h) => /bal|qty|onhand|pos/i.test(h));
+  if (amountIdx === -1) amountIdx = headers.findIndex((h) => /amount|total\s*cost|extended\s*cost|inv.*val/i.test(h));
 
   return {
     codeIdx,
@@ -6865,6 +7093,7 @@ export function detectIatdColumnIndices(headers: string[]): IatdDetectedColumns 
     sellingIdx,
     unitIdx,
     balanceIdx,
+    amountIdx,
     actualIdx,
   };
 }
@@ -6896,6 +7125,14 @@ export function parseIatdRowToCountsheetItem(
   const cost = cols.costIdx >= 0 ? parseNum(row[cols.costIdx]) : 0;
   const selling = cols.sellingIdx >= 0 ? parseNum(row[cols.sellingIdx]) : 0;
   const balance = cols.balanceIdx >= 0 ? parseNum(row[cols.balanceIdx]) : 0;
+  const hasExplicitAmount =
+    cols.amountIdx >= 0 &&
+    row[cols.amountIdx] !== undefined &&
+    row[cols.amountIdx] !== null &&
+    String(row[cols.amountIdx]).trim() !== '';
+  const amount = hasExplicitAmount
+    ? parseNum(row[cols.amountIdx])
+    : Math.round(((balance ?? 0) * cost + Number.EPSILON) * 100) / 100;
   const actualRaw =
     cols.actualIdx >= 0 && row[cols.actualIdx] !== undefined && String(row[cols.actualIdx]).trim() !== ''
       ? parseNum(row[cols.actualIdx])
@@ -6914,6 +7151,7 @@ export function parseIatdRowToCountsheetItem(
     cost,
     selling,
     balance,
+    amount,
     actual: actualRaw,
     csCode,
     sheetTitle: sheetTitle || csCode,
@@ -6934,31 +7172,107 @@ export function reconstructCountsheetItemsFromSession(
   const cols = detectIatdColumnIndices(iatdHeaders);
 
   // Build quick lookup maps from iatdRows if available
+  const normalizeCode = (v: unknown) =>
+    String(v ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\.0+$/, '');
+  const stripZeros = (v: string) => v.replace(/^0+(?=\d)/, '');
+  const normalizeDesc = (v: unknown) =>
+    String(v ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+
   const rowByCode = new Map<string, { row: any[]; idx: number }>();
+  const rowByStrippedCode = new Map<string, { row: any[]; idx: number }>();
   const rowByBarcode = new Map<string, { row: any[]; idx: number }>();
+  const rowByDesc = new Map<string, { row: any[]; idx: number }>();
+
   iatdRows.forEach((row, idx) => {
     if (!row) return;
-    const c = cols.codeIdx >= 0 ? String(row[cols.codeIdx] ?? '').trim().toLowerCase() : String(row[0] ?? '').trim().toLowerCase();
-    const b = cols.barcodeIdx >= 0 ? String(row[cols.barcodeIdx] ?? '').trim().toLowerCase() : '';
-    if (c && !rowByCode.has(c)) rowByCode.set(c, { row, idx });
-    if (b && !rowByBarcode.has(b)) rowByBarcode.set(b, { row, idx });
+    const c =
+      cols.codeIdx >= 0
+        ? normalizeCode(row[cols.codeIdx])
+        : normalizeCode(row[0]);
+    const b = cols.barcodeIdx >= 0 ? normalizeCode(row[cols.barcodeIdx]) : '';
+    const d = cols.descIdx >= 0 ? normalizeDesc(row[cols.descIdx]) : '';
+    if (c) {
+      if (!rowByCode.has(c)) rowByCode.set(c, { row, idx });
+      const cs = stripZeros(c);
+      if (cs && !rowByStrippedCode.has(cs)) rowByStrippedCode.set(cs, { row, idx });
+    }
+    if (b) {
+      if (!rowByBarcode.has(b)) rowByBarcode.set(b, { row, idx });
+      const bs = stripZeros(b);
+      if (bs && !rowByStrippedCode.has(bs)) rowByStrippedCode.set(bs, { row, idx });
+    }
+    if (d && !rowByDesc.has(d)) {
+      rowByDesc.set(d, { row, idx });
+    }
   });
 
   const enrichWithRaw = (item: PreGeneratedCountsheetItem, seqIdx: number): PreGeneratedCountsheetItem => {
-    if (item.raw && item.raw.length > 0) return item;
-    if (item.rowIndex !== undefined && iatdRows[item.rowIndex]) {
-      return { ...item, raw: [...iatdRows[item.rowIndex]] };
+    const codeKey = normalizeCode(item.itemCode);
+    const barKey = normalizeCode(item.barcode);
+    const descKey = normalizeDesc(item.itemDescription);
+
+    if (iatdRows.length > 0) {
+      const found =
+        (codeKey && (rowByCode.get(codeKey) || rowByStrippedCode.get(stripZeros(codeKey)))) ||
+        (barKey && (rowByBarcode.get(barKey) || rowByStrippedCode.get(stripZeros(barKey)))) ||
+        (descKey && rowByDesc.get(descKey)) ||
+        undefined;
+
+      if (found) {
+        const parsedRow = parseIatdRowToCountsheetItem(
+          found.row,
+          found.idx,
+          cols,
+          item.csCode || 'CS01',
+          item.sheetTitle
+        );
+        const merged: PreGeneratedCountsheetItem = {
+          ...item,
+          rowIndex: found.idx,
+          itemCode: parsedRow.itemCode || item.itemCode,
+          barcode: parsedRow.barcode || item.barcode,
+          itemDescription: parsedRow.itemDescription || item.itemDescription,
+          category: parsedRow.category || item.category,
+          subCategory: parsedRow.subCategory || item.subCategory,
+          subsubCategory: parsedRow.subsubCategory || item.subsubCategory,
+          unit: parsedRow.unit || item.unit,
+          cost: cols.costIdx >= 0 ? parsedRow.cost : parsedRow.cost || item.cost,
+          selling: cols.sellingIdx >= 0 ? parsedRow.selling : parsedRow.selling || item.selling,
+          balance:
+            item.balance === null
+              ? null
+              : cols.balanceIdx >= 0 && parsedRow.balance !== undefined && parsedRow.balance !== null
+              ? parsedRow.balance
+              : item.balance ?? parsedRow.balance,
+          amount:
+            cols.amountIdx >= 0 && parsedRow.amount !== undefined
+              ? parsedRow.amount
+              : Math.round(
+                  (Number(item.balance ?? parsedRow.balance ?? 0) *
+                    Number(cols.costIdx >= 0 ? parsedRow.cost : item.cost || 0) +
+                    Number.EPSILON) *
+                    100
+                ) / 100,
+          actual: item.actual !== undefined && item.actual !== null ? item.actual : parsedRow.actual,
+        };
+        merged.raw = buildIatdRowFromCountsheetItem({ ...merged, raw: [...found.row] }, iatdHeaders);
+        return merged;
+      }
     }
-    const codeKey = (item.itemCode || '').trim().toLowerCase();
-    if (codeKey && rowByCode.has(codeKey)) {
-      const found = rowByCode.get(codeKey)!;
-      return { ...item, rowIndex: found.idx, raw: [...found.row] };
+
+    if (item.raw && item.raw.length > 0) {
+      return {
+        ...item,
+        raw: buildIatdRowFromCountsheetItem({ ...item, raw: [...item.raw] }, iatdHeaders),
+      };
     }
-    const barKey = (item.barcode || '').trim().toLowerCase();
-    if (barKey && rowByBarcode.has(barKey)) {
-      const found = rowByBarcode.get(barKey)!;
-      return { ...item, rowIndex: found.idx, raw: [...found.row] };
-    }
+
     return {
       ...item,
       id: item.id || `cs_item_${seqIdx}_${Date.now()}`,
@@ -6966,9 +7280,25 @@ export function reconstructCountsheetItemsFromSession(
     };
   };
 
+  const normalizeCsCode = (rawCs: string | undefined, fallbackNum: number): string => {
+    const m = String(rawCs || '').trim().match(/^CS0*(\d+)$/i);
+    if (m) {
+      return `CS${String(parseInt(m[1], 10)).padStart(2, '0')}`;
+    }
+    return `CS${String(Math.max(1, fallbackNum)).padStart(2, '0')}`;
+  };
+
   // 1. If session has top-level orderedCountsheetItems, use them directly in exact sequence
   if (session.orderedCountsheetItems && session.orderedCountsheetItems.length > 0) {
-    return session.orderedCountsheetItems.map((it, idx) => enrichWithRaw(it, idx));
+    return session.orderedCountsheetItems.map((it, idx) =>
+      enrichWithRaw(
+        {
+          ...it,
+          csCode: normalizeCsCode(it.csCode, 1),
+        },
+        idx
+      )
+    );
   }
 
   // 2. Otherwise reconstruct from savedGroups in group & countsheet sequence
@@ -6977,15 +7307,43 @@ export function reconstructCountsheetItemsFromSession(
     let runningCsCounter = 1;
 
     for (const grp of session.savedGroups) {
+      const grpInsertSpacers =
+        grp.insertCategorySpacers !== undefined
+          ? Boolean(grp.insertCategorySpacers)
+          : Boolean(session.insertCategorySpacers);
+      const grpOnlyWithBalance =
+        grp.onlyItemsWithBalance !== undefined
+          ? Boolean(grp.onlyItemsWithBalance)
+          : Boolean(session.onlyItemsWithBalance);
+
       // 2a. If group has orderedItems saved
       if (grp.orderedItems && grp.orderedItems.length > 0) {
-        const totalParts = Math.max(1, Math.ceil(grp.orderedItems.length / CHUNK_SIZE));
-        grp.orderedItems.forEach((it, idxInGrp) => {
-          const partOffset = Math.floor(idxInGrp / CHUNK_SIZE);
-          const csCode = it.csCode || `CS${String(runningCsCounter + partOffset).padStart(2, '0')}`;
-          result.push(enrichWithRaw({ ...it, csCode }, result.length));
-        });
-        runningCsCounter += totalParts;
+        const allHaveValidCs = grp.orderedItems.every((it) => /^CS0*\d+$/i.test(String(it.csCode || '').trim()));
+        if (allHaveValidCs) {
+          let maxCsInGrp = runningCsCounter;
+          grp.orderedItems.forEach((it) => {
+            const csCode = normalizeCsCode(it.csCode, runningCsCounter);
+            const m = csCode.match(/(\d+)/);
+            if (m) maxCsInGrp = Math.max(maxCsInGrp, parseInt(m[1], 10));
+            result.push(enrichWithRaw({ ...it, csCode }, result.length));
+          });
+          runningCsCounter = Math.max(runningCsCounter + 1, maxCsInGrp + 1);
+        } else {
+          const packedPages = packItemsInto34RowSheets(
+            grp.orderedItems,
+            CHUNK_SIZE,
+            COUNTSHEET_DESC_MAX_CHARS,
+            grpInsertSpacers
+          );
+          const totalParts = Math.max(1, packedPages.length);
+          packedPages.forEach((page, pageIdx) => {
+            const csCode = `CS${String(runningCsCounter + pageIdx).padStart(2, '0')}`;
+            page.items.forEach((it) => {
+              result.push(enrichWithRaw({ ...it, csCode }, result.length));
+            });
+          });
+          runningCsCounter += totalParts;
+        }
         continue;
       }
 
@@ -7024,21 +7382,44 @@ export function reconstructCountsheetItemsFromSession(
         }
       }
 
-      const totalParts = Math.max(1, Math.ceil(matchedRows.length / CHUNK_SIZE));
-      matchedRows.forEach(({ row, rowIndex }, idxInGrp) => {
-        const partOffset = Math.floor(idxInGrp / CHUNK_SIZE);
-        const csCode = `CS${String(runningCsCounter + partOffset).padStart(2, '0')}`;
+      const parsedGroupItems: PreGeneratedCountsheetItem[] = [];
+      matchedRows.forEach(({ row, rowIndex }) => {
         const parsedItem = parseIatdRowToCountsheetItem(
           row,
           rowIndex,
           cols,
-          csCode,
-          grp.baseSheetName || csCode
+          'CS01',
+          grp.baseSheetName || 'CS01'
         );
-        if (session.onlyItemsWithBalance && (parsedItem.balance === 0 || isNaN(parsedItem.balance))) {
+        if (
+          grpOnlyWithBalance &&
+          (parsedItem.balance === null || parsedItem.balance === 0 || isNaN(parsedItem.balance))
+        ) {
           return;
         }
-        result.push(parsedItem);
+        parsedGroupItems.push(parsedItem);
+      });
+
+      const packedPages = packItemsInto34RowSheets(
+        parsedGroupItems,
+        CHUNK_SIZE,
+        COUNTSHEET_DESC_MAX_CHARS,
+        grpInsertSpacers
+      );
+      const totalParts = Math.max(1, packedPages.length);
+      packedPages.forEach((page, pageIdx) => {
+        const csCode = `CS${String(runningCsCounter + pageIdx).padStart(2, '0')}`;
+        const pageTitle =
+          pageIdx === 0
+            ? grp.baseSheetName || csCode
+            : `${grp.baseSheetName || csCode} ${pageIdx + 1}`;
+        page.items.forEach((it) => {
+          result.push({
+            ...it,
+            csCode,
+            sheetTitle: pageTitle,
+          });
+        });
       });
 
       runningCsCounter += totalParts;
@@ -7052,7 +7433,7 @@ export function reconstructCountsheetItemsFromSession(
 
 /**
  * Synthesizes or updates an IATD-compatible row array from a PreGeneratedCountsheetItem
- * so that edited Balance, Actual, and newly added missing inventory items map cleanly into ENCODING columns.
+ * so that edited Balance, Actual, Amount, and newly added missing inventory items map cleanly into ENCODING columns.
  */
 export function buildIatdRowFromCountsheetItem(
   item: PreGeneratedCountsheetItem,
@@ -7061,7 +7442,7 @@ export function buildIatdRowFromCountsheetItem(
   const cols = detectIatdColumnIndices(iatdHeaders);
   const baseRow = item.raw && item.raw.length > 0
     ? [...item.raw]
-    : new Array(Math.max(iatdHeaders.length, 10)).fill('');
+    : new Array(Math.max(iatdHeaders.length, 11)).fill('');
 
   while (baseRow.length < iatdHeaders.length) {
     baseRow.push('');
@@ -7076,7 +7457,21 @@ export function buildIatdRowFromCountsheetItem(
   if (cols.costIdx >= 0) baseRow[cols.costIdx] = item.cost ?? 0;
   if (cols.sellingIdx >= 0) baseRow[cols.sellingIdx] = item.selling ?? 0;
   if (cols.unitIdx >= 0) baseRow[cols.unitIdx] = item.unit || 'PCS';
-  if (cols.balanceIdx >= 0) baseRow[cols.balanceIdx] = item.balance ?? 0;
+  if (cols.balanceIdx >= 0) {
+    baseRow[cols.balanceIdx] =
+      item.balance !== undefined && item.balance !== null ? item.balance : '';
+  }
+  if (cols.amountIdx >= 0) {
+    if (item.balance === null) {
+      baseRow[cols.amountIdx] = '';
+    } else {
+      const calcAmount =
+        item.amount !== undefined && item.amount !== null
+          ? item.amount
+          : Math.round((Number(item.balance ?? 0) * Number(item.cost ?? 0) + Number.EPSILON) * 100) / 100;
+      baseRow[cols.amountIdx] = calcAmount;
+    }
+  }
   if (cols.actualIdx >= 0 && item.actual !== undefined && item.actual !== null) {
     baseRow[cols.actualIdx] = item.actual;
   }
@@ -7108,29 +7503,35 @@ export async function fetchCountsheetItemsFromSpreadsheet(
     const n = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
     return isNaN(n) ? 0 : n;
   };
+  const normalizeCodeKey = (val: any): string => String(val ?? '').trim().toLowerCase();
+  const stripZeroKey = (val: any): string => normalizeCodeKey(val).replace(/^0+(?=\d)/, '');
 
-  // Check if an "All Items" summary sheet exists to enrich barcode, category, subCategory, and subsubCategory
+  interface AllItemsMetaEntry {
+    itemCode: string;
+    barcode: string;
+    itemDescription: string;
+    category: string;
+    subCategory: string;
+    subsubCategory: string;
+    cost: number;
+    selling: number;
+    unit: string;
+    balance: number;
+    csNumber: number;
+  }
+
+  // Check if an "All Items" summary sheet exists to enrich itemCode (with leading zeros), barcode, category, subCategory, and subsubCategory
   const allItemsTab = tabs.find(
     (t) => t.title.trim().toLowerCase() === ALL_ITEMS_SHEET_NAME.toLowerCase()
   );
-  const allItemsMetadataByCode = new Map<
-    string,
-    {
-      barcode: string;
-      category: string;
-      subCategory: string;
-      subsubCategory: string;
-      cost: number;
-      selling: number;
-      unit: string;
-      balance: number;
-    }
-  >();
+  const allItemsMetadataByCode = new Map<string, AllItemsMetaEntry>();
+  const allItemsMetadataByStripped = new Map<string, AllItemsMetaEntry>();
+  const allItemsByCsNum = new Map<number, AllItemsMetaEntry[]>();
 
   if (allItemsTab) {
     try {
       const safeAllItemsTab = `'${allItemsTab.title.replace(/'/g, "''")}'`;
-      const allItemsRange = encodeURIComponent(`${safeAllItemsTab}!A1:L5000`);
+      const allItemsRange = encodeURIComponent(`${safeAllItemsTab}!A1:L10000`);
       const allRes = await fetchWithRetry(
         `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${allItemsRange}?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -7140,10 +7541,18 @@ export async function fetchCountsheetItemsFromSpreadsheet(
         const allRows: any[][] = allData.values || [];
         for (let r = 1; r < allRows.length; r++) {
           const row = allRows[r] || [];
-          const code = String(row[1] ?? '').trim().toLowerCase();
-          if (!code) continue;
-          allItemsMetadataByCode.set(code, {
-            barcode: String(row[2] ?? '').trim(),
+          const rawCode = String(row[1] ?? '').trim();
+          const rawBarcode = String(row[2] ?? '').trim();
+          const rawDesc = String(row[3] ?? '').trim();
+          if (!rawCode && !rawBarcode && !rawDesc) continue;
+
+          const csNumRaw = parseInt(String(row[11] ?? '').replace(/[^0-9]/g, ''), 10);
+          const csNumber = !isNaN(csNumRaw) && csNumRaw > 0 ? csNumRaw : 0;
+
+          const meta: AllItemsMetaEntry = {
+            itemCode: rawCode,
+            barcode: rawBarcode,
+            itemDescription: rawDesc,
             category: String(row[4] ?? '').trim(),
             subCategory: String(row[5] ?? '').trim(),
             subsubCategory: String(row[6] ?? '').trim(),
@@ -7151,7 +7560,33 @@ export async function fetchCountsheetItemsFromSpreadsheet(
             selling: parseNum(row[8]),
             unit: String(row[9] ?? 'PCS').trim() || 'PCS',
             balance: parseNum(row[10]),
-          });
+            csNumber,
+          };
+
+          if (csNumber > 0) {
+            if (!allItemsByCsNum.has(csNumber)) {
+              allItemsByCsNum.set(csNumber, []);
+            }
+            allItemsByCsNum.get(csNumber)!.push(meta);
+          }
+
+          const codeLower = normalizeCodeKey(rawCode);
+          const codeStripped = stripZeroKey(rawCode);
+          const barLower = normalizeCodeKey(rawBarcode);
+          const barStripped = stripZeroKey(rawBarcode);
+
+          if (codeLower && !allItemsMetadataByCode.has(codeLower)) {
+            allItemsMetadataByCode.set(codeLower, meta);
+          }
+          if (codeStripped && !allItemsMetadataByStripped.has(codeStripped)) {
+            allItemsMetadataByStripped.set(codeStripped, meta);
+          }
+          if (barLower && !allItemsMetadataByCode.has(barLower)) {
+            allItemsMetadataByCode.set(barLower, meta);
+          }
+          if (barStripped && !allItemsMetadataByStripped.has(barStripped)) {
+            allItemsMetadataByStripped.set(barStripped, meta);
+          }
         }
       }
     } catch {
@@ -7159,30 +7594,69 @@ export async function fetchCountsheetItemsFromSpreadsheet(
     }
   }
 
-  const countsheetTabs = tabs.filter(
-    (t) => t.title.trim().toLowerCase() !== ALL_ITEMS_SHEET_NAME.toLowerCase()
-  );
+  const countsheetTabs = tabs.filter((t) => {
+    const lower = t.title.trim().toLowerCase();
+    return lower !== ALL_ITEMS_SHEET_NAME.toLowerCase() && !lower.startsWith('__tpl_');
+  });
+
+  // Fetch all countsheet tabs via batchGet in chunks of 40 tabs to avoid rate-limit drops
+  const rowsByTabIndex = new Map<number, any[][]>();
+  const BATCH_TAB_CHUNK = 40;
+  for (let start = 0; start < countsheetTabs.length; start += BATCH_TAB_CHUNK) {
+    const chunk = countsheetTabs.slice(start, start + BATCH_TAB_CHUNK);
+    const rangeParams = chunk
+      .map((t) => {
+        const safeTab = `'${t.title.replace(/'/g, "''")}'`;
+        return `ranges=${encodeURIComponent(`${safeTab}!A1:O45`)}`;
+      })
+      .join('&');
+    try {
+      const batchRes = await fetchWithRetry(
+        `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values:batchGet?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE&${rangeParams}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (batchRes.ok) {
+        const batchData: any = await batchRes.json();
+        const valueRanges: any[] = batchData.valueRanges || [];
+        chunk.forEach((_, idxInChunk) => {
+          rowsByTabIndex.set(start + idxInChunk, valueRanges[idxInChunk]?.values || []);
+        });
+        continue;
+      }
+    } catch {
+      // Fallback to individual fetch below
+    }
+
+    for (let idxInChunk = 0; idxInChunk < chunk.length; idxInChunk++) {
+      const tab = chunk[idxInChunk];
+      const safeTab = `'${tab.title.replace(/'/g, "''")}'`;
+      const range = encodeURIComponent(`${safeTab}!A1:O45`);
+      const res = await fetchWithRetry(
+        `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${range}?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (res.ok) {
+        const data: any = await res.json();
+        rowsByTabIndex.set(start + idxInChunk, data.values || []);
+      }
+    }
+  }
+
+  let validCountsheetTabsCount = 0;
 
   for (let tIdx = 0; tIdx < countsheetTabs.length; tIdx++) {
     const tab = countsheetTabs[tIdx];
-    const csMatch = tab.title.trim().match(/^CS0*(\d+)/i);
-    const csCode = csMatch
-      ? `CS${String(parseInt(csMatch[1], 10)).padStart(2, '0')}`
-      : `CS${String(tIdx + 1).padStart(2, '0')}`;
+    const rows: any[][] = rowsByTabIndex.get(tIdx) || [];
+    if (rows.length === 0) continue;
 
-    const safeTab = `'${tab.title.replace(/'/g, "''")}'`;
-    const range = encodeURIComponent(`${safeTab}!A1:O45`);
-    const res = await fetchWithRetry(
-      `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${range}?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (!res.ok) continue;
-    const data: any = await res.json();
-    const rows: any[][] = data.values || [];
+    const currentCsNumber = validCountsheetTabsCount + 1;
+    const csCode = `CS${String(currentCsNumber).padStart(2, '0')}`;
+    const csMetaList = allItemsByCsNum.get(currentCsNumber) || [];
 
     // Check if this is a standard 12-col COUNTSHEET tab (Header on Row 1) or Template Countsheet (Header on Row 8, Items on Rows 9-42)
     const row0 = (rows[0] || []).map((c: any) => String(c || '').trim().toLowerCase());
     if (row0.includes('item code') && row0.includes('item description')) {
+      const tabItems: PreGeneratedCountsheetItem[] = [];
       for (let r = 1; r < rows.length; r++) {
         const row = rows[r] || [];
         const code = String(row[0] ?? '').trim();
@@ -7190,9 +7664,14 @@ export async function fetchCountsheetItemsFromSpreadsheet(
         const desc = String(row[2] ?? '').trim();
         if (!code && !desc && !barcode) continue;
         const actualStr = String(row[8] ?? '').trim();
-        items.push({
+        const rawCs = String(row[9] || csCode).trim().toUpperCase();
+        const normCsMatch = rawCs.match(/^CS0*(\d+)$/i);
+        const itemCsCode = normCsMatch
+          ? `CS${String(parseInt(normCsMatch[1], 10)).padStart(2, '0')}`
+          : csCode;
+        tabItems.push({
           id: `sheet_${tIdx}_${r}_${code || r}`,
-          rowIndex: items.length,
+          rowIndex: items.length + tabItems.length,
           itemCode: code,
           barcode,
           itemDescription: desc,
@@ -7204,9 +7683,13 @@ export async function fetchCountsheetItemsFromSpreadsheet(
           selling: 0,
           balance: parseNum(row[7]),
           actual: actualStr !== '' ? parseNum(actualStr) : null,
-          csCode: String(row[9] || csCode).trim().toUpperCase(),
+          csCode: itemCsCode,
           sheetTitle: tab.title,
         });
+      }
+      if (tabItems.length > 0) {
+        validCountsheetTabsCount++;
+        items.push(...tabItems);
       }
     } else {
       // Template Countsheet format: Rows 9-42 (0-indexed rows 8 to 41)
@@ -7216,46 +7699,82 @@ export async function fetchCountsheetItemsFromSpreadsheet(
       const dynamicCodeCol = headerRow8.findIndex((h, idx) => idx >= 8 && (h === 'item code' || h === 'code' || h === 'item no'));
       const dynamicDescCol = headerRow8.findIndex((h, idx) => idx >= 8 && (h.includes('description') || h === 'particulars'));
 
+      const tabItems: PreGeneratedCountsheetItem[] = [];
       let lastTabItem: PreGeneratedCountsheetItem | null = null;
+
       for (let r = 8; r <= Math.min(41, rows.length - 1); r++) {
         const row = rows[r] || [];
         const codeFromDataCol = dynamicCodeCol >= 0 ? String(row[dynamicCodeCol] || '').trim() : String(row[9] || '').trim();
         const codeFromPrintCol = String(row[1] || '').trim();
-        const itemCode = (codeFromDataCol || codeFromPrintCol) === '0' && !codeFromDataCol ? '' : (codeFromDataCol || codeFromPrintCol);
+        const rawExtractedCode = (codeFromDataCol || codeFromPrintCol) === '0' && !codeFromDataCol ? '' : (codeFromDataCol || codeFromPrintCol);
 
         const descFromDataCol = dynamicDescCol >= 0 ? String(row[dynamicDescCol] || '').trim() : String(row[10] || '').trim();
         const descFromPrintCol = String(row[2] || '').trim();
         const itemDescription = descFromDataCol || descFromPrintCol;
-        if (!itemCode && !itemDescription) {
+        if (!rawExtractedCode && !itemDescription) {
           lastTabItem = null;
           continue;
         }
 
-        // Continuation row detection: if Item Code (Col J) is blank and Item Description (Col K) has text,
-        // merge the continuation line onto the preceding item on this sheet tab.
-        if (!itemCode && itemDescription && lastTabItem) {
+        // Check whether this row has its own Unit, Balance, Cost, Selling, or Actual Count.
+        // True continuation rows written by Create Countsheet leave Cols J, L, M, N, O blank and only put text in Col K.
+        const hasUnitOrNumbers =
+          String(row[14] ?? '').trim() !== '' ||
+          String(row[13] ?? '').trim() !== '' ||
+          String(row[11] ?? '').trim() !== '' ||
+          String(row[12] ?? '').trim() !== '' ||
+          String(row[4] ?? '').trim() !== '' ||
+          (String(row[3] ?? '').trim() !== '' && String(row[3] ?? '').trim() !== '0');
+
+        // Continuation row detection: only merge when Item Code is blank, there are no item numbers/unit on the row, and lastTabItem exists
+        if (!rawExtractedCode && itemDescription && lastTabItem && !hasUnitOrNumbers) {
           lastTabItem.itemDescription = `${lastTabItem.itemDescription} ${itemDescription}`.trim();
           continue;
         }
 
-        const enriched = itemCode
-          ? allItemsMetadataByCode.get(itemCode.trim().toLowerCase())
-          : undefined;
+        const seqCandidate = csMetaList[tabItems.length];
+        const codeLower = normalizeCodeKey(rawExtractedCode);
+        const codeStripped = stripZeroKey(rawExtractedCode);
+
+        let enriched: AllItemsMetaEntry | undefined;
+        if (
+          seqCandidate &&
+          ((codeStripped &&
+            (stripZeroKey(seqCandidate.itemCode) === codeStripped ||
+              stripZeroKey(seqCandidate.barcode) === codeStripped)) ||
+            (!codeStripped &&
+              seqCandidate.itemDescription
+                .toLowerCase()
+                .startsWith(itemDescription.toLowerCase().slice(0, 20))))
+        ) {
+          enriched = seqCandidate;
+        } else if (codeLower) {
+          enriched =
+            allItemsMetadataByCode.get(codeLower) ||
+            (codeStripped ? allItemsMetadataByStripped.get(codeStripped) : undefined);
+        } else if (seqCandidate && csMetaList.length > 0) {
+          enriched = seqCandidate;
+        }
+
+        const finalItemCode = enriched?.itemCode || rawExtractedCode;
         const cost = parseNum(row[11]) || enriched?.cost || 0;
         const selling = parseNum(row[12]) || enriched?.selling || 0;
-        const balance = row[13] !== undefined && String(row[13]).trim() !== ''
-          ? parseNum(row[13])
-          : parseNum(row[5]);
+        const balance =
+          row[13] !== undefined && String(row[13]).trim() !== ''
+            ? parseNum(row[13])
+            : enriched !== undefined
+            ? enriched.balance
+            : parseNum(row[5]);
         const unit = String(row[14] || row[3] || enriched?.unit || 'PCS').trim() || 'PCS';
         const actualCell = String(row[4] ?? '').trim();
         const actual = actualCell !== '' ? parseNum(actualCell) : null;
 
         const createdItem: PreGeneratedCountsheetItem = {
-          id: `tpl_${tIdx}_${r}_${itemCode || r}`,
-          rowIndex: items.length,
-          itemCode,
+          id: `tpl_${tIdx}_${r}_${finalItemCode || r}`,
+          rowIndex: items.length + tabItems.length,
+          itemCode: finalItemCode,
           barcode: enriched?.barcode || '',
-          itemDescription,
+          itemDescription: enriched?.itemDescription || itemDescription,
           category: enriched?.category || tab.title,
           subCategory: enriched?.subCategory || '',
           subsubCategory: enriched?.subsubCategory || '',
@@ -7267,8 +7786,25 @@ export async function fetchCountsheetItemsFromSpreadsheet(
           csCode,
           sheetTitle: tab.title,
         };
-        items.push(createdItem);
+        tabItems.push(createdItem);
         lastTabItem = createdItem;
+      }
+
+      if (tabItems.length > 0) {
+        // After merging continuation lines, ensure any enriched full description from 'All Items' is applied cleanly
+        tabItems.forEach((tItem, idxOnTab) => {
+          const seqMeta = csMetaList[idxOnTab];
+          if (
+            seqMeta &&
+            seqMeta.itemDescription &&
+            stripZeroKey(seqMeta.itemCode || seqMeta.barcode) ===
+              stripZeroKey(tItem.itemCode || tItem.barcode)
+          ) {
+            tItem.itemDescription = seqMeta.itemDescription;
+          }
+        });
+        validCountsheetTabsCount++;
+        items.push(...tabItems);
       }
     }
   }
@@ -7276,7 +7812,7 @@ export async function fetchCountsheetItemsFromSpreadsheet(
   return {
     spreadsheetId: cleanId,
     spreadsheetTitle,
-    totalSheets: countsheetTabs.length,
+    totalSheets: validCountsheetTabsCount > 0 ? validCountsheetTabsCount : countsheetTabs.length,
     items,
   };
 }
@@ -7584,51 +8120,90 @@ export async function importGeneratedCountsheetFromDrive(
     );
   }
 
-  // Partition items into groups by sheetTitle or csCode
+  // Partition items by their countsheet code (CS01, CS02, ...) in exact tab order
+  // so every countsheet tab in the spreadsheet maps 1-to-1 to a Countsheet group with its exact items
   const groupMap = new Map<string, PreGeneratedCountsheetItem[]>();
   items.forEach((item) => {
-    const key = (item.sheetTitle || item.csCode || 'CS01').trim();
+    const key = (item.csCode || 'CS01').trim().toUpperCase();
     if (!groupMap.has(key)) {
       groupMap.set(key, []);
     }
     groupMap.get(key)!.push(item);
   });
 
-  const CHUNK_SIZE = COUNTSHEET_MAX_ROWS_PER_SHEET;
   let runningCs = 1;
   const savedGroups: SavedCountsheetGroupState[] = [];
 
-  groupMap.forEach((grpItems, sheetTitle) => {
-    const packed = packItemsInto34RowSheets(grpItems, CHUNK_SIZE, COUNTSHEET_DESC_MAX_CHARS);
-    const csUsed = Math.max(1, packed.length);
+  groupMap.forEach((grpItems, csKey) => {
     const startCsNumber = runningCs;
-    const endCsNumber = runningCs + csUsed - 1;
+    const csUsed = 1;
+    const endCsNumber = startCsNumber;
     runningCs += csUsed;
 
-    const baseName = sheetTitle.trim();
+    const csLabel = `CS${String(startCsNumber).padStart(2, '0')}`;
+    const rawSheetTitle = (grpItems[0]?.sheetTitle || csKey || csLabel).trim();
+    const normalizedGrpItems = grpItems.map((it) => ({
+      ...it,
+      csCode: csLabel,
+      sheetTitle: rawSheetTitle,
+    }));
+
+    const distinctCats = Array.from(
+      new Set(normalizedGrpItems.map((it) => (it.category || '').trim()).filter(Boolean))
+    );
+    const distinctSubCats = Array.from(
+      new Set(normalizedGrpItems.map((it) => (it.subCategory || '').trim()).filter(Boolean))
+    );
+    const distinctSubSubCats = Array.from(
+      new Set(normalizedGrpItems.map((it) => (it.subsubCategory || '').trim()).filter(Boolean))
+    );
+
     savedGroups.push({
       id: `grp_imp_${savedGroups.length + 1}_${Date.now()}`,
-      name: baseName,
-      baseSheetName: baseName,
+      name: csLabel,
+      baseSheetName: rawSheetTitle || csLabel,
       selectedCat: '',
       selectedSubCat: '',
       selectedSubSubCat: '',
-      lastSelectedHierarchy: baseName,
+      selectedCats: [],
+      selectedSubCats: [],
+      selectedSubSubCats: [],
+      lastSelectedHierarchy: rawSheetTitle || csLabel,
       hierarchySearchQuery: '',
-      selectedItemIds: grpItems.map((it) => it.id),
-      selectedRowIndices: grpItems.map((it, idx) => it.rowIndex ?? idx),
-      selectedItemCodes: grpItems.map((it) => it.itemCode).filter(Boolean),
-      selectedBarcodes: grpItems.map((it) => it.barcode).filter(Boolean),
-      randomCountInput: grpItems.length,
+      selectedItemIds: normalizedGrpItems.map((it) => it.id),
+      selectedRowIndices: normalizedGrpItems.map((it, idx) => it.rowIndex ?? idx),
+      selectedItemCodes: normalizedGrpItems.map((it) => it.itemCode).filter(Boolean),
+      selectedBarcodes: normalizedGrpItems.map((it) => it.barcode).filter(Boolean),
+      randomCountInput: normalizedGrpItems.length,
+      onlyItemsWithBalance: false,
+      insertCategorySpacers: false,
+      showSelectedItemsOnly: false,
       startCsNumber,
       endCsNumber,
       csUsed,
-      orderedItems: grpItems,
+      orderedItems: normalizedGrpItems,
     });
   });
 
-  const sessionId = `cs_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const normalizedItems = savedGroups.flatMap((g) => g.orderedItems || []);
+  const existingSession = getRecentCountsheetsLocal().find(
+    (s) => s.spreadsheetId && extractSpreadsheetId(s.spreadsheetId) === cleanId
+  );
+
+  const sessionId = existingSession?.id || `cs_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const webViewLink = `https://docs.google.com/spreadsheets/d/${cleanId}/edit`;
+
+  const preservedSourceFile =
+    existingSession?.sourceFile &&
+    existingSession.sourceFile.id &&
+    existingSession.sourceFile.id !== 'imported-countsheet' &&
+    existingSession.sourceFile.id !== cleanId
+      ? existingSession.sourceFile
+      : {
+          id: 'imported-countsheet',
+          name: spreadsheetTitle || 'Imported Countsheet',
+          tabName: cleanId,
+        };
 
   const newSession: RecentCountsheetSession = {
     id: sessionId,
@@ -7636,16 +8211,14 @@ export async function importGeneratedCountsheetFromDrive(
     spreadsheetName: spreadsheetTitle || `Imported Countsheet - ${cleanId.slice(0, 8)}`,
     webViewLink,
     createdAt: new Date().toISOString(),
-    totalSheets: Math.max(totalSheets, savedGroups.length),
-    totalItems: items.length,
-    sourceFile: {
-      id: 'imported-countsheet',
-      name: spreadsheetTitle || 'Imported Countsheet',
-      tabName: cleanId,
-    },
+    totalSheets: savedGroups.length || totalSheets,
+    totalItems: normalizedItems.length,
+    sourceFile: preservedSourceFile,
+    onlyItemsWithBalance: false,
+    insertCategorySpacers: false,
     savedGroups,
-    orderedCountsheetItems: items,
-    rawItems: items,
+    orderedCountsheetItems: normalizedItems,
+    rawItems: normalizedItems,
   };
 
   // Remove from any tombstone deletion list in case this spreadsheet ID was deleted before

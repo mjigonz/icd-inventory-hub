@@ -77,13 +77,12 @@ import { useLanguage } from '../services/i18n';
 import { NotifyWebsiteUpdateAvailable } from '../hooks/useAppUpdate';
 import { useAnimatedPresence } from '../hooks/useAnimatedPresence';
 
-export function getItemMasterdataSheet(it: InventoryItem): 'GRO' | 'OTHERS' {
+export function getItemMasterdataSheet(it: InventoryItem): string {
   const explicit = String(it.masterdataSheet || '').trim().toUpperCase();
-  if (explicit === 'OTHERS' || explicit === 'OTHER' || explicit.includes('OTHER') || explicit === 'NONGRO') {
-    return 'OTHERS';
-  }
-  if (explicit === 'GRO' || explicit.startsWith('GRO')) {
-    return 'GRO';
+  if (explicit) {
+    if (explicit === 'OTHER' || explicit.includes('OTHER') || explicit === 'NONGRO') return 'OTHERS';
+    if (explicit.startsWith('GRO')) return 'GRO';
+    return explicit;
   }
   const code = String(it.itemCode || '').trim().toUpperCase();
   if (code.startsWith('GRO')) {
@@ -329,7 +328,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       ? isGoogleConnectedProp
       : isGoogleOAuthAccessToken(accessToken);
   const [activeTab, setActiveTab] = useState<'ENCODING' | 'MASTERDATA'>('MASTERDATA');
-  const [masterdataSheetFilter, setMasterdataSheetFilter] = useState<'ALL' | 'GRO' | 'OTHERS'>('ALL');
+  const [masterdataSheetFilter, setMasterdataSheetFilter] = useState<string>('ALL');
   const [filterMode, setFilterMode] = useState<'ALL' | 'CATEGORY' | 'SUBCATEGORY' | 'SUBSUBCATEGORY'>('ALL');
   const [selectedFilterValue, setSelectedFilterValue] = useState<string>('');
   const [balanceFilter, setBalanceFilter] = useState<'ALL' | 'WITH_BALANCE' | 'ZERO'>('ALL');
@@ -737,7 +736,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         return it;
       });
       setAllTabItems(nextItems);
-      if (!branch && guestSpreadsheetId) {
+      if (guestSpreadsheetId) {
         await saveGuestLocalIatdItems(nextItems, guestSpreadsheetId);
       }
 
@@ -835,9 +834,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     } catch {}
   };
 
-  // Auto-upgrade cached Guest Local IATD sheet if loaded with an older parser version so Cost (Col F), Unit (Col H), Balance (Col L), and Row 2 CS columns appear immediately
+  // Auto-upgrade cached Local IATD sheet if loaded with an older parser version so Cost (Col F), Unit (Col H), Balance (Col L), and Row 2 CS columns appear immediately
   useEffect(() => {
-    if (!branch && (guestSheetUrl || guestSpreadsheetId)) {
+    if (guestSheetUrl || guestSpreadsheetId) {
       try {
         const ver = localStorage.getItem('guest_iatd_parser_version');
         if (ver !== 'v5') {
@@ -898,19 +897,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const deleteConfirmModalPresence = useAnimatedPresence(Boolean(isAdminMode && pendingDeleteItem), 200);
   const activePendingDeleteItem = pendingDeleteItem || renderedPendingDeleteItem;
 
-  // Lock background page scroll whenever an Inventory/Masterdata modal is open
-  useEffect(() => {
-    const isAnyModalOpen = Boolean(
-      (isAdminMode && (masterdataModalMode || pendingDeleteItem || plottingItem)) || countingItem
-    );
-    if (!isAnyModalOpen) return;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [isAdminMode, masterdataModalMode, pendingDeleteItem, plottingItem, countingItem]);
-
   const showCopyToast = React.useCallback((msg: string) => {
     setSuccessToast(msg);
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -922,6 +908,38 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const renderItemCopyControl = (item: InventoryItem, _baseKey?: string) => (
     <ItemCopyControl item={item} onShowToast={showCopyToast} />
   );
+
+  const handleCopyCategoryHierarchy = async (e: React.MouseEvent, item: InventoryItem) => {
+    e.stopPropagation();
+    const cat = (item.category || '').trim();
+    const subCat = (item.subCategory || '').trim();
+    const subSubCat = (item.subsubCategory || '').trim();
+    const textToCopy = [cat, subCat, subSubCat].join('\t');
+    const toastMessage = `Copied: ${cat || '—'} | ${subCat || '—'} | ${subSubCat || '—'}`;
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(textToCopy);
+      } else {
+        throw new Error('Fallback to execCommand');
+      }
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = textToCopy;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        document.execCommand('copy');
+      } catch {}
+      document.body.removeChild(textarea);
+    }
+
+    showCopyToast(toastMessage);
+  };
 
   const openEditMasterdataModal = (item: InventoryItem) => {
     const detectedSheet: 'GRO' | 'OTHERS' =
@@ -1133,7 +1151,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   };
 
   const handleDeleteMasterdataItem = async (item: InventoryItem) => {
-    const itemSheet: 'GRO' | 'OTHERS' = getItemMasterdataSheet(item);
+    const itemSheet = getItemMasterdataSheet(item);
     const key = `${itemSheet}_${item.itemCode}_${item.barcode}_${item.itemDescription}`;
     setDeletingItemKey(key);
     try {
@@ -1211,15 +1229,21 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   };
 
   useEffect(() => {
-    if (branch?.encodingCount !== undefined) {
+    if (guestSpreadsheetId) {
+      countBranchInventoryBySource(GUEST_LOCAL_BRANCH_ID, 'ENCODING').then((cnt) => {
+        setLocalEncodingCount(cnt);
+      });
+    } else if (branch?.encodingCount !== undefined) {
       setLocalEncodingCount(branch.encodingCount);
     } else if (!branch) {
-      setLocalEncodingCount(0);
+      countBranchInventoryBySource(GUEST_LOCAL_BRANCH_ID, 'ENCODING').then((cnt) => {
+        setLocalEncodingCount(cnt);
+      });
     }
     if (branch?.masterdataCount !== undefined && branch.masterdataCount > 0) {
       setLocalMasterdataCount(branch.masterdataCount);
     }
-  }, [branch?.id, branch?.encodingCount, branch?.masterdataCount]);
+  }, [branch?.id, branch?.encodingCount, branch?.masterdataCount, guestSpreadsheetId]);
 
   // Resync Masterdata directly from Google Sheets or global server snapshot into IndexedDB (works in Guest Mode & Signed-In Mode)
   const isSilentResyncInFlightRef = React.useRef(false);
@@ -1351,8 +1375,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
     ensureBranchInventoryHydrated(branch).then(async (hydrated) => {
       if (hydrated) setHydrationTick((t) => t + 1);
+      const encodingSourceId = guestSpreadsheetId ? GUEST_LOCAL_BRANCH_ID : branch.id;
       const [currentEncCount, currentMastCount] = await Promise.all([
-        countBranchInventoryBySource(branch.id, 'ENCODING'),
+        countBranchInventoryBySource(encodingSourceId, 'ENCODING'),
         countBranchInventoryBySource(branch.id, 'MASTERDATA'),
       ]);
       setLocalEncodingCount(currentEncCount);
@@ -1463,12 +1488,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [masterdataModalMode, countingItem, plottingItem]);
 
-  // Load all inventories for the active tab (only when tab, branch, or hydration changes)
+  // Load all inventories for the active tab (only when tab, branch, linked local sheet, or hydration changes)
   useEffect(() => {
     let isMounted = true;
     setIsLoading(true);
     const effectiveBranchId =
-      branch?.id || (activeTab === 'ENCODING' ? GUEST_LOCAL_BRANCH_ID : 'global_masterdata');
+      activeTab === 'ENCODING'
+        ? guestSpreadsheetId
+          ? GUEST_LOCAL_BRANCH_ID
+          : branch?.id || GUEST_LOCAL_BRANCH_ID
+        : branch?.id || 'global_masterdata';
 
     searchInventoryList(effectiveBranchId, activeTab, '', 0)
       .then((fullList) => {
@@ -1494,20 +1523,18 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [branch?.id, activeTab, hydrationTick]);
+  }, [branch?.id, guestSpreadsheetId, activeTab, hydrationTick]);
 
-  // Compute sheet counts for Masterdata (GRO vs OTHERS)
+  // Compute sheet counts for Masterdata (GRO, OTHERS, and any custom sheets)
   const masterdataSheetCounts = React.useMemo(() => {
-    if (activeTab !== 'MASTERDATA') return { gro: 0, others: 0 };
-    let gro = 0;
-    let others = 0;
+    if (activeTab !== 'MASTERDATA') return {} as Record<string, number>;
+    const counts: Record<string, number> = {};
     for (let i = 0; i < allTabItems.length; i++) {
       const it = allTabItems[i];
       const sheet = getItemMasterdataSheet(it);
-      if (sheet === 'OTHERS') others++;
-      else gro++;
+      counts[sheet] = (counts[sheet] || 0) + 1;
     }
-    return { gro, others };
+    return counts;
   }, [allTabItems, activeTab]);
 
   // Compute distinct options for Category, Subcategory, or SubSubCategory
@@ -1757,20 +1784,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
           {/* Direct GRO / OTHERS sheet switcher when inside Masterdata tab */}
           {activeTab === 'MASTERDATA' && (
-            <div className="flex p-1 bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/60 rounded-xl shrink-0">
+            <div className="flex p-1 bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/60 rounded-xl shrink-0 flex-wrap gap-1">
               {[
                 {
-                  id: 'ALL' as const,
-                  label: `${t.filterAll} (${(masterdataSheetCounts.gro + masterdataSheetCounts.others).toLocaleString()})`,
+                  id: 'ALL',
+                  label: `${t.filterAll} (${allTabItems.length.toLocaleString()})`,
                 },
-                {
-                  id: 'GRO' as const,
-                  label: `GRO (${masterdataSheetCounts.gro.toLocaleString()})`,
-                },
-                {
-                  id: 'OTHERS' as const,
-                  label: `OTHERS (${masterdataSheetCounts.others.toLocaleString()})`,
-                },
+                ...Object.keys(masterdataSheetCounts).map((sheetName) => ({
+                  id: sheetName,
+                  label: `${sheetName} (${(masterdataSheetCounts[sheetName] || 0).toLocaleString()})`,
+                })),
               ].map((sOpt) => (
                 <button
                   key={`top_${sOpt.id}`}
@@ -1855,6 +1878,22 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               />
             )}
           </div>
+
+          {activeTab === 'ENCODING' && (
+            <button
+              type="button"
+              onClick={() => setIsChangingSheetLink((prev) => !prev)}
+              title="Link or change Local Branch Google Sheet (IATD)"
+              className={`px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0 ${
+                isChangingSheetLink
+                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                  : 'bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/80'
+              }`}
+            >
+              <Link2 className="w-3.5 h-3.5" />
+              <span>{guestSpreadsheetId || branch?.id ? 'Change Local Link' : 'Link Local Sheet'}</span>
+            </button>
+          )}
 
           {activeTab === 'MASTERDATA' && (
             <>
@@ -1943,8 +1982,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </div>
       </div>
 
-      {/* Guest Mode: Active Local IATD Sheet Banner */}
-      {!branch && activeTab === 'ENCODING' && guestSpreadsheetId && allTabItems.length > 0 && !isChangingSheetLink && (
+      {/* Active Local IATD Sheet Banner (Available for everyone — both Logged-in & Guest mode) */}
+      {activeTab === 'ENCODING' && (guestSpreadsheetId || branch?.id) && allTabItems.length > 0 && !isChangingSheetLink && (
         <div className="bg-emerald-50/90 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/80 rounded-2xl p-3 sm:p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
@@ -1964,10 +2003,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-400 truncate max-w-md sm:max-w-lg mt-0.5 flex items-center gap-1 font-mono">
                 <Link2 className="w-3 h-3 text-slate-400 shrink-0" />
-                <span className="truncate">{guestSheetUrl || guestSpreadsheetId}</span>
-                {guestSpreadsheetId && (
+                <span className="truncate">
+                  {guestSheetUrl || guestSpreadsheetId || (branch ? `${branch.name} (${branch.id})` : '')}
+                </span>
+                {(guestSpreadsheetId || branch?.id) && (
                   <a
-                    href={`https://docs.google.com/spreadsheets/d/${guestSpreadsheetId}`}
+                    href={`https://docs.google.com/spreadsheets/d/${guestSpreadsheetId || branch?.id}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 inline-flex items-center gap-0.5 ml-1 font-sans text-[10.5px] font-medium"
@@ -1983,7 +2024,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              onClick={() => handleLoadGuestIatdSheet(guestSheetUrl)}
+              onClick={() =>
+                handleLoadGuestIatdSheet(guestSheetUrl || guestSpreadsheetId || branch?.id || '')
+              }
               disabled={isLoadingGuestSheet}
               className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               title="Re-fetch and reload items from IATD sheet"
@@ -1998,32 +2041,34 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             >
               Change Link
             </button>
-            <button
-              type="button"
-              onClick={handleClearGuestIatdSheet}
-              className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition cursor-pointer"
-              title="Clear loaded Local sheet"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+            {guestSpreadsheetId && (
+              <button
+                type="button"
+                onClick={handleClearGuestIatdSheet}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition cursor-pointer"
+                title="Clear loaded Local sheet"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {/* Guest Mode: Change Sheet Link Box */}
-      {!branch && activeTab === 'ENCODING' && isChangingSheetLink && (
+      {/* Link / Change Sheet Link Box (Available for everyone — both Logged-in & Guest mode) */}
+      {activeTab === 'ENCODING' && isChangingSheetLink && (
         <div className="bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-900/60 rounded-2xl p-4 shadow-sm space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <FileSpreadsheet className="w-4 h-4 text-blue-600 dark:text-blue-400" />
               <span className="text-xs font-bold text-slate-900 dark:text-white">
-                Change Google Sheet Link (IATD)
+                Link / Change Google Sheet (IATD)
               </span>
             </div>
             <button
               type="button"
               onClick={() => setIsChangingSheetLink(false)}
-              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg"
+              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -2034,6 +2079,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               placeholder="Paste Google Sheet URL or Spreadsheet ID..."
               value={guestSheetUrl}
               onChange={(e) => setGuestSheetUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && guestSheetUrl.trim()) {
+                  handleLoadGuestIatdSheet(guestSheetUrl);
+                }
+              }}
               className="flex-1 px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
             />
             <div className="flex items-center gap-2">
@@ -2049,7 +2099,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               <button
                 type="button"
                 onClick={() => setIsChangingSheetLink(false)}
-                className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 text-xs font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+                className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 text-xs font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
               >
                 Cancel
               </button>
@@ -2246,7 +2296,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   Try selecting a different Category/Subcategory or switch between Local and Masterdata tabs.
                 </p>
               </>
-            ) : !branch && activeTab === 'ENCODING' ? (
+            ) : activeTab === 'ENCODING' ? (
               <div className="max-w-md mx-auto py-8 px-4 space-y-4 text-center">
                 <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
                   <FileSpreadsheet className="w-6 h-6" />
@@ -2312,7 +2362,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   >
                     View Masterdata ({localMasterdataCount.toLocaleString()})
                   </button>
-                  {onConnectGoogle && (
+                  {!isGoogleConnected && onConnectGoogle && (
                     <>
                       <span className="text-slate-300 dark:text-slate-700">•</span>
                       <button
@@ -2329,12 +2379,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             ) : (
               <>
                 <p className="font-bold text-slate-700 dark:text-slate-300">
-                  No {activeTab === 'ENCODING' ? 'Local' : 'Masterdata'} inventory items loaded yet.
+                  No Masterdata inventory items loaded yet.
                 </p>
                 <p className="text-xs text-slate-500 mt-1">
-                  {activeTab === 'MASTERDATA'
-                    ? 'Click "Resync Masterdata" above to load the latest Masterdata catalog.'
-                    : 'Sync your branch from the Branch tab to load local inventory.'}
+                  Click &quot;Resync Masterdata&quot; above to load the latest Masterdata catalog.
                 </p>
               </>
             )}
@@ -2423,7 +2471,23 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           </span>
                         </div>
                       </td>
-                      <td className="py-2 px-3 text-[10px] text-slate-500 dark:text-slate-400 max-w-[220px] select-text cursor-text break-words">
+                      <td
+                        onClick={(e) => {
+                          if (item.category || item.subCategory || item.subsubCategory) {
+                            void handleCopyCategoryHierarchy(e, item);
+                          }
+                        }}
+                        title={
+                          item.category || item.subCategory || item.subsubCategory
+                            ? `${[item.category, item.subCategory, item.subsubCategory].filter(Boolean).join(' › ')} (Click to copy)`
+                            : undefined
+                        }
+                        className={`py-2 px-3 text-[10px] text-slate-500 dark:text-slate-400 max-w-[220px] select-text break-words ${
+                          item.category || item.subCategory || item.subsubCategory
+                            ? 'cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors'
+                            : 'cursor-text'
+                        }`}
+                      >
                         {[item.category, item.subCategory, item.subsubCategory]
                           .filter(Boolean)
                           .join(' › ') || '—'}
@@ -2554,10 +2618,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       {/* Category Hierarchy placed safely in top header away from description */}
                       {(item.category || item.subCategory || item.subsubCategory) && (
                         <div
-                          className="text-[9.5px] text-slate-400 dark:text-slate-500 max-w-[145px] truncate select-text cursor-text text-right"
+                          onClick={(e) => void handleCopyCategoryHierarchy(e, item)}
+                          className="text-[9.5px] text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 max-w-[165px] truncate select-text cursor-pointer text-right transition-colors active:opacity-75"
                           title={[item.category, item.subCategory, item.subsubCategory].filter(Boolean).join(' › ')}
                         >
-                          {[item.category, item.subCategory].filter(Boolean).join(' › ')}
+                          {[item.category, item.subCategory, item.subsubCategory].filter(Boolean).join(' › ')}
                         </div>
                       )}
                     </div>

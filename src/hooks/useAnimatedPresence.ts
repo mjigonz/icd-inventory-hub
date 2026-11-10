@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useScrollLock } from './useScrollLock';
 
 function getEffectiveDuration(durationMs: number): number {
   if (typeof window === 'undefined' || typeof document === 'undefined') return 0;
@@ -25,6 +26,8 @@ function getEffectiveDuration(durationMs: number): number {
 export function useAnimatedPresence(isOpen: boolean, durationMs = 200) {
   const [shouldRender, setShouldRender] = useState(isOpen);
   const [isVisible, setIsVisible] = useState(isOpen);
+
+  useScrollLock(isOpen);
 
   useEffect(() => {
     const effectiveDuration = getEffectiveDuration(durationMs);

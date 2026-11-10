@@ -41,6 +41,7 @@ import {
 } from '../services/db';
 import { submitCountsheetToSheets } from '../services/googleSheets';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { useScrollLock } from '../hooks/useScrollLock';
 import { useLanguage } from '../services/i18n';
 
 const MAX_ITEMS_PER_COUNTSHEET = 45;
@@ -115,6 +116,7 @@ export const CountView: React.FC<CountViewProps> = ({
   // Delete CS confirmation modal
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  useScrollLock(Boolean(editingItem || showDeleteModal));
 
   // Submit CS state
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1320,7 +1322,7 @@ export const CountView: React.FC<CountViewProps> = ({
       {/* Edit Quantity & Condition Modal */}
       {editingItem && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-xs w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-4">
+          <div data-scroll-lock-panel className="bg-white dark:bg-slate-900 rounded-3xl max-w-xs w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-4">
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">{t.editQtyAndConditionTitle}</h3>
             <p className="text-xs text-slate-600 dark:text-slate-300 truncate">{editingItem.itemDescription}</p>
 
@@ -1398,7 +1400,7 @@ export const CountView: React.FC<CountViewProps> = ({
       {/* Delete Countsheet Confirmation Modal (Owner Only) */}
       {showDeleteModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-3.5">
+          <div data-scroll-lock-panel className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-3.5">
             <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto">
               <AlertTriangle className="w-6 h-6" />
             </div>

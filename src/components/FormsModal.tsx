@@ -28,6 +28,7 @@ import {
   extractDriveResourceFromLink,
   subscribeToAdminDriveLinks,
 } from '../services/auditReportService';
+import { useScrollLock } from '../hooks/useScrollLock';
 
 export interface DriveFolderItem {
   id: string;
@@ -102,6 +103,8 @@ export const FormsModal: React.FC<FormsModalProps> = ({
   accessToken,
   onTokenRefreshed,
 }) => {
+  useScrollLock(isOpen);
+
   const [localToken, setLocalToken] = useState<string | null>(accessToken);
   const [hubAccountToken, setHubAccountToken] = useState<string | null>(null);
   const effectiveToken = hubAccountToken || localToken || accessToken || getStoredOAuthToken();
@@ -1097,7 +1100,10 @@ export const FormsModal: React.FC<FormsModalProps> = ({
         className="hidden"
       />
 
-      <div className="relative w-[90vw] sm:w-[68vw] max-w-[980px] h-[76dvh] sm:h-[68dvh] bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-2xl flex flex-col overflow-hidden">
+      <div
+        data-scroll-lock-panel
+        className="relative w-[90vw] sm:w-[68vw] max-w-[980px] h-[76dvh] sm:h-[68dvh] bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-2xl flex flex-col overflow-hidden"
+      >
         {/* Compact Top Header */}
         <div className="px-3 py-2.5 border-b border-slate-200/90 dark:border-zinc-800 flex items-center justify-between gap-2 bg-slate-50/80 dark:bg-zinc-900/60 shrink-0">
           <div className="flex items-center gap-2 min-w-0">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   FileSpreadsheet,
   X,
@@ -14,6 +14,7 @@ import {
   ArrowRightLeft,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
   Database,
   FileCheck,
   Table,
@@ -29,6 +30,7 @@ import {
   Plus,
   ArrowUp,
   ArrowDown,
+  GripVertical,
   Save,
   Edit3,
   Inbox,
@@ -83,9 +85,12 @@ import {
   reconstructCountsheetItemsFromSession,
   buildIatdRowFromCountsheetItem,
   fetchCountsheetItemsFromSpreadsheet,
+  importGeneratedCountsheetFromDrive,
   writeCountsheetActualsToEncodingSheet,
   detectIatdColumnIndices,
   parseIatdRowToCountsheetItem,
+  isIatdTotalQuantityFooterRow,
+  isIatdVersionFooterRow,
   GENERATED_ENCODING_FOLDER_NAME,
   fetchHubTemplatesFromServer,
   getCachedHubEncodingTemplates,
@@ -103,6 +108,7 @@ import {
   resolveValidOAuthToken,
   subscribeToTokenChanges,
 } from '../services/auth';
+import { useScrollLock } from '../hooks/useScrollLock';
 
 interface CreateAuditReportModalProps {
   isOpen: boolean;
@@ -114,6 +120,12 @@ interface CreateAuditReportModalProps {
   onConnectGoogle?: () => void;
   activeBranch: SelectedBranch | null;
   initialCountsheetType?: 'random' | null;
+  initialCountsheetSession?: RecentCountsheetSession | null;
+  isFromCountsheetExport?: boolean;
+  onBackToCountsheet?: (session?: RecentCountsheetSession | null) => void;
+  onSaveCountsheetSession?: (session: RecentCountsheetSession) => void;
+  transitionAnim?: 'none' | 'slide-in-right' | 'slide-out-right';
+  isTransparentBackdrop?: boolean;
   onBranchCreatedOrUpdated?: (branchId: string, branchName: string) => void;
   onTokenRefreshed?: (newToken: string) => void;
 }
@@ -123,6 +135,11 @@ type WizardStep = 'SOURCE_IATD' | 'TARGET_TEMPLATE' | 'MAP_HEADERS' | 'SUCCESS';
 export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   isOpen,
   onClose,
+  onBackToCountsheet,
+  onSaveCountsheetSession,
+  isFromCountsheetExport = false,
+  transitionAnim = 'none',
+  isTransparentBackdrop = false,
   accessToken,
   userEmail,
   userName,
@@ -130,10 +147,13 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   onConnectGoogle,
   activeBranch,
   initialCountsheetType = null,
+  initialCountsheetSession = null,
   onBranchCreatedOrUpdated,
   onTokenRefreshed,
 }) => {
   const [localToken, setLocalToken] = useState<string | null>(accessToken);
+
+  useScrollLock(isOpen);
 
   useEffect(() => {
     setLocalToken(accessToken);
@@ -235,7 +255,9 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   const [fullSourceIatdRows, setFullSourceIatdRows] = useState<any[][]>([]);
   const [isLoadingAllIatd, setIsLoadingAllIatd] = useState(false);
   const [importedCountsheetSession, setImportedCountsheetSession] = useState<RecentCountsheetSession | null>(null);
-  const [showCountsheetImportPicker, setShowCountsheetImportPicker] = useState(false);
+  const [prevInitialSession, setPrevInitialSession] = useState<RecentCountsheetSession | null>(null);
+  const internalSavedSessionRef = useRef<RecentCountsheetSession | null>(null);
+  const iatdUpdateGenerationRef = useRef<number>(0);
   const [recentCountsheetSessions, setRecentCountsheetSessions] = useState<RecentCountsheetSession[]>(() => getRecentCountsheets());
   const [countsheetUrlToImport, setCountsheetUrlToImport] = useState('');
   const [isImportingCountsheetSheet, setIsImportingCountsheetSheet] = useState(false);
@@ -246,6 +268,12 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   const [countsheetEditorSearch, setCountsheetEditorSearch] = useState('');
   const [countsheetEditorCsFilter, setCountsheetEditorCsFilter] = useState<string>('ALL');
   const [showAddMissingPanel, setShowAddMissingPanel] = useState(false);
+  const [showUpdateIatdPanel, setShowUpdateIatdPanel] = useState(false);
+  const [updateIatdSourceTab, setUpdateIatdSourceTab] = useState<'DRIVE' | 'EMAIL'>('DRIVE');
+  const [updateIatdSearchQuery, setUpdateIatdSearchQuery] = useState('');
+  const [updateIatdUrlInput, setUpdateIatdUrlInput] = useState('');
+  const [isUpdatingIatdSource, setIsUpdatingIatdSource] = useState(false);
+  const [updateIatdError, setUpdateIatdError] = useState<string | null>(null);
   const [addMissingMode, setAddMissingMode] = useState<'IATD_SEARCH' | 'CUSTOM'>('IATD_SEARCH');
   const [missingIatdSearchQuery, setMissingIatdSearchQuery] = useState('');
   const [onlyShowUnselectedIatd, setOnlyShowUnselectedIatd] = useState(true);
@@ -281,6 +309,27 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   const [isSavingEditsLoading, setIsSavingEditsLoading] = useState(false);
   const [isSaveEditsSuccess, setIsSaveEditsSuccess] = useState(false);
 
+  // Countsheet Editor Category drill-down filter and toolbar state (matching Create Countsheet layout)
+  const [csActiveHeaderButton, setCsActiveHeaderButton] = useState<'cat' | 'subCat' | 'subSubCat'>('cat');
+  const [csSelectedCats, setCsSelectedCats] = useState<string[]>([]);
+  const [csSelectedSubCats, setCsSelectedSubCats] = useState<string[]>([]);
+  const [csSelectedSubSubCats, setCsSelectedSubSubCats] = useState<string[]>([]);
+  const [csHierarchySearchQuery, setCsHierarchySearchQuery] = useState<string>('');
+  const [csItemSortBy, setCsItemSortBy] = useState<'seq' | 'itemCode' | 'itemDescription'>('seq');
+  const [csShowSortDropdown, setCsShowSortDropdown] = useState(false);
+  const [csOnlyWithBalance, setCsOnlyWithBalance] = useState(false);
+  const [csOnlyWithActual, setCsOnlyWithActual] = useState(false);
+  const [csOnlyMissingAdded, setCsOnlyMissingAdded] = useState(false);
+  const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const countsheetTableScrollRef = useRef<HTMLDivElement | null>(null);
+  const rowDragStateRef = useRef<{
+    seqIdx: number;
+    itemId: string;
+    startY: number;
+    lastClientY: number;
+    isDragging: boolean;
+  } | null>(null);
+
   // Branch Email Spreadsheets & Google Sheets Conversion state
   const [sourceViewMode, setSourceViewMode] = useState<'DRIVE' | 'EMAIL'>('DRIVE');
   const [emailMessages, setEmailMessages] = useState<BranchEmailSpreadsheetMessage[]>(() => getCachedBranchEmails());
@@ -305,6 +354,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
     'Cost',
     'Selling Price',
     'Balance',
+    'Amount',
   ];
 
   // Keep iatdAllRows synchronized with countsheetItems in exact sequence whenever a countsheet is active
@@ -330,27 +380,53 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
     }
   }, [countsheetEditorCsFilter]);
 
-  // Distinct CS codes present in countsheetItems (restricted strictly to existing countsheets)
+  // Distinct CS codes present in countsheetItems (restricted strictly to valid CSxx countsheets)
   const availableCsCodes = (() => {
-    const fromItems = countsheetItems.map((it) => it.csCode || 'CS01');
-    const fromSession = (importedCountsheetSession?.savedGroups || []).map((g) => g.name);
-    const set = new Set([...fromItems, ...fromSession]);
-    const list = Array.from(set).filter(Boolean);
+    const csSet = new Set<string>();
+    const addNormalizedCs = (raw?: string) => {
+      const m = String(raw || '').trim().match(/^CS0*(\d+)$/i);
+      if (m) {
+        csSet.add(`CS${String(parseInt(m[1], 10)).padStart(2, '0')}`);
+      }
+    };
+
+    countsheetItems.forEach((it) => addNormalizedCs(it.csCode || 'CS01'));
+
+    if (csSet.size === 0 && importedCountsheetSession?.savedGroups) {
+      let runningCs = 1;
+      importedCountsheetSession.savedGroups.forEach((g) => {
+        const startNum = g.startCsNumber && g.startCsNumber > 0 ? g.startCsNumber : runningCs;
+        const used = g.csUsed && g.csUsed > 0 ? g.csUsed : 1;
+        for (let k = 0; k < used; k++) {
+          csSet.add(`CS${String(startNum + k).padStart(2, '0')}`);
+        }
+        runningCs = startNum + used;
+      });
+    }
+
+    const list = Array.from(csSet);
     return list.length > 0
       ? list.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
       : ['CS01'];
   })();
 
-  const handleImportCountsheet = async (session: RecentCountsheetSession) => {
-    setImportedCountsheetSession(session);
-    setShowCountsheetImportPicker(false);
-    setCountsheetImportError(null);
-    setEnableCountsheetCols(true);
-
+  const handleImportCountsheet = async (session: RecentCountsheetSession, isBackgroundHydration = false) => {
     const headerRowToUse = session.headerRow || iatdHeaderRow;
-    setIatdHeaderRow(headerRowToUse);
 
-    // 1. Immediately reconstruct any embedded items so the UI updates right away
+    const computeMaxCsCount = (itemsList: PreGeneratedCountsheetItem[]): number => {
+      const distinctCs = new Set<string>();
+      let highestNum = 1;
+      itemsList.forEach((it) => {
+        const m = String(it.csCode || '').trim().match(/^CS0*(\d+)$/i);
+        if (m) {
+          const num = parseInt(m[1], 10);
+          highestNum = Math.max(highestNum, num);
+          distinctCs.add(`CS${String(num).padStart(2, '0')}`);
+        }
+      });
+      return Math.max(1, highestNum, distinctCs.size);
+    };
+
     const initialHeaders =
       session.iatdHeaders && session.iatdHeaders.length > 0
         ? session.iatdHeaders
@@ -359,67 +435,166 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         : SYNTHETIC_IATD_HEADERS;
 
     const immediateItems = reconstructCountsheetItemsFromSession(session, initialHeaders, []);
-    if (immediateItems.length > 0) {
-      setCountsheetItems(immediateItems);
-      const maxCs = immediateItems.reduce((acc, it) => {
-        const m = (it.csCode || '').match(/(\d+)/);
-        return m ? Math.max(acc, parseInt(m[1], 10)) : acc;
-      }, 1);
-      setCountsheetCount(maxCs);
-      const firstCs = immediateItems[0]?.csCode || 'CS01';
-      setNewMissingCsCode(firstCs);
-      setInsertAfterSeqNum(immediateItems.length);
+    const embeddedCatalogItems: PreGeneratedCountsheetItem[] =
+      session.rawItems && session.rawItems.length > 0
+        ? session.rawItems.map((r, rIdx) => ({
+            id: r.id || `raw_${rIdx}`,
+            rowIndex: rIdx,
+            csCode: 'CS01',
+            sheetTitle: session.sourceFile?.tabName || 'COUNTSHEET',
+            itemCode: r.itemCode || '',
+            barcode: r.barcode || '',
+            itemDescription: r.itemDescription || '',
+            category: r.category || '',
+            subCategory: r.subCategory || '',
+            subsubCategory: r.subsubCategory || '',
+            unit: r.unit || 'PC',
+            cost: Number(r.cost) || 0,
+            selling: Number(r.selling) || 0,
+            balance: r.balance ?? 0,
+            actual: r.actual ?? null,
+            raw: [],
+          }))
+        : immediateItems;
+    const embeddedCatalogRows = embeddedCatalogItems.map((it) =>
+      buildIatdRowFromCountsheetItem(it, initialHeaders)
+    );
 
-      if (!iatdInspection) {
-        const synthRows = immediateItems.map((it) => buildIatdRowFromCountsheetItem(it, initialHeaders));
-        setIatdInspection({
-          spreadsheetId: session.sourceFile?.id || session.spreadsheetId || 'countsheet-session',
-          spreadsheetTitle: session.sourceFile?.name || session.spreadsheetName || 'Pre-Generated Countsheet',
-          sheetTitle: session.sourceFile?.tabName || 'COUNTSHEET',
-          detectedHeaderRow: headerRowToUse,
-          headers: initialHeaders,
-          totalRows: synthRows.length,
-          sampleRows: synthRows.slice(0, 5),
-        });
+    if (!isBackgroundHydration) {
+      setImportedCountsheetSession(session);
+      setCountsheetImportError(null);
+      setEnableCountsheetCols(true);
+      setCountsheetEditorCsFilter('ALL');
+      setCountsheetEditorSearch('');
+      setCsActiveHeaderButton('cat');
+      setCsSelectedCats([]);
+      setCsSelectedSubCats([]);
+      setCsSelectedSubSubCats([]);
+      setCsHierarchySearchQuery('');
+      setCsItemSortBy('seq');
+      setCsOnlyWithBalance(false);
+      setCsOnlyWithActual(false);
+      setCsOnlyMissingAdded(false);
+      setIatdHeaderRow(headerRowToUse);
+
+      if (embeddedCatalogRows.length > 0) {
+        setFullSourceIatdRows(embeddedCatalogRows);
+        setIatdAllRows(embeddedCatalogRows);
+      }
+
+      if (immediateItems.length > 0) {
+        setCountsheetItems(immediateItems);
+        setCountsheetCount(computeMaxCsCount(immediateItems));
+        const firstCs = immediateItems[0]?.csCode || 'CS01';
+        setNewMissingCsCode(firstCs);
+        setInsertAfterSeqNum(immediateItems.length);
+
+        if (!iatdInspection) {
+          const synthRows =
+            embeddedCatalogRows.length > 0
+              ? embeddedCatalogRows
+              : immediateItems.map((it) => buildIatdRowFromCountsheetItem(it, initialHeaders));
+          setIatdInspection({
+            spreadsheetId: session.sourceFile?.id || session.spreadsheetId || 'countsheet-session',
+            spreadsheetTitle: session.sourceFile?.name || session.spreadsheetName || 'Pre-Generated Countsheet',
+            sheetTitle: session.sourceFile?.tabName || 'COUNTSHEET',
+            detectedHeaderRow: headerRowToUse,
+            headers: initialHeaders,
+            totalRows: synthRows.length,
+            sampleRows: synthRows.slice(0, 5),
+          });
+        }
       }
     }
 
-    // 2. Inspect source IATD if available and fetch all source rows for missing-item search & legacy reconstruction
-    const sourceId = extractSpreadsheetId(session.sourceFile?.id || '');
-    if (sourceId && !sourceId.startsWith('draft_')) {
+    // 2. Inspect source IATD if it is a separate IATD spreadsheet (not the countsheet spreadsheet itself)
+    const cleanCsSheetId =
+      session.spreadsheetId &&
+      !session.spreadsheetId.startsWith('draft_') &&
+      !session.spreadsheetId.startsWith('cs_')
+        ? extractSpreadsheetId(session.spreadsheetId)
+        : '';
+    let rawSourceId = session.sourceFile?.id || '';
+    let sourceTabHint = session.sourceFile?.tabName;
+    const isRealSheetId = (val?: string) =>
+      Boolean(
+        val &&
+          val !== 'imported-countsheet' &&
+          val !== 'saved-session' &&
+          !val.startsWith('draft_') &&
+          !val.startsWith('cs_') &&
+          val !== 'countsheet-session'
+      );
+
+    if (!isRealSheetId(rawSourceId)) {
+      const savedMatches = getRecentCountsheets();
+      const matchedSaved = savedMatches.find(
+        (s) =>
+          isRealSheetId(s.sourceFile?.id) &&
+          (s.id === session.id ||
+            (cleanCsSheetId && extractSpreadsheetId(s.spreadsheetId || '') === cleanCsSheetId) ||
+            (session.spreadsheetName && s.spreadsheetName === session.spreadsheetName))
+      );
+      if (matchedSaved?.sourceFile?.id) {
+        rawSourceId = matchedSaved.sourceFile.id;
+        sourceTabHint = sourceTabHint || matchedSaved.sourceFile.tabName;
+      }
+    }
+
+    const sourceId = isRealSheetId(rawSourceId) ? extractSpreadsheetId(rawSourceId) : '';
+    const hasSeparateIatdSource = Boolean(sourceId && sourceId !== cleanCsSheetId);
+
+    if (hasSeparateIatdSource) {
+      const hydrationGen = iatdUpdateGenerationRef.current;
       setIsLoadingIatd(true);
       setIatdError(null);
       try {
         const tokenToUse = (await resolveValidOAuthToken(effectiveToken, { allowPopup: false })) || effectiveToken || '';
-        const { tabs } = await getSpreadsheetTabs(tokenToUse, sourceId);
+        const { tabs, resolvedSpreadsheetId } = await getSpreadsheetTabs(tokenToUse, sourceId);
+        if (iatdUpdateGenerationRef.current !== hydrationGen) return;
+        const activeSourceId = resolvedSpreadsheetId || sourceId;
         setIatdTabs(tabs);
-        const targetTab = session.sourceFile?.tabName || (tabs.length > 0 ? tabs[0].title : undefined);
+        const iatdTabMatch = tabs.find((t) =>
+          t.title.trim().toUpperCase().replace(/[\s_-]/g, '').includes('IATD')
+        );
+        const targetTab =
+          sourceTabHint || (iatdTabMatch ? iatdTabMatch.title : tabs.length > 0 ? tabs[0].title : undefined);
         if (targetTab) setSelectedIatdTab(targetTab);
 
-        const inspection = await inspectSheetHeaders(tokenToUse, sourceId, targetTab, headerRowToUse);
+        const inspection = await inspectSheetHeaders(tokenToUse, activeSourceId, targetTab, headerRowToUse);
+        if (iatdUpdateGenerationRef.current !== hydrationGen) return;
         setIatdInspection(inspection);
-        setIatdInputId(sourceId);
+        setIatdInputId(activeSourceId);
 
         const dateStr = new Date().toISOString().split('T')[0];
         setNewCopyTitle(`${session.spreadsheetName || inspection.spreadsheetTitle} - Audit Encoding (${dateStr})`);
 
         const { headers: fullHeaders, rows: allRows } = await fetchAllSheetRows(
           tokenToUse,
-          sourceId,
+          activeSourceId,
           targetTab || inspection.sheetTitle,
-          headerRowToUse
+          inspection.detectedHeaderRow || headerRowToUse
         );
-        setFullSourceIatdRows(allRows);
+        if (iatdUpdateGenerationRef.current !== hydrationGen) return;
+        const cleanRows = allRows.filter(
+          (row, idx) =>
+            Array.isArray(row) &&
+            row.some((c) => c !== null && c !== undefined && String(c).trim() !== '') &&
+            !isIatdTotalQuantityFooterRow(row) &&
+            !isIatdVersionFooterRow(row, idx > 0 ? allRows[idx - 1] : undefined)
+        );
+        setFullSourceIatdRows(cleanRows.length > 0 ? cleanRows : embeddedCatalogRows);
+        setIatdAllRows(cleanRows.length > 0 ? cleanRows : embeddedCatalogRows);
 
         const effectiveHeaders = fullHeaders.length > 0 ? fullHeaders : inspection.headers;
-        const hydratedItems = reconstructCountsheetItemsFromSession(session, effectiveHeaders, allRows);
+        const hydratedItems = reconstructCountsheetItemsFromSession(session, effectiveHeaders, cleanRows);
 
         // Also if session.spreadsheetId is a real Google Sheet, check if any Actual counts were entered in the sheet
         let finalItems = hydratedItems.length > 0 ? hydratedItems : immediateItems;
-        const cleanCsSheetId = extractSpreadsheetId(session.spreadsheetId || '');
-        if (cleanCsSheetId && !cleanCsSheetId.startsWith('draft_') && cleanCsSheetId !== sourceId) {
+        if (cleanCsSheetId) {
           try {
             const sheetData = await fetchCountsheetItemsFromSpreadsheet(tokenToUse, cleanCsSheetId);
+            if (iatdUpdateGenerationRef.current !== hydrationGen) return;
             if (sheetData.items.length > 0) {
               if (finalItems.length === 0) {
                 finalItems = sheetData.items;
@@ -450,20 +625,89 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
             // Ignore if countsheet spreadsheet isn't accessible
           }
         }
+        if (iatdUpdateGenerationRef.current !== hydrationGen) return;
 
-        setCountsheetItems(finalItems);
-        if (finalItems.length > 0) {
+        setCountsheetItems((prev) => {
+          if (isBackgroundHydration && prev.length > 0) {
+            return prev.map((existingItem, idx) => {
+              const hydratedMatch =
+                finalItems[idx] && finalItems[idx].id === existingItem.id
+                  ? finalItems[idx]
+                  : finalItems.find(
+                      (f) =>
+                        f.id === existingItem.id ||
+                        (f.itemCode &&
+                          f.itemCode.toLowerCase() === (existingItem.itemCode || '').toLowerCase() &&
+                          f.csCode === existingItem.csCode)
+                    );
+              if (!hydratedMatch) {
+                return existingItem;
+              }
+              const nextCost =
+                hydratedMatch.cost !== undefined && hydratedMatch.cost !== null
+                  ? hydratedMatch.cost
+                  : existingItem.cost;
+              const nextSelling =
+                hydratedMatch.selling !== undefined && hydratedMatch.selling !== null
+                  ? hydratedMatch.selling
+                  : existingItem.selling;
+              const nextBal =
+                existingItem.balance === null
+                  ? null
+                  : hydratedMatch.balance !== undefined && hydratedMatch.balance !== null
+                  ? hydratedMatch.balance
+                  : existingItem.balance;
+              const nextAmount =
+                nextBal === null || nextBal === undefined
+                  ? 0
+                  : hydratedMatch.amount !== undefined &&
+                    nextBal === hydratedMatch.balance &&
+                    nextCost === hydratedMatch.cost
+                  ? hydratedMatch.amount
+                  : Math.round((Number(nextBal) * Number(nextCost || 0) + Number.EPSILON) * 100) / 100;
+              const nextAct =
+                existingItem.actual !== undefined && existingItem.actual !== null
+                  ? existingItem.actual
+                  : hydratedMatch.actual ?? null;
+              const merged: PreGeneratedCountsheetItem = {
+                ...existingItem,
+                ...hydratedMatch,
+                id: existingItem.id,
+                csCode: existingItem.csCode || hydratedMatch.csCode,
+                sheetTitle: existingItem.sheetTitle || hydratedMatch.sheetTitle,
+                isMissingItem: existingItem.isMissingItem,
+                cost: nextCost,
+                selling: nextSelling,
+                balance: nextBal,
+                amount: nextAmount,
+                actual: nextAct,
+              };
+              merged.raw = buildIatdRowFromCountsheetItem(merged, effectiveHeaders);
+              return merged;
+            });
+          }
+          return finalItems;
+        });
+        if (finalItems.length > 0 && !isBackgroundHydration) {
+          setCountsheetCount(computeMaxCsCount(finalItems));
           setInsertAfterSeqNum(finalItems.length);
           setNewMissingCsCode(finalItems[finalItems.length - 1]?.csCode || 'CS01');
         }
       } catch (err: any) {
+        if (iatdUpdateGenerationRef.current !== hydrationGen) return;
         console.warn('Could not load source IATD for countsheet session, using embedded countsheet data:', err);
+        if (embeddedCatalogRows.length > 0) {
+          setFullSourceIatdRows((prev) => (prev.length > 0 ? prev : embeddedCatalogRows));
+        }
         if (immediateItems.length > 0) {
           const fallbackHeaders =
             session.iatdHeaders && session.iatdHeaders.length > 0
               ? session.iatdHeaders
               : SYNTHETIC_IATD_HEADERS;
-          const synthRows = immediateItems.map((it) => buildIatdRowFromCountsheetItem(it, fallbackHeaders));
+          const synthRows =
+            embeddedCatalogRows.length > 0
+              ? embeddedCatalogRows
+              : immediateItems.map((it) => buildIatdRowFromCountsheetItem(it, fallbackHeaders));
           setIatdInspection({
             spreadsheetId: sourceId || session.spreadsheetId || 'countsheet-session',
             spreadsheetTitle: session.sourceFile?.name || session.spreadsheetName || 'Pre-Generated Countsheet',
@@ -485,19 +729,51 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
       const fallbackHeaders =
         session.iatdHeaders && session.iatdHeaders.length > 0
           ? session.iatdHeaders
+          : iatdInspection?.headers && iatdInspection.headers.length > 0
+          ? iatdInspection.headers
           : SYNTHETIC_IATD_HEADERS;
-      const synthRows = immediateItems.map((it) => buildIatdRowFromCountsheetItem(it, fallbackHeaders));
-      setIatdInspection({
-        spreadsheetId: session.spreadsheetId || 'countsheet-session',
-        spreadsheetTitle: session.spreadsheetName || 'Pre-Generated Countsheet',
-        sheetTitle: session.sourceFile?.tabName || 'COUNTSHEET',
-        detectedHeaderRow: headerRowToUse,
-        headers: fallbackHeaders,
-        totalRows: synthRows.length,
-        sampleRows: synthRows.slice(0, 5),
-      });
+      const synthRows =
+        embeddedCatalogRows.length > 0
+          ? embeddedCatalogRows
+          : immediateItems.map((it) => buildIatdRowFromCountsheetItem(it, fallbackHeaders));
+      setFullSourceIatdRows((prev) => (prev.length > 0 ? prev : synthRows));
+      setIatdAllRows((prev) => (prev.length > 0 ? prev : synthRows));
+      if (!iatdInspection) {
+        setIatdInspection({
+          spreadsheetId: session.spreadsheetId || 'countsheet-session',
+          spreadsheetTitle: session.spreadsheetName || 'Pre-Generated Countsheet',
+          sheetTitle: 'COUNTSHEET',
+          detectedHeaderRow: headerRowToUse,
+          headers: fallbackHeaders,
+          totalRows: synthRows.length,
+          sampleRows: synthRows.slice(0, 5),
+        });
+      }
       const dateStr = new Date().toISOString().split('T')[0];
       setNewCopyTitle(`${session.spreadsheetName} - Audit Encoding (${dateStr})`);
+    } else if (cleanCsSheetId) {
+      // Fallback: if session had no embedded items and no separate IATD source, fetch directly from the countsheet Google Sheet
+      setIsLoadingIatd(true);
+      try {
+        const tokenToUse = (await resolveValidOAuthToken(effectiveToken, { allowPopup: false })) || effectiveToken || '';
+        const importedSession = await importGeneratedCountsheetFromDrive(tokenToUse, cleanCsSheetId);
+        const fallbackHeaders =
+          iatdInspection?.headers && iatdInspection.headers.length > 0
+            ? iatdInspection.headers
+            : SYNTHETIC_IATD_HEADERS;
+        const hydrated = reconstructCountsheetItemsFromSession(importedSession, fallbackHeaders, []);
+        setImportedCountsheetSession(importedSession);
+        setCountsheetItems(hydrated);
+        if (hydrated.length > 0) {
+          setCountsheetCount(computeMaxCsCount(hydrated));
+          setInsertAfterSeqNum(hydrated.length);
+          setNewMissingCsCode(hydrated[0]?.csCode || 'CS01');
+        }
+      } catch (err: any) {
+        setCountsheetImportError(err.message || 'Could not load Countsheet spreadsheet from Google Drive.');
+      } finally {
+        setIsLoadingIatd(false);
+      }
     }
   };
 
@@ -510,66 +786,106 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
     setCountsheetImportError(null);
     try {
       const tokenToUse = (await resolveValidOAuthToken(effectiveToken, { allowPopup: false })) || effectiveToken || '';
-      const sheetData = await fetchCountsheetItemsFromSpreadsheet(tokenToUse, cleanId);
-      if (sheetData.items.length === 0) {
-        setCountsheetImportError('No countsheet items found in that spreadsheet. Make sure it is a generated Countsheet Google Sheet.');
-        setIsImportingCountsheetSheet(false);
-        return;
-      }
-
-      const headersToUse =
-        iatdInspection && iatdInspection.headers.length > 0
-          ? iatdInspection.headers
-          : SYNTHETIC_IATD_HEADERS;
-
-      const enrichedItems = sheetData.items.map((it) => ({
-        ...it,
-        raw: buildIatdRowFromCountsheetItem(it, headersToUse),
-      }));
-
-      const savedSession = await saveRecentCountsheet({
-        spreadsheetId: sheetData.spreadsheetId,
-        spreadsheetName: sheetData.spreadsheetTitle,
-        webViewLink: `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`,
-        totalSheets: sheetData.totalSheets,
-        totalItems: enrichedItems.length,
-        sourceFile: {
-          id: iatdInspection?.spreadsheetId || sheetData.spreadsheetId,
-          name: iatdInspection?.spreadsheetTitle || sheetData.spreadsheetTitle,
-          tabName: selectedIatdTab || iatdInspection?.sheetTitle || 'COUNTSHEET',
-        },
-        iatdHeaders: headersToUse,
-        headerRow: iatdHeaderRow,
-        orderedCountsheetItems: enrichedItems,
-      });
-
+      const importedSession = await importGeneratedCountsheetFromDrive(tokenToUse, cleanId);
       setRecentCountsheetSessions(getRecentCountsheets());
-      setImportedCountsheetSession(savedSession);
-      setCountsheetItems(enrichedItems);
-      setEnableCountsheetCols(true);
-
-      if (!iatdInspection) {
-        const synthRows = enrichedItems.map((it) => buildIatdRowFromCountsheetItem(it, headersToUse));
-        setIatdInspection({
-          spreadsheetId: sheetData.spreadsheetId,
-          spreadsheetTitle: sheetData.spreadsheetTitle,
-          sheetTitle: 'COUNTSHEET',
-          detectedHeaderRow: 2,
-          headers: headersToUse,
-          totalRows: synthRows.length,
-          sampleRows: synthRows.slice(0, 5),
-        });
-      }
-
-      const dateStr = new Date().toISOString().split('T')[0];
-      setNewCopyTitle(`${sheetData.spreadsheetTitle} - Audit Encoding (${dateStr})`);
+      await handleImportCountsheet(importedSession);
       setCountsheetUrlToImport('');
-      setShowCountsheetImportPicker(false);
     } catch (err: any) {
       setCountsheetImportError(err.message || 'Failed to read Countsheet spreadsheet from Google Drive.');
     } finally {
       setIsImportingCountsheetSheet(false);
     }
+  };
+
+  // Track raw formula/text draft while typing in Balance or Actual inputs (e.g. "=5+4")
+  const [editingQtyDrafts, setEditingQtyDrafts] = useState<Record<string, string>>({});
+
+  // Safely evaluate arithmetic expressions like "=5+4" or "5+4" into a number (e.g. 9)
+  const evaluateQtyFormula = (raw: string, stripTrailingOps = false): number | null => {
+    let expr = raw.trim();
+    if (!expr) return null;
+    if (expr.startsWith('=')) {
+      expr = expr.replace(/^=+/, '').trim();
+    }
+    if (stripTrailingOps) {
+      expr = expr.replace(/[+\-*/.\s]+$/, '').trim();
+    }
+    if (!expr) return null;
+    if (!/^[0-9+\-*/().\s]+$/.test(expr)) return null;
+
+    let pos = 0;
+    const skipWhitespace = () => {
+      while (pos < expr.length && /\s/.test(expr[pos])) pos++;
+    };
+
+    const parseExpression = (): number => {
+      let value = parseTerm();
+      while (true) {
+        skipWhitespace();
+        if (pos < expr.length && (expr[pos] === '+' || expr[pos] === '-')) {
+          const op = expr[pos++];
+          const right = parseTerm();
+          value = op === '+' ? value + right : value - right;
+        } else {
+          break;
+        }
+      }
+      return value;
+    };
+
+    const parseTerm = (): number => {
+      let value = parseFactor();
+      while (true) {
+        skipWhitespace();
+        if (pos < expr.length && (expr[pos] === '*' || expr[pos] === '/')) {
+          const op = expr[pos++];
+          const right = parseFactor();
+          if (op === '/') {
+            if (right === 0) return NaN;
+            value = value / right;
+          } else {
+            value = value * right;
+          }
+        } else {
+          break;
+        }
+      }
+      return value;
+    };
+
+    const parseFactor = (): number => {
+      skipWhitespace();
+      if (pos >= expr.length) return NaN;
+      if (expr[pos] === '+' || expr[pos] === '-') {
+        const op = expr[pos++];
+        const factor = parseFactor();
+        return op === '-' ? -factor : factor;
+      }
+      if (expr[pos] === '(') {
+        pos++;
+        const val = parseExpression();
+        skipWhitespace();
+        if (pos >= expr.length || expr[pos] !== ')') return NaN;
+        pos++;
+        return val;
+      }
+      const start = pos;
+      let hasDot = false;
+      while (pos < expr.length && (/[0-9]/.test(expr[pos]) || expr[pos] === '.')) {
+        if (expr[pos] === '.') {
+          if (hasDot) return NaN;
+          hasDot = true;
+        }
+        pos++;
+      }
+      if (start === pos) return NaN;
+      return parseFloat(expr.slice(start, pos));
+    };
+
+    const result = parseExpression();
+    skipWhitespace();
+    if (pos !== expr.length || !Number.isFinite(result)) return null;
+    return Math.round((result + Number.EPSILON) * 1e6) / 1e6;
   };
 
   // Update a single countsheet item's Balance, Actual, or CS code in sequence
@@ -591,24 +907,170 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         ...target,
         ...updates,
       };
+      if ('balance' in updates || 'cost' in updates) {
+        updatedItem.amount =
+          updatedItem.balance === null || updatedItem.balance === undefined
+            ? 0
+            : Math.round(
+                (Number(updatedItem.balance) * Number(updatedItem.cost || 0) + Number.EPSILON) * 100
+              ) / 100;
+      }
       updatedItem.raw = buildIatdRowFromCountsheetItem(updatedItem, headersToUse);
       next[indexInSequence] = updatedItem;
       return next;
     });
   };
 
-  // Move item up or down in sequence
-  const handleMoveCountsheetItem = (indexInSequence: number, direction: 'UP' | 'DOWN') => {
+  // Move item to a new index in sequence (via mouse drag-and-drop)
+  const handleMoveCountsheetItemToIndex = (fromSeqIdx: number, toSeqIdx: number) => {
+    if (fromSeqIdx === toSeqIdx) return;
     setCountsheetItems((prev) => {
-      const targetIdx = direction === 'UP' ? indexInSequence - 1 : indexInSequence + 1;
-      if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+      if (
+        fromSeqIdx < 0 ||
+        fromSeqIdx >= prev.length ||
+        toSeqIdx < 0 ||
+        toSeqIdx >= prev.length
+      ) {
+        return prev;
+      }
       const next = [...prev];
-      const temp = next[indexInSequence];
-      next[indexInSequence] = next[targetIdx];
-      next[targetIdx] = temp;
+      const [movedItem] = next.splice(fromSeqIdx, 1);
+      const targetItem = prev[toSeqIdx];
+      if (targetItem?.csCode && movedItem.csCode !== targetItem.csCode) {
+        const headersToUse =
+          iatdInspection && iatdInspection.headers.length > 0
+            ? iatdInspection.headers
+            : importedCountsheetSession?.iatdHeaders && importedCountsheetSession.iatdHeaders.length > 0
+            ? importedCountsheetSession.iatdHeaders
+            : SYNTHETIC_IATD_HEADERS;
+        const updatedMoved: PreGeneratedCountsheetItem = {
+          ...movedItem,
+          csCode: targetItem.csCode,
+        };
+        updatedMoved.raw = buildIatdRowFromCountsheetItem(updatedMoved, headersToUse);
+        next.splice(toSeqIdx, 0, updatedMoved);
+      } else {
+        next.splice(toSeqIdx, 0, movedItem);
+      }
       return next;
     });
   };
+
+  const moveItemRef = useRef(handleMoveCountsheetItemToIndex);
+  moveItemRef.current = handleMoveCountsheetItemToIndex;
+
+  useEffect(() => {
+    let autoScrollFrame: number | null = null;
+
+    const checkRowUnderPointer = (clientY: number) => {
+      const dragState = rowDragStateRef.current;
+      const container = countsheetTableScrollRef.current;
+      if (!dragState || !dragState.isDragging || !container) return;
+
+      const rows = container.querySelectorAll<HTMLTableRowElement>('tbody tr[data-seq-idx]');
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const rect = row.getBoundingClientRect();
+        if (clientY >= rect.top && clientY <= rect.bottom) {
+          const targetSeqIdx = parseInt(row.getAttribute('data-seq-idx') || '-1', 10);
+          const fromSeqIdx = dragState.seqIdx;
+          if (targetSeqIdx >= 0 && targetSeqIdx !== fromSeqIdx) {
+            const midY = rect.top + rect.height / 2;
+            if (
+              (fromSeqIdx < targetSeqIdx && clientY >= midY) ||
+              (fromSeqIdx > targetSeqIdx && clientY <= midY)
+            ) {
+              moveItemRef.current(fromSeqIdx, targetSeqIdx);
+              dragState.seqIdx = targetSeqIdx;
+            }
+          }
+          break;
+        }
+      }
+    };
+
+    const stepAutoScroll = () => {
+      const dragState = rowDragStateRef.current;
+      const container = countsheetTableScrollRef.current;
+      if (!dragState || !dragState.isDragging || !container) {
+        autoScrollFrame = null;
+        return;
+      }
+      const rect = container.getBoundingClientRect();
+      const edgeZone = 48;
+      let scrolled = false;
+      if (dragState.lastClientY < rect.top + edgeZone && container.scrollTop > 0) {
+        const intensity = Math.max(2, Math.min(14, (rect.top + edgeZone - dragState.lastClientY) * 0.25));
+        container.scrollTop -= intensity;
+        scrolled = true;
+      } else if (
+        dragState.lastClientY > rect.bottom - edgeZone &&
+        container.scrollTop + container.clientHeight < container.scrollHeight
+      ) {
+        const intensity = Math.max(2, Math.min(14, (dragState.lastClientY - (rect.bottom - edgeZone)) * 0.25));
+        container.scrollTop += intensity;
+        scrolled = true;
+      }
+      if (scrolled) {
+        checkRowUnderPointer(dragState.lastClientY);
+        autoScrollFrame = requestAnimationFrame(stepAutoScroll);
+      } else {
+        autoScrollFrame = null;
+      }
+    };
+
+    const handleWindowMouseMove = (e: MouseEvent) => {
+      const dragState = rowDragStateRef.current;
+      if (!dragState) return;
+      dragState.lastClientY = e.clientY;
+
+      if (!dragState.isDragging) {
+        if (Math.abs(e.clientY - dragState.startY) < 4) return;
+        dragState.isDragging = true;
+        setDraggingItemId(dragState.itemId);
+        setCsItemSortBy((prev) => (prev !== 'seq' ? 'seq' : prev));
+        window.getSelection()?.removeAllRanges();
+      }
+
+      e.preventDefault();
+      checkRowUnderPointer(e.clientY);
+
+      const container = countsheetTableScrollRef.current;
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const edgeZone = 48;
+        if (e.clientY < rect.top + edgeZone || e.clientY > rect.bottom - edgeZone) {
+          if (autoScrollFrame === null) {
+            autoScrollFrame = requestAnimationFrame(stepAutoScroll);
+          }
+        } else if (autoScrollFrame !== null) {
+          cancelAnimationFrame(autoScrollFrame);
+          autoScrollFrame = null;
+        }
+      }
+    };
+
+    const handleWindowMouseUp = () => {
+      if (autoScrollFrame !== null) {
+        cancelAnimationFrame(autoScrollFrame);
+        autoScrollFrame = null;
+      }
+      if (rowDragStateRef.current) {
+        rowDragStateRef.current = null;
+        setDraggingItemId(null);
+      }
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove, { passive: false });
+    window.addEventListener('mouseup', handleWindowMouseUp);
+    return () => {
+      if (autoScrollFrame !== null) {
+        cancelAnimationFrame(autoScrollFrame);
+      }
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+    };
+  }, []);
 
   // Remove item from countsheet sequence
   const handleRemoveCountsheetItem = (indexInSequence: number) => {
@@ -687,38 +1149,523 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
     setTimeout(() => setCountsheetSaveMsg(null), 3000);
   };
 
+  // Select and apply an updated IATD spreadsheet for the loaded Countsheet (updates inventory catalog & item metadata)
+  const handleApplyUpdatedIatdForCountsheet = async (
+    rawId: string,
+    tabName?: string,
+    driveFile?: DriveSpreadsheetFile
+  ) => {
+    let cleanId = extractSpreadsheetId(rawId);
+    if (!cleanId) return;
+
+    iatdUpdateGenerationRef.current += 1;
+    setIsUpdatingIatdSource(true);
+    setUpdateIatdError(null);
+    try {
+      const tokenToUse =
+        (await resolveValidOAuthToken(effectiveToken, { allowPopup: true })) ||
+        effectiveToken ||
+        '';
+
+      // Auto-convert non-native Excel (.xlsx/.xls/.csv) file in Drive if selected
+      const matchedDriveFile = driveFile || driveFiles.find((f) => f.id === cleanId);
+      const isNonNativeExcel =
+        matchedDriveFile &&
+        ((matchedDriveFile.mimeType &&
+          matchedDriveFile.mimeType !== 'application/vnd.google-apps.spreadsheet') ||
+          /\.(xlsx|xls|xlsm|csv|ods)$/i.test(matchedDriveFile.name || ''));
+
+      if (isNonNativeExcel && matchedDriveFile) {
+        const converted = await convertDriveExcelFileToGoogleSheet(tokenToUse, {
+          id: matchedDriveFile.id,
+          name: matchedDriveFile.name,
+          mimeType: matchedDriveFile.mimeType,
+        });
+        cleanId = converted.id;
+        searchDriveSpreadsheets(tokenToUse, searchQuery, { userEmail, excludeTemplates: true })
+          .then((files) => setDriveFiles(files))
+          .catch(() => {});
+      }
+
+      const { tabs, resolvedSpreadsheetId } = await getSpreadsheetTabs(tokenToUse, cleanId);
+      if (resolvedSpreadsheetId) {
+        cleanId = resolvedSpreadsheetId;
+      }
+      setIatdTabs(tabs);
+      const iatdTabMatch = tabs.find((t) =>
+        t.title.trim().toUpperCase().replace(/[\s_-]/g, '').includes('IATD')
+      );
+      const targetTab =
+        tabName || (iatdTabMatch ? iatdTabMatch.title : tabs.length > 0 ? tabs[0].title : undefined);
+      if (targetTab) setSelectedIatdTab(targetTab);
+
+      const inspection = await inspectSheetHeaders(
+        tokenToUse,
+        cleanId,
+        targetTab,
+        iatdHeaderRow
+      );
+      const detectedHeaderRowToUse = inspection.detectedHeaderRow || iatdHeaderRow || 2;
+      setIatdHeaderRow(detectedHeaderRowToUse);
+
+      const { headers: fullHeaders, rows: allRows } = await fetchAllSheetRows(
+        tokenToUse,
+        cleanId,
+        targetTab || inspection.sheetTitle,
+        detectedHeaderRowToUse
+      );
+
+      const cleanIatdRows = allRows.filter(
+        (row, idx) =>
+          Array.isArray(row) &&
+          row.some((c) => c !== null && c !== undefined && String(c).trim() !== '') &&
+          !isIatdTotalQuantityFooterRow(row) &&
+          !isIatdVersionFooterRow(row, idx > 0 ? allRows[idx - 1] : undefined)
+      );
+
+      const effectiveHeaders =
+        fullHeaders && fullHeaders.length > 0 ? fullHeaders : inspection.headers;
+      const updatedInspection: SheetHeaderInspection = {
+        ...inspection,
+        detectedHeaderRow: detectedHeaderRowToUse,
+        headers: effectiveHeaders,
+        totalRows: cleanIatdRows.length || inspection.totalRows,
+        sampleRows: cleanIatdRows.slice(0, 5),
+      };
+
+      setIatdInspection(updatedInspection);
+      setIatdInputId(cleanId);
+      setFullSourceIatdRows(cleanIatdRows);
+      setIatdAllRows(cleanIatdRows);
+
+      // Build lookup map from the new IATD rows to refresh existing selected countsheet items
+      const cols = detectIatdColumnIndices(effectiveHeaders);
+      const normalizeLookupKey = (v: unknown) =>
+        String(v ?? '')
+          .trim()
+          .toLowerCase()
+          .replace(/\.0+$/, '');
+      const stripLeadingZeros = (v: string) => v.replace(/^0+(?=\d)/, '');
+      const stripNonAlnum = (v: string) => v.replace(/[^a-z0-9]/g, '');
+      const normalizeDescKey = (v: unknown) =>
+        String(v ?? '')
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, ' ');
+
+      const parsedByCode = new Map<string, { parsed: PreGeneratedCountsheetItem; row: any[]; idx: number }>();
+      const parsedByStripped = new Map<string, { parsed: PreGeneratedCountsheetItem; row: any[]; idx: number }>();
+      const parsedByAlnum = new Map<string, { parsed: PreGeneratedCountsheetItem; row: any[]; idx: number }>();
+      const parsedByDesc = new Map<string, { parsed: PreGeneratedCountsheetItem; row: any[]; idx: number }>();
+      const newCatalogParsedItems: PreGeneratedCountsheetItem[] = [];
+
+      cleanIatdRows.forEach((row, rIdx) => {
+        if (!row) return;
+        const parsed = parseIatdRowToCountsheetItem(row, rIdx, cols, 'CS01');
+        if (!parsed.itemCode && !parsed.itemDescription) return;
+        newCatalogParsedItems.push(parsed);
+
+        const cKey = normalizeLookupKey(parsed.itemCode);
+        const bKey = normalizeLookupKey(parsed.barcode);
+        const dKey = normalizeDescKey(parsed.itemDescription);
+
+        if (cKey) {
+          if (!parsedByCode.has(cKey)) parsedByCode.set(cKey, { parsed, row, idx: rIdx });
+          const cs = stripLeadingZeros(cKey);
+          if (cs && !parsedByStripped.has(cs)) parsedByStripped.set(cs, { parsed, row, idx: rIdx });
+          const ca = stripNonAlnum(cs || cKey);
+          if (ca && !parsedByAlnum.has(ca)) parsedByAlnum.set(ca, { parsed, row, idx: rIdx });
+        }
+        if (bKey) {
+          if (!parsedByCode.has(bKey)) parsedByCode.set(bKey, { parsed, row, idx: rIdx });
+          const bs = stripLeadingZeros(bKey);
+          if (bs && !parsedByStripped.has(bs)) parsedByStripped.set(bs, { parsed, row, idx: rIdx });
+          const ba = stripNonAlnum(bs || bKey);
+          if (ba && !parsedByAlnum.has(ba)) parsedByAlnum.set(ba, { parsed, row, idx: rIdx });
+        }
+        if (dKey && !parsedByDesc.has(dKey)) {
+          parsedByDesc.set(dKey, { parsed, row, idx: rIdx });
+        }
+      });
+
+      // Preserve any typed Actual Qty drafts, and clear Balance drafts so the new IATD balances take effect
+      const itemsWithCommittedActuals = countsheetItems.map((it) => {
+        let nextAct = it.actual;
+        const actDraft = editingQtyDrafts[`actual_${it.id}`];
+        if (actDraft !== undefined) {
+          if (actDraft.trim() === '') {
+            nextAct = null;
+          } else {
+            const evaluated = evaluateQtyFormula(actDraft, true);
+            if (evaluated !== null) {
+              nextAct = evaluated;
+            } else {
+              const parsedNum = parseFloat(actDraft);
+              if (!isNaN(parsedNum)) nextAct = parsedNum;
+            }
+          }
+        }
+        return {
+          ...it,
+          actual: nextAct,
+        };
+      });
+      setEditingQtyDrafts({});
+
+      const refreshedSelectedItems: PreGeneratedCountsheetItem[] = itemsWithCommittedActuals.map((it) => {
+        const cKey = normalizeLookupKey(it.itemCode);
+        const bKey = normalizeLookupKey(it.barcode);
+        const dKey = normalizeDescKey(it.itemDescription);
+        const match =
+          (cKey &&
+            (parsedByCode.get(cKey) ||
+              parsedByStripped.get(stripLeadingZeros(cKey)) ||
+              parsedByAlnum.get(stripNonAlnum(stripLeadingZeros(cKey) || cKey)))) ||
+          (bKey &&
+            (parsedByCode.get(bKey) ||
+              parsedByStripped.get(stripLeadingZeros(bKey)) ||
+              parsedByAlnum.get(stripNonAlnum(stripLeadingZeros(bKey) || bKey)))) ||
+          (dKey && parsedByDesc.get(dKey));
+
+        if (match) {
+          const nextCost =
+            cols.costIdx >= 0
+              ? match.parsed.cost
+              : match.parsed.cost !== undefined && match.parsed.cost !== null && match.parsed.cost !== 0
+              ? match.parsed.cost
+              : it.cost || 0;
+          const nextSelling =
+            cols.sellingIdx >= 0
+              ? match.parsed.selling
+              : match.parsed.selling !== undefined && match.parsed.selling !== null && match.parsed.selling !== 0
+              ? match.parsed.selling
+              : it.selling || 0;
+          const nextBalance =
+            cols.balanceIdx >= 0 && match.parsed.balance !== undefined && match.parsed.balance !== null
+              ? match.parsed.balance
+              : match.parsed.balance ?? it.balance;
+          const nextAmount =
+            cols.amountIdx >= 0 && match.parsed.amount !== undefined
+              ? match.parsed.amount
+              : Math.round((Number(nextBalance ?? 0) * Number(nextCost || 0) + Number.EPSILON) * 100) / 100;
+
+          const mergedItem: PreGeneratedCountsheetItem = {
+            ...it,
+            rowIndex: match.idx,
+            itemCode: match.parsed.itemCode || it.itemCode,
+            barcode: match.parsed.barcode || it.barcode,
+            itemDescription: match.parsed.itemDescription || it.itemDescription,
+            category: match.parsed.category || it.category,
+            subCategory: match.parsed.subCategory || it.subCategory,
+            subsubCategory: match.parsed.subsubCategory || it.subsubCategory,
+            unit: match.parsed.unit || it.unit,
+            cost: nextCost,
+            selling: nextSelling,
+            balance: nextBalance,
+            amount: nextAmount,
+            actual: it.actual,
+          };
+          mergedItem.raw = buildIatdRowFromCountsheetItem(
+            { ...mergedItem, raw: [...match.row] },
+            effectiveHeaders
+          );
+          return mergedItem;
+        }
+
+        const rebuilt: PreGeneratedCountsheetItem = {
+          ...it,
+          amount:
+            it.amount !== undefined
+              ? it.amount
+              : Math.round((Number(it.balance ?? 0) * Number(it.cost || 0) + Number.EPSILON) * 100) / 100,
+        };
+        rebuilt.raw = buildIatdRowFromCountsheetItem(rebuilt, effectiveHeaders);
+        return rebuilt;
+      });
+
+      setCountsheetItems(refreshedSelectedItems);
+
+      if (importedCountsheetSession) {
+        const selectedByCode = new Map<string, PreGeneratedCountsheetItem>();
+        refreshedSelectedItems.forEach((selIt) => {
+          const ck = normalizeLookupKey(selIt.itemCode || selIt.barcode);
+          if (ck && !selectedByCode.has(ck)) selectedByCode.set(ck, selIt);
+          const stripped = stripLeadingZeros(ck);
+          if (stripped && !selectedByCode.has(stripped)) selectedByCode.set(stripped, selIt);
+        });
+
+        const updatedRawCatalog: PreGeneratedCountsheetItem[] = newCatalogParsedItems.map((catIt, idx) => {
+          const ck = normalizeLookupKey(catIt.itemCode || catIt.barcode);
+          const matchedSel =
+            (ck && (selectedByCode.get(ck) || selectedByCode.get(stripLeadingZeros(ck)))) ||
+            undefined;
+          return {
+            id: matchedSel?.id || catIt.id || `item_${idx}`,
+            rowIndex: idx,
+            csCode: matchedSel?.csCode || '',
+            sheetTitle: targetTab || inspection.sheetTitle || 'COUNTSHEET',
+            itemCode: catIt.itemCode,
+            barcode: catIt.barcode,
+            itemDescription: catIt.itemDescription,
+            category: catIt.category,
+            subCategory: catIt.subCategory,
+            subsubCategory: catIt.subsubCategory,
+            cost: catIt.cost,
+            selling: catIt.selling,
+            unit: catIt.unit,
+            balance: matchedSel !== undefined ? matchedSel.balance : catIt.balance,
+            amount: matchedSel?.amount !== undefined ? matchedSel.amount : catIt.amount,
+            actual: matchedSel?.actual ?? null,
+            raw: catIt.raw || [],
+          };
+        });
+
+        const shortDateStr = new Date().toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        });
+        const nextCountsheetTitle = `Audit Countsheets - ${inspection.spreadsheetTitle} (${shortDateStr})`;
+        const isoDateStr = new Date().toISOString().split('T')[0];
+        setNewCopyTitle(`${nextCountsheetTitle} - Audit Encoding (${isoDateStr})`);
+
+        const baseNextSession: RecentCountsheetSession = {
+          ...importedCountsheetSession,
+          spreadsheetName: nextCountsheetTitle,
+          sourceFile: {
+            id: cleanId,
+            name: inspection.spreadsheetTitle,
+            tabName: targetTab || inspection.sheetTitle,
+          },
+          headerRow: detectedHeaderRowToUse,
+          iatdHeaders: effectiveHeaders,
+          rawItems: updatedRawCatalog,
+        };
+        const syncedNextSession = applyCommittedItemsToSession(
+          baseNextSession,
+          refreshedSelectedItems
+        );
+        internalSavedSessionRef.current = syncedNextSession;
+        setPrevInitialSession(syncedNextSession);
+        setImportedCountsheetSession(syncedNextSession);
+        if (onSaveCountsheetSession) {
+          onSaveCountsheetSession(syncedNextSession);
+        }
+        saveRecentCountsheet(syncedNextSession)
+          .then((saved) => {
+            internalSavedSessionRef.current = saved;
+            setPrevInitialSession(saved);
+            setImportedCountsheetSession(saved);
+            if (onSaveCountsheetSession) {
+              onSaveCountsheetSession(saved);
+            }
+            setRecentCountsheetSessions(getRecentCountsheets());
+          })
+          .catch(() => {});
+      }
+
+      setUpdateIatdUrlInput('');
+      setShowUpdateIatdPanel(false);
+      setCountsheetSaveMsg(
+        `Updated IATD applied: ${inspection.spreadsheetTitle} (${cleanIatdRows.length.toLocaleString()} items)`
+      );
+      setTimeout(() => setCountsheetSaveMsg(null), 4000);
+    } catch (err: any) {
+      setUpdateIatdError(
+        err?.message || 'Could not load the selected IATD spreadsheet. Please check link or permissions.'
+      );
+    } finally {
+      setIsUpdatingIatdSource(false);
+    }
+  };
+
+  // Helper to flush any active Balance or Actual Qty text drafts onto countsheetItems
+  const buildCommittedCountsheetItems = (): PreGeneratedCountsheetItem[] => {
+    const headersToUse =
+      iatdInspection && iatdInspection.headers.length > 0
+        ? iatdInspection.headers
+        : importedCountsheetSession?.iatdHeaders && importedCountsheetSession.iatdHeaders.length > 0
+        ? importedCountsheetSession.iatdHeaders
+        : SYNTHETIC_IATD_HEADERS;
+
+    return countsheetItems.map((it) => {
+      let nextBal = it.balance;
+      let nextAct = it.actual;
+      const balDraft = editingQtyDrafts[`balance_${it.id}`];
+      if (balDraft !== undefined) {
+        if (balDraft.trim() === '') {
+          nextBal = null;
+        } else {
+          const evaluated = evaluateQtyFormula(balDraft, true);
+          if (evaluated !== null) {
+            nextBal = evaluated;
+          } else {
+            const parsed = parseFloat(balDraft);
+            if (!isNaN(parsed)) nextBal = parsed;
+          }
+        }
+      }
+      const actDraft = editingQtyDrafts[`actual_${it.id}`];
+      if (actDraft !== undefined) {
+        if (actDraft.trim() === '') {
+          nextAct = null;
+        } else {
+          const evaluated = evaluateQtyFormula(actDraft, true);
+          if (evaluated !== null) {
+            nextAct = evaluated;
+          } else {
+            const parsed = parseFloat(actDraft);
+            if (!isNaN(parsed)) nextAct = parsed;
+          }
+        }
+      }
+      const nextAmount =
+        nextBal === null || nextBal === undefined
+          ? 0
+          : nextBal !== it.balance
+          ? Math.round((Number(nextBal) * Number(it.cost || 0) + Number.EPSILON) * 100) / 100
+          : it.amount !== undefined
+          ? it.amount
+          : Math.round((Number(nextBal) * Number(it.cost || 0) + Number.EPSILON) * 100) / 100;
+      const updatedItem: PreGeneratedCountsheetItem = {
+        ...it,
+        balance: nextBal,
+        amount: nextAmount,
+        actual: nextAct,
+      };
+      updatedItem.raw = buildIatdRowFromCountsheetItem(updatedItem, headersToUse);
+      return updatedItem;
+    });
+  };
+
+  // Build updated savedGroups & rawItems with the committed Balance and Actual Qty values
+  const applyCommittedItemsToSession = (
+    baseSession: RecentCountsheetSession,
+    committedItems: PreGeneratedCountsheetItem[]
+  ): RecentCountsheetSession => {
+    const normalizeCs = (raw?: string) => {
+      const m = String(raw || '').trim().match(/^CS0*(\d+)$/i);
+      return m ? `CS${String(parseInt(m[1], 10)).padStart(2, '0')}` : 'CS01';
+    };
+
+    const itemsByCs = new Map<string, PreGeneratedCountsheetItem[]>();
+    committedItems.forEach((it) => {
+      const csKey = normalizeCs(it.csCode);
+      const normalizedItem: PreGeneratedCountsheetItem = {
+        ...it,
+        csCode: csKey,
+      };
+      if (!itemsByCs.has(csKey)) itemsByCs.set(csKey, []);
+      itemsByCs.get(csKey)!.push(normalizedItem);
+    });
+
+    const distinctCsCount = itemsByCs.size;
+    let updatedSavedGroups = baseSession.savedGroups;
+    if (baseSession.savedGroups && baseSession.savedGroups.length > 0) {
+      const handledCs = new Set<string>();
+      updatedSavedGroups = baseSession.savedGroups
+        .map((grp, grpIdx) => {
+          const grpCsKey = normalizeCs(grp.orderedItems?.[0]?.csCode || grp.name || `CS${grpIdx + 1}`);
+          const grpItems = itemsByCs.get(grpCsKey) || [];
+          handledCs.add(grpCsKey);
+          return {
+            ...grp,
+            orderedItems: grpItems,
+            selectedItemIds: grpItems.map((i) => i.id),
+            selectedItemCodes: grpItems.map((i) => i.itemCode).filter(Boolean),
+            selectedBarcodes: grpItems.map((i) => i.barcode).filter(Boolean),
+          };
+        })
+        .filter((grp) => grp.orderedItems && grp.orderedItems.length > 0);
+
+      // Append any newly added CS groups not previously in savedGroups
+      itemsByCs.forEach((grpItems, csKey) => {
+        if (!handledCs.has(csKey) && grpItems.length > 0) {
+          const csMatch = csKey.match(/(\d+)/);
+          const csNum = csMatch ? parseInt(csMatch[1], 10) : (updatedSavedGroups?.length || 0) + 1;
+          updatedSavedGroups!.push({
+            id: `grp_${csKey}_${Date.now()}`,
+            name: csKey,
+            baseSheetName: csKey,
+            selectedCat: '',
+            selectedSubCat: '',
+            selectedSubSubCat: '',
+            selectedCats: [],
+            selectedSubCats: [],
+            selectedSubSubCats: [],
+            lastSelectedHierarchy: csKey,
+            selectedItemIds: grpItems.map((i) => i.id),
+            selectedItemCodes: grpItems.map((i) => i.itemCode).filter(Boolean),
+            selectedBarcodes: grpItems.map((i) => i.barcode).filter(Boolean),
+            randomCountInput: grpItems.length,
+            onlyItemsWithBalance: false,
+            insertCategorySpacers: false,
+            showSelectedItemsOnly: false,
+            startCsNumber: csNum,
+            endCsNumber: csNum,
+            csUsed: 1,
+            orderedItems: grpItems,
+          });
+        }
+      });
+    }
+
+    // Also sync edited Balance and Actual Qty into rawItems pool if present
+    const byId = new Map<string, PreGeneratedCountsheetItem>();
+    const byCode = new Map<string, PreGeneratedCountsheetItem>();
+    committedItems.forEach((it) => {
+      if (it.id) byId.set(it.id, it);
+      const c = String(it.itemCode || it.barcode || '').trim().toLowerCase();
+      if (c && !byCode.has(c)) byCode.set(c, it);
+    });
+
+    const updatedRawItems = baseSession.rawItems
+      ? baseSession.rawItems.map((rawIt) => {
+          const c = String(rawIt.itemCode || rawIt.barcode || '').trim().toLowerCase();
+          const matched = (rawIt.id && byId.get(rawIt.id)) || (c && byCode.get(c));
+          if (matched) {
+            return {
+              ...rawIt,
+              cost: matched.cost ?? rawIt.cost,
+              selling: matched.selling ?? rawIt.selling,
+              balance: matched.balance,
+              amount: matched.amount ?? rawIt.amount,
+              actual: matched.actual,
+            };
+          }
+          return rawIt;
+        })
+      : undefined;
+
+    return {
+      ...baseSession,
+      totalSheets: distinctCsCount || baseSession.totalSheets,
+      totalItems: committedItems.length,
+      savedGroups: updatedSavedGroups,
+      orderedCountsheetItems: committedItems,
+      rawItems: updatedRawItems,
+    };
+  };
+
   // Save edited countsheet items (Balance, Actual, Missing Items, Sequence) back to the session
   const handlePersistEditedCountsheetSession = async () => {
     if (!importedCountsheetSession) return;
     setIsSavingEditsLoading(true);
     try {
-      const distinctCsCount = new Set(countsheetItems.map((it) => it.csCode || 'CS01')).size;
-      const remainingCsSet = new Set(countsheetItems.map((it) => it.csCode || 'CS01'));
-      const updatedSavedGroups = importedCountsheetSession.savedGroups
-        ? importedCountsheetSession.savedGroups
-            .map((grp) => {
-              if (!grp.orderedItems) return grp;
-              const filteredGrpItems = grp.orderedItems.filter((it) =>
-                remainingCsSet.has(it.csCode || grp.name || 'CS01')
-              );
-              return {
-                ...grp,
-                orderedItems: filteredGrpItems,
-              };
-            })
-            .filter((grp) => !grp.orderedItems || grp.orderedItems.length > 0)
-        : undefined;
+      const committedItems = buildCommittedCountsheetItems();
+      setEditingQtyDrafts({});
+      setCountsheetItems(committedItems);
 
-      const updatedSession = await saveRecentCountsheet({
-        ...importedCountsheetSession,
-        totalSheets: distinctCsCount || importedCountsheetSession.totalSheets,
-        totalItems: countsheetItems.length,
-        savedGroups: updatedSavedGroups,
-        orderedCountsheetItems: countsheetItems,
-      });
+      const sessionToSave = applyCommittedItemsToSession(importedCountsheetSession, committedItems);
+      internalSavedSessionRef.current = sessionToSave;
+      setPrevInitialSession(sessionToSave);
+      const updatedSession = await saveRecentCountsheet(sessionToSave);
+      internalSavedSessionRef.current = updatedSession;
+      setPrevInitialSession(updatedSession);
       setImportedCountsheetSession(updatedSession);
+      onSaveCountsheetSession?.(updatedSession);
       setRecentCountsheetSessions(getRecentCountsheets());
-      setCountsheetSaveMsg('Countsheet changes & sequence saved!');
+      setCountsheetSaveMsg('Balance, Actual Qty & sequence saved!');
       setTimeout(() => setCountsheetSaveMsg(null), 3000);
 
       // Trigger interactive checkmark animation
@@ -1016,13 +1963,14 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
   useEffect(() => {
     const searchDriveOnOpen = async () => {
       if (!isOpen) return;
-      const cached = getCachedDriveFiles(searchQuery, userEmail);
+      const activeQuery = showUpdateIatdPanel ? updateIatdSearchQuery : searchQuery;
+      const cached = getCachedDriveFiles(activeQuery, userEmail);
       if (cached.length > 0) {
         setDriveFiles(cached);
       }
       setIsSearchingDrive(true);
       setDriveSearchError(null);
-      searchDriveSpreadsheets(effectiveToken || '', searchQuery, {
+      searchDriveSpreadsheets(effectiveToken || '', activeQuery, {
         userEmail,
         excludeTemplates: true,
       })
@@ -1032,7 +1980,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         })
         .catch((err) => {
           console.warn('Could not fetch drive spreadsheets:', err);
-          const fallbackCached = getCachedDriveFiles(searchQuery, userEmail);
+          const fallbackCached = getCachedDriveFiles(activeQuery, userEmail);
           if (fallbackCached.length > 0) {
             setDriveFiles(fallbackCached);
             setDriveSearchError(null);
@@ -1043,8 +1991,9 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         .finally(() => setIsSearchingDrive(false));
     };
 
-    searchDriveOnOpen();
-  }, [isOpen, searchQuery, effectiveToken, userEmail]);
+    const timer = setTimeout(searchDriveOnOpen, showUpdateIatdPanel && updateIatdSearchQuery ? 250 : 0);
+    return () => clearTimeout(timer);
+  }, [isOpen, searchQuery, showUpdateIatdPanel, updateIatdSearchQuery, effectiveToken, userEmail]);
 
   // Reset state & load recents (local + cloud cross-device sync) when modal opens
   useEffect(() => {
@@ -1071,11 +2020,10 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setRecentReports(getRecentAuditReports());
-      setRecentCountsheetSessions(getRecentCountsheets());
-      handleSyncCloudRecents();
+      if (initialCountsheetSession && initialCountsheetSession === internalSavedSessionRef.current) {
+        return;
+      }
       setStep('SOURCE_IATD');
-      setIatdHeaderRow(2);
       setTemplateHeaderRow(2);
       setIsViewingRecent(false);
       setEditingRecentReport(null);
@@ -1095,8 +2043,20 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         setCountsheetCount(20);
         setEnableCountsheetCols(true);
       }
+      if (initialCountsheetSession) {
+        const timer = setTimeout(() => {
+          void handleImportCountsheet(initialCountsheetSession, true);
+        }, 350);
+        return () => clearTimeout(timer);
+      } else {
+        setImportedCountsheetSession(null);
+        setIatdHeaderRow(2);
+        setRecentReports(getRecentAuditReports());
+        setRecentCountsheetSessions(getRecentCountsheets());
+        handleSyncCloudRecents();
+      }
     }
-  }, [isOpen, initialCountsheetType]);
+  }, [isOpen, initialCountsheetType, initialCountsheetSession]);
 
   const handleRefreshEmails = async (overrideToken?: string, interactive = false) => {
     setIsSearchingEmail(true);
@@ -1237,7 +2197,105 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
     }
   }, [isOpen, sourceViewMode]);
 
-  if (!isOpen) return null;
+  if (!isOpen) {
+    if (prevInitialSession !== null) {
+      setPrevInitialSession(null);
+    }
+    return null;
+  }
+
+  if (
+    initialCountsheetSession &&
+    prevInitialSession !== initialCountsheetSession
+  ) {
+    if (initialCountsheetSession === internalSavedSessionRef.current) {
+      setPrevInitialSession(initialCountsheetSession);
+    } else {
+      const headerRowToUse = initialCountsheetSession.headerRow || 2;
+      const initialHeaders =
+        initialCountsheetSession.iatdHeaders && initialCountsheetSession.iatdHeaders.length > 0
+          ? initialCountsheetSession.iatdHeaders
+          : SYNTHETIC_IATD_HEADERS;
+      const immediateItems = reconstructCountsheetItemsFromSession(initialCountsheetSession, initialHeaders, []);
+      const initialCatalogItems: PreGeneratedCountsheetItem[] =
+        initialCountsheetSession.rawItems && initialCountsheetSession.rawItems.length > 0
+          ? initialCountsheetSession.rawItems.map((r, rIdx) => {
+              const cVal = Number(r.cost) || 0;
+              const bVal = r.balance ?? 0;
+              const aVal =
+                r.amount !== undefined
+                  ? Number(r.amount) || 0
+                  : Math.round((Number(bVal) * cVal + Number.EPSILON) * 100) / 100;
+              return {
+                id: r.id || `raw_${rIdx}`,
+                rowIndex: rIdx,
+                csCode: 'CS01',
+                sheetTitle: initialCountsheetSession.sourceFile?.tabName || 'COUNTSHEET',
+                itemCode: r.itemCode || '',
+                barcode: r.barcode || '',
+                itemDescription: r.itemDescription || '',
+                category: r.category || '',
+                subCategory: r.subCategory || '',
+                subsubCategory: r.subsubCategory || '',
+                unit: r.unit || 'PC',
+                cost: cVal,
+                selling: Number(r.selling) || 0,
+                balance: bVal,
+                amount: aVal,
+                actual: r.actual ?? null,
+                raw: [],
+              };
+            })
+          : immediateItems;
+      const synthRows = initialCatalogItems.map((it) =>
+        buildIatdRowFromCountsheetItem(it, initialHeaders)
+      );
+      const distinctCs = new Set<string>();
+      let highestNum = 1;
+      immediateItems.forEach((it) => {
+        const m = String(it.csCode || '').trim().match(/^CS0*(\d+)$/i);
+        if (m) {
+          const num = parseInt(m[1], 10);
+          highestNum = Math.max(highestNum, num);
+          distinctCs.add(`CS${String(num).padStart(2, '0')}`);
+        }
+      });
+      const maxCsCount = Math.max(1, highestNum, distinctCs.size);
+
+      setPrevInitialSession(initialCountsheetSession);
+      setImportedCountsheetSession(initialCountsheetSession);
+    setStep('SOURCE_IATD');
+    setCountsheetImportError(null);
+    setEnableCountsheetCols(true);
+    setCountsheetEditorCsFilter('ALL');
+    setCountsheetEditorSearch('');
+    setCsActiveHeaderButton('cat');
+    setCsSelectedCats([]);
+    setCsSelectedSubCats([]);
+    setCsSelectedSubSubCats([]);
+    setCsHierarchySearchQuery('');
+    setCsItemSortBy('seq');
+    setCsOnlyWithBalance(false);
+    setCsOnlyWithActual(false);
+    setCsOnlyMissingAdded(false);
+    setIatdHeaderRow(headerRowToUse);
+    setCountsheetItems(immediateItems);
+    setCountsheetCount(maxCsCount);
+    setNewMissingCsCode(immediateItems[0]?.csCode || 'CS01');
+    setInsertAfterSeqNum(immediateItems.length);
+    setFullSourceIatdRows(synthRows);
+    setIatdAllRows(synthRows);
+      setIatdInspection({
+        spreadsheetId: initialCountsheetSession.sourceFile?.id || initialCountsheetSession.spreadsheetId || 'countsheet-session',
+        spreadsheetTitle: initialCountsheetSession.sourceFile?.name || initialCountsheetSession.spreadsheetName || 'Pre-Generated Countsheet',
+        sheetTitle: initialCountsheetSession.sourceFile?.tabName || 'COUNTSHEET',
+        detectedHeaderRow: headerRowToUse,
+        headers: initialHeaders,
+        totalRows: synthRows.length,
+        sampleRows: synthRows.slice(0, 5),
+      });
+    }
+  }
 
   // Inspect IATD Spreadsheet
   const handleInspectIatd = async (rawId: string, tabName?: string, customHeaderRow?: number, overrideToken?: string, driveFile?: DriveSpreadsheetFile) => {
@@ -1442,6 +2500,19 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
     }
   };
 
+  // Handle Cancel or Back (returns to editing countsheets if opened via Export to Encoding)
+  const handleCancelOrBack = () => {
+    if (isFromCountsheetExport && onBackToCountsheet) {
+      const committedItems = buildCommittedCountsheetItems();
+      const currentSession = importedCountsheetSession
+        ? applyCommittedItemsToSession(importedCountsheetSession, committedItems)
+        : null;
+      onBackToCountsheet(currentSession);
+    } else {
+      onClose();
+    }
+  };
+
   // Move from Step 1 (IATD) to Step 2 (Audit Template)
   const handleProceedToTemplate = () => {
     if (!iatdInspection || iatdInspection.headers.length === 0) {
@@ -1600,20 +2671,8 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         `Writing ${rowsToWrite.length.toLocaleString()} ordered rows into "${targetTabTitle}" tab (Row ${dataStartRow} onwards)...`
       );
 
-      const result = await executeAuditReportMapping(
-        activeToken,
-        targetSpreadsheetId,
-        targetTabTitle,
-        templateInspection.headers,
-        templateHeaderRow, // Header is Row 2 (or chosen header row)
-        effectiveHeaders,
-        rowsToWrite,
-        mapping,
-        true, // Clear old rows from dataStartRow downwards
-        autoAdjustDimensions // Add/delete rows and columns dynamically
-      );
-
-      // 3. Determine required CS columns count (respect user-selected countsheetCount while covering any imported CSxx codes)
+      // Determine required CS columns count up front so we can skip redundant formula replication
+      // when setupCountsheetHeadersInTemplate will immediately shift CS columns and replicate formulas
       const maxCsInItems =
         importedCountsheetSession && countsheetItems.length > 0
           ? countsheetItems.reduce((acc, it) => {
@@ -1626,8 +2685,29 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         : importedCountsheetSession
         ? maxCsInItems
         : Math.max(1, countsheetCount);
+      const willSetupCsHeaders =
+        (enableCountsheetCols || (Boolean(importedCountsheetSession) && countsheetItems.length > 0)) &&
+        effectiveCsCount > 0;
 
-      if ((enableCountsheetCols || (importedCountsheetSession && countsheetItems.length > 0)) && effectiveCsCount > 0) {
+      const result = await executeAuditReportMapping(
+        activeToken,
+        targetSpreadsheetId,
+        targetTabTitle,
+        templateInspection.headers,
+        templateHeaderRow, // Header is Row 2 (or chosen header row)
+        effectiveHeaders,
+        rowsToWrite,
+        mapping,
+        true, // Clear old rows from dataStartRow downwards
+        autoAdjustDimensions, // Add/delete rows and columns dynamically
+        {
+          skipFormulaReplication: willSetupCsHeaders,
+          skipFolderMove: createAsCopy,
+        }
+      );
+
+      // 3. Adjust CS columns and MONITORING ranges
+      if (willSetupCsHeaders) {
         setExecutionProgress(
           `Adjusting CS columns (CS01 to CS${String(effectiveCsCount).padStart(2, '0')}) and MONITORING ranges (1-5 to ${
             Math.max(1, Math.ceil(effectiveCsCount / 5) - 1) * 5 + 1
@@ -1641,7 +2721,8 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
             templateHeaderRow,
             effectiveCsCount,
             result.totalRowsWritten,
-            autoAdjustDimensions
+            autoAdjustDimensions,
+            result.footerRowCount
           );
         } catch (csErr) {
           console.warn('Countsheet columns setup notice:', csErr);
@@ -1742,712 +2823,2236 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         : SYNTHETIC_IATD_HEADERS;
 
     const detectedCols = detectIatdColumnIndices(effectiveHeaders);
-    const existingCodeSet = new Set(
-      countsheetItems.map((it) => (it.itemCode || '').trim().toLowerCase()).filter(Boolean)
-    );
+    const stripZeroKey = (v: string) => v.replace(/^0+(?=\d)/, '');
+    const existingCodeSet = new Set<string>();
+    countsheetItems.forEach((it) => {
+      const c = (it.itemCode || '').trim().toLowerCase();
+      const b = (it.barcode || '').trim().toLowerCase();
+      if (c) {
+        existingCodeSet.add(c);
+        existingCodeSet.add(stripZeroKey(c));
+      }
+      if (b) {
+        existingCodeSet.add(b);
+        existingCodeSet.add(stripZeroKey(b));
+      }
+    });
 
+    const safeLower = (val: unknown) => String(val ?? '').trim().toLowerCase();
+    const qHierarchyLower = safeLower(csHierarchySearchQuery);
+
+    // Unified active IATD item catalog (works whether active IATD is newly updated or original)
+    const activeIatdCatalogItems: PreGeneratedCountsheetItem[] = (() => {
+      if (fullSourceIatdRows.length > 0) {
+        return fullSourceIatdRows
+          .filter(
+            (row, idx) =>
+              Array.isArray(row) &&
+              row.some((c) => c !== null && c !== undefined && String(c).trim() !== '') &&
+              !isIatdTotalQuantityFooterRow(row) &&
+              !isIatdVersionFooterRow(row, idx > 0 ? fullSourceIatdRows[idx - 1] : undefined)
+          )
+          .map((row, rIdx) =>
+            parseIatdRowToCountsheetItem(row, rIdx, detectedCols, newMissingCsCode)
+          )
+          .filter((parsed) => Boolean(parsed.itemCode || parsed.itemDescription));
+      }
+      if (importedCountsheetSession.rawItems && importedCountsheetSession.rawItems.length > 0) {
+        return importedCountsheetSession.rawItems
+          .map((r, rIdx) => {
+            const itemObj: PreGeneratedCountsheetItem = {
+              id: r.id || `raw_${rIdx}`,
+              rowIndex: rIdx,
+              csCode: newMissingCsCode,
+              sheetTitle: importedCountsheetSession.sourceFile?.tabName || 'COUNTSHEET',
+              itemCode: r.itemCode || '',
+              barcode: r.barcode || '',
+              itemDescription: r.itemDescription || '',
+              category: r.category || '',
+              subCategory: r.subCategory || '',
+              subsubCategory: r.subsubCategory || '',
+              unit: r.unit || 'PC',
+              cost: Number(r.cost) || 0,
+              selling: Number(r.selling) || 0,
+              balance: r.balance ?? 0,
+              actual: r.actual ?? null,
+              raw: [],
+            };
+            itemObj.raw = buildIatdRowFromCountsheetItem(itemObj, effectiveHeaders);
+            return itemObj;
+          })
+          .filter((parsed) => Boolean(parsed.itemCode || parsed.itemDescription));
+      }
+      return countsheetItems.map((it, idx) => ({
+        ...it,
+        rowIndex: idx,
+        csCode: newMissingCsCode,
+      }));
+    })();
+
+    const hierarchySourceItems = showAddMissingPanel ? activeIatdCatalogItems : countsheetItems;
+
+    // 1. UNIQUE CATEGORIES in Countsheet / Active IATD
+    const uniqueCsCategories = (() => {
+      const map = new Map<string, number>();
+      for (const it of hierarchySourceItems) {
+        const cat = (it.category ?? '').trim();
+        if (!cat) continue;
+        if (qHierarchyLower && !safeLower(cat).includes(qHierarchyLower)) continue;
+        map.set(cat, (map.get(cat) || 0) + 1);
+      }
+      return Array.from(map.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    })();
+
+    // 2. UNIQUE SUBCATEGORIES in Countsheet / Active IATD
+    const uniqueCsSubCategories = (() => {
+      const filtered =
+        csSelectedCats.length > 0
+          ? hierarchySourceItems.filter((i) =>
+              csSelectedCats.some((c) => safeLower(c) === safeLower(i.category))
+            )
+          : hierarchySourceItems;
+      const map = new Map<string, number>();
+      for (const it of filtered) {
+        const sub = (it.subCategory ?? '').trim();
+        const subKey = sub === '' ? '(Blanks)' : sub;
+        if (
+          qHierarchyLower &&
+          !safeLower(subKey).includes(qHierarchyLower) &&
+          !safeLower(it.category).includes(qHierarchyLower)
+        ) {
+          continue;
+        }
+        map.set(subKey, (map.get(subKey) || 0) + 1);
+      }
+      return Array.from(map.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => {
+          if (a.name === '(Blanks)') return -1;
+          if (b.name === '(Blanks)') return 1;
+          return a.name.localeCompare(b.name);
+        });
+    })();
+
+    // 3. UNIQUE SUBSUBCATEGORIES in Countsheet / Active IATD
+    const uniqueCsSubSubCategories = (() => {
+      const filtered = hierarchySourceItems.filter((i) => {
+        if (csSelectedCats.length > 0 && !csSelectedCats.some((c) => safeLower(c) === safeLower(i.category))) {
+          return false;
+        }
+        if (csSelectedSubCats.length > 0) {
+          const sub = (i.subCategory ?? '').trim();
+          const match = csSelectedSubCats.some((s) => {
+            const sLower = safeLower(s);
+            if (sLower === '(blanks)' || sLower === 'blanks') return sub === '';
+            return safeLower(sub) === sLower;
+          });
+          if (!match) return false;
+        }
+        return true;
+      });
+      const map = new Map<string, number>();
+      for (const it of filtered) {
+        const ssc = (it.subsubCategory ?? '').trim();
+        const sscKey = ssc === '' ? '(Blanks)' : ssc;
+        if (
+          qHierarchyLower &&
+          !safeLower(sscKey).includes(qHierarchyLower) &&
+          !safeLower(it.category).includes(qHierarchyLower)
+        ) {
+          continue;
+        }
+        map.set(sscKey, (map.get(sscKey) || 0) + 1);
+      }
+      return Array.from(map.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => {
+          if (a.name === '(Blanks)') return -1;
+          if (b.name === '(Blanks)') return 1;
+          return a.name.localeCompare(b.name);
+        });
+    })();
+
+    // Filtered countsheet items based on CS tab, search query, drilldown category filters, and toggles
     const filteredWithOriginalIndex = countsheetItems
       .map((item, seqIdx) => ({ item, seqIdx }))
       .filter(({ item }) => {
-        if (countsheetEditorCsFilter !== 'ALL' && item.csCode !== countsheetEditorCsFilter) {
+        if (countsheetEditorCsFilter !== 'ALL' && (item.csCode || 'CS01') !== countsheetEditorCsFilter) {
           return false;
         }
         if (countsheetEditorSearch.trim()) {
           const q = countsheetEditorSearch.trim().toLowerCase();
-          return (
+          const matches =
             (item.itemCode || '').toLowerCase().includes(q) ||
             (item.barcode || '').toLowerCase().includes(q) ||
             (item.itemDescription || '').toLowerCase().includes(q) ||
             (item.category || '').toLowerCase().includes(q) ||
-            (item.csCode || '').toLowerCase().includes(q)
-          );
+            (item.csCode || '').toLowerCase().includes(q);
+          if (!matches) return false;
+        }
+        if (csSelectedCats.length > 0) {
+          if (!csSelectedCats.some((c) => safeLower(c) === safeLower(item.category))) {
+            return false;
+          }
+        }
+        if (csSelectedSubCats.length > 0) {
+          const sub = (item.subCategory ?? '').trim();
+          const match = csSelectedSubCats.some((s) => {
+            const sLower = safeLower(s);
+            if (sLower === '(blanks)' || sLower === 'blanks') return sub === '';
+            return safeLower(sub) === sLower;
+          });
+          if (!match) return false;
+        }
+        if (csSelectedSubSubCats.length > 0) {
+          const ssc = (item.subsubCategory ?? '').trim();
+          const match = csSelectedSubSubCats.some((s) => {
+            const sLower = safeLower(s);
+            if (sLower === '(blanks)' || sLower === 'blanks') return ssc === '';
+            return safeLower(ssc) === sLower;
+          });
+          if (!match) return false;
+        }
+        if (csOnlyWithBalance && !(Number(item.balance) > 0)) {
+          return false;
+        }
+        if (
+          csOnlyWithActual &&
+          !(item.actual !== undefined && item.actual !== null && String(item.actual).trim() !== '')
+        ) {
+          return false;
+        }
+        if (csOnlyMissingAdded && !item.isMissingItem) {
+          return false;
         }
         return true;
+      })
+      .sort((a, b) => {
+        if (csItemSortBy === 'itemCode') {
+          return (a.item.itemCode || '').localeCompare(b.item.itemCode || '');
+        }
+        if (csItemSortBy === 'itemDescription') {
+          return (a.item.itemDescription || '').localeCompare(b.item.itemDescription || '');
+        }
+        return a.seqIdx - b.seqIdx;
       });
 
     const countedCount = countsheetItems.filter(
       (it) => it.actual !== undefined && it.actual !== null && String(it.actual).trim() !== ''
     ).length;
     const missingAddedCount = countsheetItems.filter((it) => it.isMissingItem).length;
+    const activeFilteredCounted = filteredWithOriginalIndex.filter(
+      ({ item }) => item.actual !== undefined && item.actual !== null && String(item.actual).trim() !== ''
+    ).length;
 
-    // Candidate items from fullSourceIatdRows for adding missing inventory items
-    const candidateIatdItems = fullSourceIatdRows
-      .map((row, rIdx) => {
-        const parsed = parseIatdRowToCountsheetItem(row, rIdx, detectedCols, newMissingCsCode);
-        const alreadyInCountsheet =
-          parsed.itemCode && existingCodeSet.has(parsed.itemCode.toLowerCase());
+    const candidateIatdItems = activeIatdCatalogItems
+      .map((parsed) => {
+        const cKey = (parsed.itemCode || '').trim().toLowerCase();
+        const bKey = (parsed.barcode || '').trim().toLowerCase();
+        const alreadyInCountsheet = Boolean(
+          (cKey && (existingCodeSet.has(cKey) || existingCodeSet.has(stripZeroKey(cKey)))) ||
+            (bKey && (existingCodeSet.has(bKey) || existingCodeSet.has(stripZeroKey(bKey))))
+        );
         return { parsed, alreadyInCountsheet };
       })
       .filter(({ parsed, alreadyInCountsheet }) => {
         if (!parsed.itemCode && !parsed.itemDescription) return false;
         if (onlyShowUnselectedIatd && alreadyInCountsheet) return false;
+        if (csSelectedCats.length > 0) {
+          if (!csSelectedCats.some((c) => safeLower(c) === safeLower(parsed.category))) {
+            return false;
+          }
+        }
+        if (csSelectedSubCats.length > 0) {
+          const sub = (parsed.subCategory ?? '').trim();
+          const match = csSelectedSubCats.some((s) => {
+            const sLower = safeLower(s);
+            if (sLower === '(blanks)' || sLower === 'blanks') return sub === '';
+            return safeLower(sub) === sLower;
+          });
+          if (!match) return false;
+        }
+        if (csSelectedSubSubCats.length > 0) {
+          const ssc = (parsed.subsubCategory ?? '').trim();
+          const match = csSelectedSubSubCats.some((s) => {
+            const sLower = safeLower(s);
+            if (sLower === '(blanks)' || sLower === 'blanks') return ssc === '';
+            return safeLower(ssc) === sLower;
+          });
+          if (!match) return false;
+        }
         if (!missingIatdSearchQuery.trim()) return true;
         const q = missingIatdSearchQuery.trim().toLowerCase();
         return (
-          parsed.itemCode.toLowerCase().includes(q) ||
-          parsed.barcode.toLowerCase().includes(q) ||
-          parsed.itemDescription.toLowerCase().includes(q) ||
-          parsed.category.toLowerCase().includes(q)
+          (parsed.itemCode || '').toLowerCase().includes(q) ||
+          (parsed.barcode || '').toLowerCase().includes(q) ||
+          (parsed.itemDescription || '').toLowerCase().includes(q) ||
+          (parsed.category || '').toLowerCase().includes(q) ||
+          (parsed.subCategory || '').toLowerCase().includes(q) ||
+          (parsed.subsubCategory || '').toLowerCase().includes(q)
         );
       })
-      .slice(0, 40);
+      .slice(0, 200);
 
     return (
-      <div className="p-4 sm:p-5 bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/70 rounded-2xl space-y-4 shadow-2xs">
-        {/* Top Header & Summary Badges */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 font-bold">
-              <Edit3 className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
-                  Pre-Generated Countsheet: {importedCountsheetSession.spreadsheetName}
-                </h4>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200">
-                  {countsheetItems.length} Items in Sequence
-                </span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/60 text-indigo-800 dark:text-indigo-200">
-                  {countedCount}/{countsheetItems.length} Actuals Entered
-                </span>
-                {missingAddedCount > 0 && (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200">
-                    +{missingAddedCount} Missing Added
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Edit Balance &amp; Actual quantities, add missing inventory items, and preserve exact sequence into ENCODING columns.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {countsheetSaveMsg && (
-              <span className="text-[10.5px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/80 px-2 py-1 rounded-lg flex items-center gap-1">
-                <Check className="w-3 h-3" />
-                {countsheetSaveMsg}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setCountsheetItems((prev) =>
-                  prev.map((it) => ({
-                    ...it,
-                    actual:
-                      it.actual !== undefined && it.actual !== null && String(it.actual).trim() !== ''
-                        ? it.actual
-                        : it.balance,
-                  }))
-                );
-              }}
-              className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-zinc-700 text-[11px] font-bold transition cursor-pointer"
-              title="Fill empty Actual fields with current Balance"
-            >
-              Fill Empty Actual = Balance
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowAddMissingPanel((prev) => !prev)}
-              className={`px-3 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1 transition cursor-pointer ${
-                showAddMissingPanel
-                  ? 'bg-amber-600 text-white'
-                  : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-500/30'
-              }`}
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{showAddMissingPanel ? 'Hide Add Missing Item' : 'Add Missing Item'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handlePersistEditedCountsheetSession}
-              disabled={isSavingEditsLoading}
-              className={`px-3 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-all duration-200 cursor-pointer shadow-2xs select-none active:scale-95 ${
-                isSaveEditsSuccess
-                  ? 'bg-emerald-500 text-white shadow-md ring-2 ring-emerald-300 dark:ring-emerald-400/60 scale-105'
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
-              }`}
-              title="Save edited Balance, Actual, and sequence back to this countsheet session"
-            >
-              {isSavingEditsLoading ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Saving...</span>
-                </>
-              ) : isSaveEditsSuccess ? (
-                <>
-                  <Check className="w-3.5 h-3.5 stroke-[3] animate-in zoom-in-50 spin-in-45 duration-200" />
-                  <span className="font-extrabold tracking-wide animate-in fade-in duration-200">Saved!</span>
-                </>
-              ) : (
-                <>
-                  <Save className="w-3.5 h-3.5" />
-                  <span>Save Edits</span>
-                </>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setImportedCountsheetSession(null);
-                setCountsheetItems([]);
-              }}
-              className="px-2.5 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500 hover:text-white border border-rose-200 dark:border-rose-800/60 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
-              title="Close Pre-Generated Countsheet and return to IATD selection"
-            >
-              <X className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span>Remove</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Add Missing Inventory Item Panel */}
-        {showAddMissingPanel && (
-          <div className="p-3.5 bg-white dark:bg-zinc-900 border border-amber-300 dark:border-amber-800/70 rounded-xl space-y-3 animate-in fade-in">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-zinc-800 pb-2.5">
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setAddMissingMode('IATD_SEARCH')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
-                    addMissingMode === 'IATD_SEARCH'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  Search from IATD Master ({fullSourceIatdRows.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAddMissingMode('CUSTOM')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
-                    addMissingMode === 'CUSTOM'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  Add Custom / Unlisted Item
-                </button>
-              </div>
-
-              {/* Target Countsheet and Position Selection */}
-              {(() => {
-                const activeTargetCs =
-                  (countsheetEditorCsFilter !== 'ALL' ? countsheetEditorCsFilter : newMissingCsCode) ||
-                  availableCsCodes[0] ||
-                  'CS01';
-
-                return (
-                  <div className="flex flex-wrap items-center gap-2.5 text-[11px]">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-slate-700 dark:text-slate-300">Add to Countsheet:</span>
-                      <CustomSelect
-                        value={activeTargetCs}
-                        onChange={(val) => {
-                          setNewMissingCsCode(val);
-                          if (countsheetEditorCsFilter !== 'ALL') {
-                            setCountsheetEditorCsFilter(val);
-                          }
-                        }}
-                        variant="compact"
-                        menuMinWidth={140}
-                        options={availableCsCodes.map((c) => {
-                          const count = countsheetItems.filter((i) => (i.csCode || 'CS01') === c).length;
-                          return {
-                            value: c,
-                            label: `${c} (${count} items)`,
-                            badge: c === countsheetEditorCsFilter ? 'Active' : undefined,
-                          };
-                        })}
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-semibold text-slate-600 dark:text-slate-400">Position:</span>
-                      <CustomSelect
-                        value={insertPositionMode}
-                        onChange={(val) => setInsertPositionMode(val as 'END' | 'START' | 'AFTER_SEQ')}
-                        variant="compact"
-                        menuMinWidth={180}
-                        options={[
-                          { value: 'END', label: `End of ${activeTargetCs}` },
-                          { value: 'START', label: `Start of ${activeTargetCs}` },
-                          { value: 'AFTER_SEQ', label: 'Insert After Seq #...' },
-                        ]}
-                      />
-                      {insertPositionMode === 'AFTER_SEQ' && (
-                        <input
-                          type="number"
-                          min={1}
-                          max={Math.max(1, countsheetItems.length)}
-                          value={insertAfterSeqNum}
-                          onChange={(e) => setInsertAfterSeqNum(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                          className="w-16 px-2 py-1 text-xs font-mono font-bold bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white text-center"
-                        />
+      <div className="space-y-4 w-full">
+        <div className="grid grid-cols-1 lg:grid-cols-10 gap-4 items-start w-full">
+          {/* LEFT COLUMN: IATD Source, Countsheet Source & Hierarchy/Category Selection (30% - lg:col-span-3) */}
+          <div className="lg:col-span-3 xl:col-span-3 min-w-0 space-y-3.5">
+            {/* 1. Loaded IATD & Countsheet Source Card */}
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 space-y-3 text-xs">
+              {/* Top: Loaded IATD Source (matching Create Countsheets) */}
+              <div className="flex items-start justify-between gap-2.5">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                    <FileSpreadsheet className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+                        Loaded IATD
+                      </span>
+                      {(iatdInspection?.sheetTitle || importedCountsheetSession.sourceFile?.tabName) && (
+                        <span className="text-[10px] font-medium px-1.5 py-0.2 rounded bg-slate-200/70 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400">
+                          {iatdInspection?.sheetTitle || importedCountsheetSession.sourceFile?.tabName}
+                        </span>
                       )}
                     </div>
+                    <span className="font-bold text-slate-800 dark:text-white truncate block mt-0.5 text-xs sm:text-sm">
+                      {iatdInspection?.spreadsheetTitle ||
+                        importedCountsheetSession.sourceFile?.name ||
+                        importedCountsheetSession.spreadsheetName}
+                    </span>
+                    <span className="text-slate-400 truncate block text-[11px]">
+                      {activeIatdCatalogItems.length.toLocaleString()} items in IATD
+                    </span>
                   </div>
-                );
-              })()}
-            </div>
-
-            {addMissingMode === 'IATD_SEARCH' ? (
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="relative flex-1 min-w-[200px]">
-                    <input
-                      type="text"
-                      placeholder="Search missing inventory item by Code, Barcode, Description, or Category..."
-                      value={missingIatdSearchQuery}
-                      onChange={(e) => setMissingIatdSearchQuery(e.target.value)}
-                      className="w-full text-xs pl-7 pr-3 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-400" />
-                  </div>
-                  <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={onlyShowUnselectedIatd}
-                      onChange={(e) => setOnlyShowUnselectedIatd(e.target.checked)}
-                      className="rounded text-indigo-600 accent-indigo-600"
-                    />
-                    <span>Only show items missing from countsheet</span>
-                  </label>
                 </div>
 
-                <div className="max-h-44 overflow-y-auto divide-y divide-slate-100 dark:divide-zinc-800 border border-slate-200 dark:border-zinc-800 rounded-xl">
-                  {candidateIatdItems.length > 0 ? (
-                    candidateIatdItems.map(({ parsed, alreadyInCountsheet }) => {
-                      const activeTargetCs =
-                        (countsheetEditorCsFilter !== 'ALL' ? countsheetEditorCsFilter : newMissingCsCode) ||
-                        availableCsCodes[0] ||
-                        'CS01';
-
-                      return (
-                        <div
-                          key={`missing_cand_${parsed.id}`}
-                          className="p-2 flex items-center justify-between gap-2 text-xs hover:bg-slate-50 dark:hover:bg-zinc-800/60"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
-                              <span className="font-mono text-[11px] text-indigo-600 dark:text-indigo-400">
-                                {parsed.itemCode || 'NO-CODE'}
-                              </span>
-                              <span className="truncate">{parsed.itemDescription}</span>
-                              {alreadyInCountsheet && (
-                                <span className="text-[9.5px] px-1.5 py-0.2 rounded bg-slate-200 dark:bg-zinc-700 text-slate-600 dark:text-slate-300">
-                                  In Countsheet
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                              <span>Cat: {parsed.category || '—'}</span>
-                              <span>•</span>
-                              <span>Unit: {parsed.unit}</span>
-                              <span>•</span>
-                              <span>Balance: <strong>{parsed.balance}</strong></span>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              insertMissingItemAtConfiguredPosition({
-                                ...parsed,
-                                id: `missing_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                                csCode: activeTargetCs,
-                                isMissingItem: true,
-                              }, activeTargetCs);
-                            }}
-                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
-                          >
-                            <Plus className="w-3 h-3" />
-                            <span>Add to {activeTargetCs}</span>
-                          </button>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div className="p-4 text-center text-xs text-slate-400">
-                      {fullSourceIatdRows.length === 0
-                        ? 'No source IATD rows loaded yet. You can switch to "Add Custom / Unlisted Item" above to add any item manually.'
-                        : 'No matching missing items found in IATD.'}
-                    </div>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowUpdateIatdPanel((prev) => !prev)}
+                  className={`px-2.5 py-1 rounded-lg border font-semibold transition-colors shrink-0 text-[11px] cursor-pointer ${
+                    showUpdateIatdPanel
+                      ? 'bg-indigo-600 border-indigo-600 text-white'
+                      : 'border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-300'
+                  }`}
+                  title="Update or change the active IATD source"
+                >
+                  Change IATD
+                </button>
               </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 items-end">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Item Code</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 100234"
-                    value={customMissingItem.itemCode}
-                    onChange={(e) => setCustomMissingItem((p) => ({ ...p, itemCode: e.target.value }))}
-                    className="w-full text-xs px-2.5 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Item Description *</label>
-                  <input
-                    type="text"
-                    placeholder="Enter item description"
-                    value={customMissingItem.itemDescription}
-                    onChange={(e) => setCustomMissingItem((p) => ({ ...p, itemDescription: e.target.value }))}
-                    className="w-full text-xs px-2.5 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Category / Unit</label>
-                  <div className="flex gap-1">
-                    <input
-                      type="text"
-                      placeholder="Category"
-                      value={customMissingItem.category}
-                      onChange={(e) => setCustomMissingItem((p) => ({ ...p, category: e.target.value }))}
-                      className="w-2/3 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
-                    />
-                    <input
-                      type="text"
-                      placeholder="PCS"
-                      value={customMissingItem.unit}
-                      onChange={(e) => setCustomMissingItem((p) => ({ ...p, unit: e.target.value }))}
-                      className="w-1/3 text-xs px-1.5 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white text-center"
-                    />
+
+              {/* Bottom: Loaded Countsheet & Status */}
+              <div className="pt-2.5 border-t border-slate-200/80 dark:border-zinc-800/80 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">
+                      Countsheet:
+                    </span>
+                    <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                      {countsheetItems.length} selected • {countedCount}/{countsheetItems.length} Actuals
+                    </span>
                   </div>
+                  <span className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 truncate block mt-0.5">
+                    {importedCountsheetSession.spreadsheetName}
+                  </span>
                 </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Cost / Selling</label>
-                  <div className="flex gap-1">
-                    <input
-                      type="number"
-                      step="any"
-                      placeholder="Cost"
-                      value={customMissingItem.cost}
-                      onChange={(e) => setCustomMissingItem((p) => ({ ...p, cost: e.target.value }))}
-                      className="w-1/2 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
-                    />
-                    <input
-                      type="number"
-                      step="any"
-                      placeholder="Sell"
-                      value={customMissingItem.selling}
-                      onChange={(e) => setCustomMissingItem((p) => ({ ...p, selling: e.target.value }))}
-                      className="w-1/2 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Balance / Actual</label>
-                  <div className="flex gap-1">
-                    <input
-                      type="number"
-                      step="any"
-                      placeholder="Bal"
-                      value={customMissingItem.balance}
-                      onChange={(e) => setCustomMissingItem((p) => ({ ...p, balance: e.target.value }))}
-                      className="w-1/2 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
-                    />
-                    <input
-                      type="number"
-                      step="any"
-                      placeholder="Act"
-                      value={customMissingItem.actual}
-                      onChange={(e) => setCustomMissingItem((p) => ({ ...p, actual: e.target.value }))}
-                      className="w-1/2 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
-                    />
-                  </div>
-                </div>
-                <div className="col-span-2 sm:col-span-6 flex justify-end pt-1">
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {countsheetSaveMsg && (
+                    <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded">
+                      {countsheetSaveMsg}
+                    </span>
+                  )}
                   <button
                     type="button"
-                    disabled={!customMissingItem.itemDescription.trim() && !customMissingItem.itemCode.trim()}
                     onClick={() => {
-                      const balNum = parseFloat(customMissingItem.balance) || 0;
-                      const actNum =
-                        customMissingItem.actual.trim() !== ''
-                          ? parseFloat(customMissingItem.actual)
-                          : null;
-                      const activeTargetCs =
-                        (countsheetEditorCsFilter !== 'ALL' ? countsheetEditorCsFilter : newMissingCsCode) ||
-                        availableCsCodes[0] ||
-                        'CS01';
-
-                      insertMissingItemAtConfiguredPosition({
-                        id: `custom_missing_${Date.now()}`,
-                        itemCode: customMissingItem.itemCode.trim(),
-                        barcode: customMissingItem.barcode.trim(),
-                        itemDescription: customMissingItem.itemDescription.trim() || customMissingItem.itemCode.trim(),
-                        category: customMissingItem.category.trim(),
-                        subCategory: customMissingItem.subCategory.trim(),
-                        subsubCategory: customMissingItem.subsubCategory.trim(),
-                        unit: customMissingItem.unit.trim() || 'PCS',
-                        cost: parseFloat(customMissingItem.cost) || 0,
-                        selling: parseFloat(customMissingItem.selling) || 0,
-                        balance: balNum,
-                        actual: actNum !== null && !isNaN(actNum) ? actNum : null,
-                        csCode: activeTargetCs,
-                        isMissingItem: true,
-                      }, activeTargetCs);
-                      setCustomMissingItem({
-                        itemCode: '',
-                        barcode: '',
-                        itemDescription: '',
-                        category: '',
-                        subCategory: '',
-                        subsubCategory: '',
-                        unit: 'PCS',
-                        cost: '0',
-                        selling: '0',
-                        balance: '0',
-                        actual: '',
-                      });
+                      setImportedCountsheetSession(null);
+                      setCountsheetItems([]);
                     }}
-                    className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                    className="px-2 py-0.5 rounded-lg border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-500 dark:text-zinc-400 font-semibold transition-colors text-[10px] cursor-pointer"
+                    title="Switch to a different countsheet session"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Insert Missing Item into {((countsheetEditorCsFilter !== 'ALL' ? countsheetEditorCsFilter : newMissingCsCode) || availableCsCodes[0] || 'CS01')}</span>
+                    Switch CS
                   </button>
                 </div>
               </div>
-            )}
-          </div>
-        )}
+            </div>
 
-        {/* Filter & Search Bar for Countsheet Sequence Table */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-1 flex-wrap">
-            <button
-              type="button"
-              onClick={() => setCountsheetEditorCsFilter('ALL')}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition ${
-                countsheetEditorCsFilter === 'ALL'
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-white dark:bg-zinc-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-zinc-700'
-              }`}
-            >
-              All ({countsheetItems.length})
-            </button>
-            {Array.from(new Set(countsheetItems.map((i) => i.csCode || 'CS01')))
-              .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-              .map((cs) => {
-                const count = countsheetItems.filter((i) => (i.csCode || 'CS01') === cs).length;
-                const isSelectedCs = countsheetEditorCsFilter === cs;
-                return (
-                  <div
-                    key={`cs_tab_filter_${cs}`}
-                    className={`inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-xl text-[11px] font-mono font-bold transition shadow-2xs ${
-                      isSelectedCs
-                        ? 'bg-emerald-600 text-white border border-emerald-600'
-                        : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-zinc-700'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setCountsheetEditorCsFilter(cs)}
-                      className="cursor-pointer hover:opacity-90 transition py-0.5"
-                    >
-                      {cs} ({count})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRemoveCountsheetCsGroup(cs);
-                      }}
-                      title={`Remove ${cs} (${count} items)`}
-                      aria-label={`Remove ${cs}`}
-                      className={`w-5 h-5 rounded-md flex items-center justify-center cursor-pointer transition ${
-                        isSelectedCs
-                          ? 'bg-emerald-700/80 text-white hover:bg-rose-500 hover:text-white'
-                          : 'bg-slate-100 dark:bg-zinc-700/80 text-slate-500 dark:text-slate-300 hover:bg-rose-500 hover:text-white dark:hover:bg-rose-600'
+            {/* 2. Countsheets (CS01, CS02...) Vertical List & Sheet Name Card */}
+            <div className="space-y-2.5 p-3 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-zinc-200">
+                  <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                  <span>Countsheets ({availableCsCodes.length})</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAddMissingPanel((prev) => !prev)}
+                  className={`px-2.5 py-1 rounded-xl text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer ${
+                    showAddMissingPanel
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-500/30'
+                  }`}
+                  title="Add missing item to countsheet"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>Add Item</span>
+                </button>
+              </div>
+
+              {/* Vertical List of CS01, CS02 Onwards */}
+              <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1 scrollbar-thin">
+                {/* ALL Countsheets Filter Tab */}
+                <div
+                  onClick={() => setCountsheetEditorCsFilter('ALL')}
+                  className={`group relative w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl cursor-pointer text-xs font-semibold transition-all border ${
+                    countsheetEditorCsFilter === 'ALL'
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                      : 'bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:bg-slate-100/80 dark:hover:bg-zinc-800/80 hover:border-blue-300 dark:hover:border-blue-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <span
+                      className={`font-mono font-bold px-2 py-0.5 rounded-lg text-[11px] shrink-0 ${
+                        countsheetEditorCsFilter === 'ALL'
+                          ? 'bg-white/20 text-white'
+                          : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/60'
                       }`}
                     >
-                      <X className="w-3.5 h-3.5 stroke-[2.5]" />
-                    </button>
+                      ALL
+                    </span>
+                    <span
+                      className={`truncate text-xs ${
+                        countsheetEditorCsFilter === 'ALL'
+                          ? 'text-white font-bold'
+                          : 'text-slate-700 dark:text-zinc-200 font-medium'
+                      }`}
+                    >
+                      All Countsheets
+                    </span>
                   </div>
-                );
-              })}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span
+                      className={`text-[10.5px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                        countsheetEditorCsFilter === 'ALL'
+                          ? 'bg-white/20 text-white'
+                          : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                      }`}
+                    >
+                      {countsheetItems.length} items
+                    </span>
+                  </div>
+                </div>
+
+                {/* Individual CS Tabs */}
+                {availableCsCodes.map((cs) => {
+                  const isSelected = countsheetEditorCsFilter === cs;
+                  const itemsCount = countsheetItems.filter((i) => (i.csCode || 'CS01') === cs).length;
+
+                  return (
+                    <div
+                      key={`cs_tab_btn_${cs}`}
+                      onClick={() => setCountsheetEditorCsFilter(cs)}
+                      className={`group relative w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl cursor-pointer text-xs font-semibold transition-all border ${
+                        isSelected
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                          : 'bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:bg-slate-100/80 dark:hover:bg-zinc-800/80 hover:border-blue-300 dark:hover:border-blue-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span
+                          className={`font-mono font-bold px-2 py-0.5 rounded-lg text-[11px] shrink-0 ${
+                            isSelected
+                              ? 'bg-white/20 text-white'
+                              : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/60'
+                          }`}
+                        >
+                          {cs}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span
+                          className={`text-[10.5px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                            isSelected
+                              ? 'bg-white/20 text-white'
+                              : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                          }`}
+                        >
+                          {itemsCount} {itemsCount === 1 ? 'item' : 'items'}
+                        </span>
+
+                        {availableCsCodes.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveCountsheetCsGroup(cs);
+                            }}
+                            title={`Remove ${cs} (${itemsCount} items)`}
+                            className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'hover:bg-white/20 text-white/80 hover:text-white'
+                                : 'hover:bg-rose-100 dark:hover:bg-rose-950/40 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400'
+                            }`}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Sheet Name & Selected Count Bar */}
+              <div className="pt-2 border-t border-slate-200/80 dark:border-zinc-800/80 flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-slate-500 dark:text-zinc-400 font-medium">Sheet Name:</span>
+                  <span className="font-bold text-blue-700 dark:text-blue-300 truncate">
+                    {countsheetEditorCsFilter === 'ALL'
+                      ? (importedCountsheetSession.spreadsheetName || 'All Countsheets')
+                      : countsheetEditorCsFilter}
+                  </span>
+                </div>
+
+                <div className="font-bold text-slate-700 dark:text-zinc-200 flex items-center gap-1.5 font-mono text-[11px] shrink-0">
+                  <span>{filteredWithOriginalIndex.length} items</span>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Category / SubCat / SubSubCat Selection Card */}
+            <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-zinc-800/70 border border-slate-200 dark:border-zinc-700/80 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setCsActiveHeaderButton('cat')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all border cursor-pointer ${
+                      csActiveHeaderButton === 'cat'
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                    }`}
+                  >
+                    <span>Category</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
+                        csActiveHeaderButton === 'cat'
+                          ? 'bg-white/20 text-white'
+                          : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
+                      }`}
+                    >
+                      {uniqueCsCategories.length}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setCsActiveHeaderButton('subCat')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all border cursor-pointer ${
+                      csActiveHeaderButton === 'subCat'
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                    }`}
+                  >
+                    <span>SubCat</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
+                        csActiveHeaderButton === 'subCat'
+                          ? 'bg-white/20 text-white'
+                          : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
+                      }`}
+                    >
+                      {uniqueCsSubCategories.length}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setCsActiveHeaderButton('subSubCat')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all border cursor-pointer ${
+                      csActiveHeaderButton === 'subSubCat'
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                    }`}
+                  >
+                    <span>SubSubCat</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
+                        csActiveHeaderButton === 'subSubCat'
+                          ? 'bg-white/20 text-white'
+                          : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
+                      }`}
+                    >
+                      {uniqueCsSubSubCategories.length}
+                    </span>
+                  </button>
+                </div>
+
+                {(csSelectedCats.length > 0 ||
+                  csSelectedSubCats.length > 0 ||
+                  csSelectedSubSubCats.length > 0 ||
+                  csHierarchySearchQuery) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCsSelectedCats([]);
+                      setCsSelectedSubCats([]);
+                      setCsSelectedSubSubCats([]);
+                      setCsHierarchySearchQuery('');
+                    }}
+                    className="text-xs font-semibold text-rose-600 dark:text-rose-400 hover:underline shrink-0 cursor-pointer"
+                  >
+                    Clear All
+                  </button>
+                )}
+              </div>
+
+              {/* Active Filter Pills */}
+              {(csSelectedCats.length > 0 || csSelectedSubCats.length > 0 || csSelectedSubSubCats.length > 0) && (
+                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                  {csSelectedCats.map((cat) => (
+                    <span
+                      key={`sel_cat_${cat}`}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-blue-200 dark:border-blue-800/70 font-semibold text-blue-700 dark:text-blue-300 text-[11px]"
+                    >
+                      <span>{cat}</span>
+                      <button
+                        type="button"
+                        onClick={() => setCsSelectedCats((p) => p.filter((x) => x !== cat))}
+                        className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer font-bold"
+                        title={`Remove category ${cat}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+
+                  {csSelectedSubCats.map((subCat) => (
+                    <span
+                      key={`sel_subcat_${subCat}`}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-indigo-200 dark:border-indigo-800/70 font-semibold text-indigo-700 dark:text-indigo-300 text-[11px]"
+                    >
+                      <span>{subCat}</span>
+                      <button
+                        type="button"
+                        onClick={() => setCsSelectedSubCats((p) => p.filter((x) => x !== subCat))}
+                        className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer font-bold"
+                        title={`Remove subcategory ${subCat}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+
+                  {csSelectedSubSubCats.map((ssc) => (
+                    <span
+                      key={`sel_subsubcat_${ssc}`}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-purple-200 dark:border-purple-800/70 font-semibold text-purple-700 dark:text-purple-300 text-[11px]"
+                    >
+                      <span>{ssc}</span>
+                      <button
+                        type="button"
+                        onClick={() => setCsSelectedSubSubCats((p) => p.filter((x) => x !== ssc))}
+                        className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer font-bold"
+                        title={`Remove sub-subcategory ${ssc}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Search Bar for Category Drill-Down */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={csHierarchySearchQuery}
+                  onChange={(e) => setCsHierarchySearchQuery(e.target.value)}
+                  placeholder={`Search ${
+                    csActiveHeaderButton === 'cat'
+                      ? 'categories'
+                      : csActiveHeaderButton === 'subCat'
+                      ? 'subcategories'
+                      : 'sub-subcategories'
+                  }...`}
+                  className="w-full pl-8 pr-7 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                {csHierarchySearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setCsHierarchySearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold cursor-pointer"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+
+              {/* Category / SubCat / SubSubCat Options Chips List */}
+              <div className="p-3 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
+                {csActiveHeaderButton === 'cat' && (
+                  uniqueCsCategories.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-56 lg:max-h-72 overflow-y-auto pr-1">
+                      {uniqueCsCategories.map((c) => {
+                        const isSel = csSelectedCats.some(
+                          (sel) => safeLower(sel) === safeLower(c.name)
+                        );
+                        return (
+                          <button
+                            key={c.name}
+                            type="button"
+                            onClick={() =>
+                              setCsSelectedCats((prev) =>
+                                prev.some((x) => safeLower(x) === safeLower(c.name))
+                                  ? prev.filter((x) => safeLower(x) !== safeLower(c.name))
+                                  : [...prev, c.name]
+                              )
+                            }
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
+                              isSel
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                : 'bg-slate-50 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                            }`}
+                          >
+                            {isSel && <Check className="w-3 h-3 shrink-0" />}
+                            <span>
+                              {c.name} <span className="opacity-70 text-[10px]">({c.count})</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="p-3 text-center text-xs text-slate-400">
+                      No categories found.
+                    </div>
+                  )
+                )}
+
+                {csActiveHeaderButton === 'subCat' && (
+                  uniqueCsSubCategories.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-56 lg:max-h-72 overflow-y-auto pr-1">
+                      {uniqueCsSubCategories.map((sc) => {
+                        const isSel = csSelectedSubCats.some(
+                          (sel) => safeLower(sel) === safeLower(sc.name)
+                        );
+                        return (
+                          <button
+                            key={sc.name}
+                            type="button"
+                            onClick={() =>
+                              setCsSelectedSubCats((prev) =>
+                                prev.some((x) => safeLower(x) === safeLower(sc.name))
+                                  ? prev.filter((x) => safeLower(x) !== safeLower(sc.name))
+                                  : [...prev, sc.name]
+                              )
+                            }
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
+                              isSel
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                : 'bg-slate-50 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                            }`}
+                          >
+                            {isSel && <Check className="w-3 h-3 shrink-0" />}
+                            <span>
+                              {sc.name} <span className="opacity-70 text-[10px]">({sc.count})</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="p-3 text-center text-xs text-slate-400">
+                      No subcategories found.
+                    </div>
+                  )
+                )}
+
+                {csActiveHeaderButton === 'subSubCat' && (
+                  uniqueCsSubSubCategories.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-56 lg:max-h-72 overflow-y-auto pr-1">
+                      {uniqueCsSubSubCategories.map((ssc) => {
+                        const isSel = csSelectedSubSubCats.some(
+                          (sel) => safeLower(sel) === safeLower(ssc.name)
+                        );
+                        return (
+                          <button
+                            key={ssc.name}
+                            type="button"
+                            onClick={() =>
+                              setCsSelectedSubSubCats((prev) =>
+                                prev.some((x) => safeLower(x) === safeLower(ssc.name))
+                                  ? prev.filter((x) => safeLower(x) !== safeLower(ssc.name))
+                                  : [...prev, ssc.name]
+                              )
+                            }
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
+                              isSel
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                : 'bg-slate-50 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                            }`}
+                          >
+                            {isSel && <Check className="w-3 h-3 shrink-0" />}
+                            <span>
+                              {ssc.name} <span className="opacity-70 text-[10px]">({ssc.count})</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="p-3 text-center text-xs text-slate-400">
+                      No sub-subcategories found.
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
           </div>
 
-          <div className="relative w-full sm:w-64">
-            <input
-              type="text"
-              placeholder="Filter items in sequence..."
-              value={countsheetEditorSearch}
-              onChange={(e) => setCountsheetEditorSearch(e.target.value)}
-              className="w-full text-xs pl-7 pr-2.5 py-1 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
-            />
-            <Search className="w-3.5 h-3.5 absolute left-2 top-1.5 text-slate-400" />
-          </div>
-        </div>
+          {/* RIGHT COLUMN: Search Toolbar, Missing Panel, Allocation Ribbon & Items Table (70% - lg:col-span-7) */}
+          <div className="lg:col-span-7 xl:col-span-7 min-w-0 space-y-3.5">
+            {/* ITEM SEARCH & SIMPLE ACTION BUTTONS TOOLBAR */}
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 space-y-2.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={countsheetEditorSearch}
+                    onChange={(e) => setCountsheetEditorSearch(e.target.value)}
+                    placeholder="Search items in countsheet..."
+                    className="w-full pl-10 pr-8 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                  />
+                  {countsheetEditorSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setCountsheetEditorSearch('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
 
-        {/* Ordered Countsheet Items Table */}
-        <div className="border border-slate-200 dark:border-zinc-800 rounded-xl overflow-hidden bg-white dark:bg-zinc-900">
-          <div className="max-h-96 sm:max-h-[420px] overflow-y-auto scrollbar-thin">
-            <table className="w-full text-[11px] text-left border-collapse">
-              <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-slate-200 font-bold border-b border-slate-200 dark:border-zinc-700">
-                <tr>
-                  <th className="py-2 px-2 w-14 text-center">Seq #</th>
-                  <th className="py-2 px-2 w-20">CS Col</th>
-                  <th className="py-2 px-2">Item Code</th>
-                  <th className="py-2 px-2">Item Description</th>
-                  <th className="py-2 px-2 hidden md:table-cell">Category</th>
-                  <th className="py-2 px-2 w-14 text-center">Unit</th>
-                  <th className="py-2 px-2 w-24 text-right">Balance</th>
-                  <th className="py-2 px-2 w-24 text-right">Actual Qty</th>
-                  <th className="py-2 px-2 w-20 text-right">Variance</th>
-                  <th className="py-2 px-2 w-20 text-center">Sequence</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-zinc-800/70">
-                {filteredWithOriginalIndex.length > 0 ? (
-                  filteredWithOriginalIndex.map(({ item, seqIdx }) => {
-                    const hasActual =
-                      item.actual !== undefined && item.actual !== null && String(item.actual).trim() !== '';
-                    const variance = hasActual ? Number(item.actual) - Number(item.balance || 0) : null;
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const headersToUse =
+                        iatdInspection && iatdInspection.headers.length > 0
+                          ? iatdInspection.headers
+                          : importedCountsheetSession?.iatdHeaders &&
+                            importedCountsheetSession.iatdHeaders.length > 0
+                          ? importedCountsheetSession.iatdHeaders
+                          : SYNTHETIC_IATD_HEADERS;
+                      const targetCsFilter = countsheetEditorCsFilter || 'ALL';
+                      const isAllCs = targetCsFilter === 'ALL';
+                      const targetItemIds = new Set(
+                        countsheetItems
+                          .filter((it) => isAllCs || (it.csCode || 'CS01') === targetCsFilter)
+                          .map((it) => it.id)
+                      );
 
-                    return (
-                      <tr
-                        key={`seq_row_${item.id || 'it'}_${seqIdx}`}
-                        className={`hover:bg-slate-50/90 dark:hover:bg-zinc-800/50 transition-colors ${
-                          item.isMissingItem ? 'bg-amber-50/40 dark:bg-amber-950/20' : ''
+                      setCsOnlyWithBalance(false);
+                      setEditingQtyDrafts((prev) => {
+                        const next = { ...prev };
+                        Object.keys(next).forEach((k) => {
+                          if (!k.startsWith('balance_')) return;
+                          const itemId = k.slice('balance_'.length);
+                          if (isAllCs || targetItemIds.has(itemId)) {
+                            delete next[k];
+                          }
+                        });
+                        return next;
+                      });
+                      setCountsheetItems((prev) =>
+                        prev.map((it) => {
+                          if (!isAllCs && (it.csCode || 'CS01') !== targetCsFilter) {
+                            return it;
+                          }
+                          const updated: PreGeneratedCountsheetItem = {
+                            ...it,
+                            balance: null,
+                            amount: 0,
+                          };
+                          updated.raw = buildIatdRowFromCountsheetItem(updated, headersToUse);
+                          return updated;
+                        })
+                      );
+                      setCountsheetSaveMsg(
+                        isAllCs ? 'All balances removed' : `${targetCsFilter} balances removed`
+                      );
+                      setTimeout(() => setCountsheetSaveMsg(null), 3000);
+                      setTimeout(() => {
+                        const firstBalanceInput = document.querySelector<HTMLInputElement>(
+                          'input[data-balance-qty-row="0"]'
+                        );
+                        if (firstBalanceInput) {
+                          firstBalanceInput.focus();
+                        }
+                      }, 50);
+                    }}
+                    className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/30 text-xs font-bold transition cursor-pointer"
+                    title={
+                      countsheetEditorCsFilter === 'ALL'
+                        ? 'Remove all balances across all countsheets'
+                        : `Remove balances in ${countsheetEditorCsFilter} only`
+                    }
+                  >
+                    Remove Balances
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowUpdateIatdPanel((prev) => !prev);
+                      setUpdateIatdError(null);
+                    }}
+                    className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 transition cursor-pointer ${
+                      showUpdateIatdPanel
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white dark:bg-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-zinc-700'
+                    }`}
+                    title="Select an updated IATD spreadsheet with the latest inventory list"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isUpdatingIatdSource ? 'animate-spin' : ''}`} />
+                    <span>{showUpdateIatdPanel ? 'Hide Update IATD' : 'Update IATD'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowAddMissingPanel((prev) => !prev)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 transition cursor-pointer ${
+                      showAddMissingPanel
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-500/30'
+                    }`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{showAddMissingPanel ? 'Hide Add Items' : 'Add Items'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handlePersistEditedCountsheetSession}
+                    disabled={isSavingEditsLoading}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all duration-200 cursor-pointer shadow-2xs select-none active:scale-95 ${
+                      isSaveEditsSuccess
+                        ? 'bg-emerald-500 text-white shadow-md ring-2 ring-emerald-300 dark:ring-emerald-400/60 scale-105'
+                        : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                    }`}
+                    title="Save edited Balance, Actual, and sequence back to this countsheet session"
+                  >
+                    {isSavingEditsLoading ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : isSaveEditsSuccess ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                        <span>Saved!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-3.5 h-3.5" />
+                        <span>Save Edits</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Toolbar Filter Toggles & Sort Menu */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200/80 dark:border-zinc-800/80">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none transition-all ${
+                      csOnlyWithBalance
+                        ? 'bg-amber-500/15 border-amber-500/50 text-amber-900 dark:text-amber-200'
+                        : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={csOnlyWithBalance}
+                      onChange={(e) => setCsOnlyWithBalance(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
+                    />
+                    <span>With Balance</span>
+                  </label>
+
+                  <label
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none transition-all ${
+                      csOnlyWithActual
+                        ? 'bg-indigo-500/15 border-indigo-500/50 text-indigo-900 dark:text-indigo-200'
+                        : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={csOnlyWithActual}
+                      onChange={(e) => setCsOnlyWithActual(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                    />
+                    <span>Entered Actuals ({countedCount})</span>
+                  </label>
+
+                  {missingAddedCount > 0 && (
+                    <label
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none transition-all ${
+                        csOnlyMissingAdded
+                          ? 'bg-amber-500/15 border-amber-500/50 text-amber-900 dark:text-amber-200'
+                          : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={csOnlyMissingAdded}
+                        onChange={(e) => setCsOnlyMissingAdded(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded text-amber-600 focus:ring-amber-500 cursor-pointer accent-amber-600"
+                      />
+                      <span>Missing Added ({missingAddedCount})</span>
+                    </label>
+                  )}
+                </div>
+
+                {/* Sort Dropdown */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setCsShowSortDropdown((prev) => !prev)}
+                    className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 hover:border-blue-500 text-slate-700 dark:text-zinc-200 font-bold text-xs inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <span>
+                      Sort:{' '}
+                      {csItemSortBy === 'itemCode'
+                        ? 'Code'
+                        : csItemSortBy === 'itemDescription'
+                        ? 'Description'
+                        : 'Default'}
+                    </span>
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 text-slate-400 transition-transform ${
+                        csShowSortDropdown ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </button>
+
+                  {csShowSortDropdown && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-20"
+                        onClick={() => setCsShowSortDropdown(false)}
+                      />
+                      <div
+                        data-scroll-lock-panel
+                        className="absolute right-0 mt-1.5 w-44 rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 shadow-xl py-1 z-30"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCsItemSortBy('seq');
+                            setCsShowSortDropdown(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
+                            csItemSortBy === 'seq'
+                              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
+                              : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                          }`}
+                        >
+                          <span>Default Order</span>
+                          {csItemSortBy === 'seq' && (
+                            <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCsItemSortBy('itemCode');
+                            setCsShowSortDropdown(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
+                            csItemSortBy === 'itemCode'
+                              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
+                              : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                          }`}
+                        >
+                          <span>Item Code</span>
+                          {csItemSortBy === 'itemCode' && (
+                            <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCsItemSortBy('itemDescription');
+                            setCsShowSortDropdown(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
+                            csItemSortBy === 'itemDescription'
+                              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
+                              : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                          }`}
+                        >
+                          <span>Item Description</span>
+                          {csItemSortBy === 'itemDescription' && (
+                            <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                          )}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* UPDATE IATD INVENTORY SOURCE PANEL */}
+            {showUpdateIatdPanel && (
+              <div className="p-3.5 bg-white dark:bg-zinc-900 border border-blue-300 dark:border-blue-800/70 rounded-2xl space-y-3 animate-in fade-in shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-zinc-800 pb-2.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-7 h-7 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                      <Database className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-900 dark:text-white">
+                        Update IATD Inventory List
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-zinc-400 truncate">
+                        Current IATD:{' '}
+                        <strong className="text-slate-700 dark:text-zinc-200">
+                          {iatdInspection?.spreadsheetTitle || importedCountsheetSession.sourceFile?.name || 'None'}
+                        </strong>{' '}
+                        ({fullSourceIatdRows.length.toLocaleString()} inventory items loaded)
+                      </div>
+                    </div>
+                  </div>
+
+                  {iatdTabs.length > 1 && iatdInputId && (
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span className="font-semibold text-slate-600 dark:text-slate-400">Sheet Tab:</span>
+                      <CustomSelect
+                        value={selectedIatdTab || iatdTabs[0]?.title || ''}
+                        onChange={(val) => {
+                          setSelectedIatdTab(val);
+                          handleApplyUpdatedIatdForCountsheet(iatdInputId, val);
+                        }}
+                        variant="compact"
+                        menuMinWidth={150}
+                        options={iatdTabs.map((t) => ({
+                          value: t.title,
+                          label: t.title,
+                        }))}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Option 1: Paste Updated IATD Google Sheet URL or ID */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative flex-1 min-w-[220px]">
+                    <input
+                      type="text"
+                      placeholder="Paste updated IATD Google Sheet link or Spreadsheet ID..."
+                      value={updateIatdUrlInput}
+                      onChange={(e) => setUpdateIatdUrlInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && updateIatdUrlInput.trim()) {
+                          e.preventDefault();
+                          handleApplyUpdatedIatdForCountsheet(updateIatdUrlInput.trim());
+                        }
+                      }}
+                      className="w-full text-xs px-3 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!updateIatdUrlInput.trim() || isUpdatingIatdSource}
+                    onClick={() => handleApplyUpdatedIatdForCountsheet(updateIatdUrlInput.trim())}
+                    className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {isUpdatingIatdSource ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Loading IATD...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Load Updated IATD</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {updateIatdError && (
+                  <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{updateIatdError}</span>
+                  </div>
+                )}
+
+                {/* Option 2: Search & Pick Updated IATD from Google Drive or Branch Emails */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setUpdateIatdSourceTab('DRIVE')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
+                          updateIatdSourceTab === 'DRIVE'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
                         }`}
                       >
-                        <td className="py-1.5 px-2 font-mono font-bold text-center text-slate-500 dark:text-slate-400">
-                          #{seqIdx + 1}
-                        </td>
-                        <td className="py-1.5 px-2">
+                        Google Drive
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUpdateIatdSourceTab('EMAIL');
+                          handleRefreshEmails();
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition ${
+                          updateIatdSourceTab === 'EMAIL'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        <Mail className="w-3 h-3" />
+                        <span>Branch Emails</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {updateIatdSourceTab === 'DRIVE' ? (
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="text"
+                            placeholder="Search updated IATD spreadsheet in Google Drive..."
+                            value={updateIatdSearchQuery}
+                            onChange={(e) => setUpdateIatdSearchQuery(e.target.value)}
+                            className="w-full text-xs pl-7 pr-3 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          />
+                          <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-400" />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRefreshDrive}
+                          disabled={isSearchingDrive}
+                          className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-200 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                          title="Refresh Google Drive spreadsheets"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${isSearchingDrive ? 'animate-spin' : ''}`} />
+                          <span>Refresh</span>
+                        </button>
+                      </div>
+
+                      <div
+                        data-scroll-lock-panel
+                        className="max-h-44 overflow-y-auto divide-y divide-slate-100 dark:divide-zinc-800 border border-slate-200 dark:border-zinc-800 rounded-xl"
+                      >
+                        {(() => {
+                          const q = updateIatdSearchQuery.trim().toLowerCase();
+                          const filteredDrive = driveFiles.filter(
+                            (f) => !q || (f.name || '').toLowerCase().includes(q)
+                          );
+                          if (filteredDrive.length === 0) {
+                            return (
+                              <div className="p-4 text-center text-xs text-slate-400">
+                                {isSearchingDrive
+                                  ? 'Searching Google Drive spreadsheets...'
+                                  : 'No matching spreadsheets found in Google Drive.'}
+                              </div>
+                            );
+                          }
+                          return filteredDrive.slice(0, 30).map((file) => {
+                            const isCurrentIatd = iatdInspection?.spreadsheetId === file.id;
+                            return (
+                              <div
+                                key={`upd_iatd_${file.id}`}
+                                className="p-2 flex items-center justify-between gap-2 text-xs hover:bg-slate-50 dark:hover:bg-zinc-800/60"
+                              >
+                                <div className="min-w-0 flex-1 flex items-center gap-2">
+                                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                  <div className="min-w-0">
+                                    <div className="font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
+                                      <span className="truncate">{file.name}</span>
+                                      {isCurrentIatd && (
+                                        <span className="text-[9.5px] px-1.5 py-0.2 rounded bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-bold shrink-0">
+                                          Active IATD
+                                        </span>
+                                      )}
+                                    </div>
+                                    {file.modifiedTime && (
+                                      <div className="text-[10px] text-slate-400">
+                                        Modified: {new Date(file.modifiedTime).toLocaleString()}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={isUpdatingIatdSource}
+                                  onClick={() => handleApplyUpdatedIatdForCountsheet(file.id, undefined, file)}
+                                  className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                                >
+                                  <span>Select IATD</span>
+                                </button>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="text"
+                            placeholder="Filter emailed branch spreadsheets..."
+                            value={emailQuery}
+                            onChange={(e) => setEmailQuery(e.target.value)}
+                            className="w-full text-xs pl-7 pr-3 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                          <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-400" />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRefreshEmails()}
+                          disabled={isSearchingEmail}
+                          className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-200 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${isSearchingEmail ? 'animate-spin' : ''}`} />
+                          <span>Refresh</span>
+                        </button>
+                      </div>
+
+                      <div
+                        data-scroll-lock-panel
+                        className="max-h-44 overflow-y-auto divide-y divide-slate-100 dark:divide-zinc-800 border border-slate-200 dark:border-zinc-800 rounded-xl"
+                      >
+                        {(() => {
+                          const q = emailQuery.trim().toLowerCase();
+                          const filteredEmails = emailMessages.filter(
+                            (m) =>
+                              !q ||
+                              (m.subject || '').toLowerCase().includes(q) ||
+                              (m.fromName || '').toLowerCase().includes(q) ||
+                              (m.fromEmail || '').toLowerCase().includes(q) ||
+                              m.attachments.some((a) => (a.filename || '').toLowerCase().includes(q))
+                          );
+                          if (filteredEmails.length === 0) {
+                            return (
+                              <div className="p-4 text-center text-xs text-slate-400">
+                                {isSearchingEmail
+                                  ? 'Searching branch email attachments...'
+                                  : 'No matching branch email spreadsheets found.'}
+                              </div>
+                            );
+                          }
+                          return filteredEmails.slice(0, 20).flatMap((msg) =>
+                            msg.attachments.map((att) => {
+                              const convKey = `${msg.messageId}:${att.filename}`;
+                              const convertedRecord = convertedSheetsMap[convKey];
+                              const isConverting = convertingAttachmentKey === convKey;
+                              return (
+                                <div
+                                  key={`upd_email_${convKey}`}
+                                  className="p-2 flex items-center justify-between gap-2 text-xs hover:bg-slate-50 dark:hover:bg-zinc-800/60"
+                                >
+                                  <div className="min-w-0 flex-1 flex items-center gap-2">
+                                    <Mail className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                                    <div className="min-w-0">
+                                      <div className="font-bold text-slate-900 dark:text-white truncate">
+                                        {att.filename}
+                                      </div>
+                                      <div className="text-[10px] text-slate-400 truncate">
+                                        {msg.subject}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={isUpdatingIatdSource || isConverting}
+                                    onClick={async () => {
+                                      if (convertedRecord?.spreadsheetId) {
+                                        await handleApplyUpdatedIatdForCountsheet(convertedRecord.spreadsheetId);
+                                      } else {
+                                        try {
+                                          setConvertingAttachmentKey(convKey);
+                                          const tokenToUse =
+                                            (await resolveValidOAuthToken(effectiveToken, { allowPopup: true })) ||
+                                            effectiveToken ||
+                                            '';
+                                          const cleanSubject = (msg.subject || '')
+                                            .replace(/^(re|fwd|fw):\s*/i, '')
+                                            .trim();
+                                          const baseFilename = att.filename
+                                            .replace(/\.(xlsx|xls|xlsm|csv|ods)$/i, '')
+                                            .trim();
+                                          const customTitle = cleanSubject
+                                            ? `${baseFilename} (${cleanSubject.slice(0, 40)})`
+                                            : `${baseFilename} (Branch Email)`;
+                                          const converted = await convertEmailAttachmentToGoogleSheet({
+                                            accessToken: tokenToUse,
+                                            messageId: msg.messageId,
+                                            attachment: att,
+                                            customTitle,
+                                          });
+                                          setConvertedSheetsMap(getConvertedEmailSheetsMap());
+                                          await handleApplyUpdatedIatdForCountsheet(converted.id, undefined, converted);
+                                        } catch (e: any) {
+                                          setUpdateIatdError(
+                                            e?.message || 'Failed to convert email attachment to Google Sheet.'
+                                          );
+                                        } finally {
+                                          setConvertingAttachmentKey(null);
+                                        }
+                                      }
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                                  >
+                                    {isConverting ? (
+                                      <>
+                                        <RefreshCw className="w-3 h-3 animate-spin" />
+                                        <span>Converting...</span>
+                                      </>
+                                    ) : (
+                                      <span>{convertedRecord?.spreadsheetId ? 'Select IATD' : 'Convert & Use IATD'}</span>
+                                    )}
+                                  </button>
+                                </div>
+                              );
+                            })
+                          );
+                        })()}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ADD MISSING INVENTORY ITEM PANEL */}
+            {showAddMissingPanel && (
+              <div className="p-3.5 bg-white dark:bg-zinc-900 border border-amber-300 dark:border-amber-800/70 rounded-2xl space-y-3 animate-in fade-in shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-zinc-800 pb-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setAddMissingMode('IATD_SEARCH')}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
+                        addMissingMode === 'IATD_SEARCH'
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      Search from Active IATD ({activeIatdCatalogItems.length.toLocaleString()})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddMissingMode('CUSTOM')}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
+                        addMissingMode === 'CUSTOM'
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      Add Custom / Unlisted Item
+                    </button>
+                  </div>
+
+                  {/* Target Countsheet and Position Selection */}
+                  {(() => {
+                    const activeTargetCs =
+                      (countsheetEditorCsFilter !== 'ALL' ? countsheetEditorCsFilter : newMissingCsCode) ||
+                      availableCsCodes[0] ||
+                      'CS01';
+
+                    return (
+                      <div className="flex flex-wrap items-center gap-2.5 text-[11px]">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-slate-700 dark:text-slate-300">Add to Countsheet:</span>
                           <CustomSelect
-                            value={item.csCode || 'CS01'}
-                            onChange={(val) => handleUpdateCountsheetItem(seqIdx, { csCode: val })}
-                            variant="compact"
-                            menuMinWidth={110}
-                            options={availableCsCodes.map((c) => ({
-                              value: c,
-                              label: c,
-                            }))}
-                          />
-                        </td>
-                        <td className="py-1.5 px-2 font-mono font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                          {item.itemCode || '—'}
-                        </td>
-                        <td className="py-1.5 px-2 text-slate-900 dark:text-white font-medium max-w-[220px] truncate">
-                          <span>{item.itemDescription}</span>
-                          {item.isMissingItem && (
-                            <span className="ml-1.5 text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200">
-                              Added Missing
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-1.5 px-2 text-slate-500 dark:text-slate-400 hidden md:table-cell truncate max-w-[120px]">
-                          {item.category || '—'}
-                        </td>
-                        <td className="py-1.5 px-2 text-center font-mono text-slate-600 dark:text-slate-300">
-                          {item.unit || 'PCS'}
-                        </td>
-                        <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            step="any"
-                            value={item.balance ?? 0}
-                            onChange={(e) => {
-                              const val = e.target.value === '' ? 0 : parseFloat(e.target.value);
-                              handleUpdateCountsheetItem(seqIdx, { balance: isNaN(val) ? 0 : val });
-                            }}
-                            className="w-20 text-right font-mono font-bold text-xs px-2 py-1 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
-                        </td>
-                        <td className="py-1.5 px-2 text-right">
-                          <input
-                            type="number"
-                            step="any"
-                            placeholder="—"
-                            value={item.actual !== undefined && item.actual !== null ? item.actual : ''}
-                            onChange={(e) => {
-                              const raw = e.target.value;
-                              if (raw.trim() === '') {
-                                handleUpdateCountsheetItem(seqIdx, { actual: null });
-                              } else {
-                                const parsed = parseFloat(raw);
-                                handleUpdateCountsheetItem(seqIdx, {
-                                  actual: isNaN(parsed) ? null : parsed,
-                                });
+                            value={activeTargetCs}
+                            onChange={(val) => {
+                              setNewMissingCsCode(val);
+                              if (countsheetEditorCsFilter !== 'ALL') {
+                                setCountsheetEditorCsFilter(val);
                               }
                             }}
-                            className="w-20 text-right font-mono font-bold text-xs px-2 py-1 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            variant="compact"
+                            menuMinWidth={140}
+                            options={availableCsCodes.map((c) => {
+                              const count = countsheetItems.filter((i) => (i.csCode || 'CS01') === c).length;
+                              return {
+                                value: c,
+                                label: `${c} (${count} items)`,
+                                badge: c === countsheetEditorCsFilter ? 'Active' : undefined,
+                              };
+                            })}
                           />
-                        </td>
-                        <td className="py-1.5 px-2 text-right font-mono font-bold">
-                          {variance === null ? (
-                            <span className="text-slate-300 dark:text-zinc-600">—</span>
-                          ) : variance === 0 ? (
-                            <span className="text-emerald-600 dark:text-emerald-400">0</span>
-                          ) : variance > 0 ? (
-                            <span className="text-blue-600 dark:text-blue-400">+{variance}</span>
-                          ) : (
-                            <span className="text-rose-600 dark:text-rose-400">{variance}</span>
-                          )}
-                        </td>
-                        <td className="py-1.5 px-2 text-center">
-                          <div className="flex items-center justify-center gap-0.5">
-                            <button
-                              type="button"
-                              disabled={seqIdx === 0}
-                              onClick={() => handleMoveCountsheetItem(seqIdx, 'UP')}
-                              className="p-1 rounded hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-500 disabled:opacity-30 cursor-pointer"
-                              title="Move up in sequence"
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-slate-600 dark:text-slate-400">Position:</span>
+                          <CustomSelect
+                            value={insertPositionMode === 'AFTER_SEQ' ? 'END' : insertPositionMode}
+                            onChange={(val) => setInsertPositionMode(val as 'END' | 'START' | 'AFTER_SEQ')}
+                            variant="compact"
+                            menuMinWidth={160}
+                            options={[
+                              { value: 'END', label: `End of ${activeTargetCs}` },
+                              { value: 'START', label: `Start of ${activeTargetCs}` },
+                            ]}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {addMissingMode === 'IATD_SEARCH' ? (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="relative flex-1 min-w-[200px]">
+                        <input
+                          type="text"
+                          placeholder="Search item from active IATD by Code, Barcode, Description, or Category..."
+                          value={missingIatdSearchQuery}
+                          onChange={(e) => setMissingIatdSearchQuery(e.target.value)}
+                          className="w-full text-xs pl-7 pr-3 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                        <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-400" />
+                      </div>
+                      <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={onlyShowUnselectedIatd}
+                          onChange={(e) => setOnlyShowUnselectedIatd(e.target.checked)}
+                          className="rounded text-indigo-600 accent-indigo-600"
+                        />
+                        <span>Only show items missing from countsheet</span>
+                      </label>
+                    </div>
+
+                    <div className="max-h-52 overflow-y-auto divide-y divide-slate-100 dark:divide-zinc-800 border border-slate-200 dark:border-zinc-800 rounded-xl">
+                      {candidateIatdItems.length > 0 ? (
+                        candidateIatdItems.map(({ parsed, alreadyInCountsheet }) => {
+                          const activeTargetCs =
+                            (countsheetEditorCsFilter !== 'ALL' ? countsheetEditorCsFilter : newMissingCsCode) ||
+                            availableCsCodes[0] ||
+                            'CS01';
+
+                          return (
+                            <div
+                              key={`missing_cand_${parsed.id}_${parsed.itemCode}`}
+                              className="p-2 flex items-center justify-between gap-2 text-xs hover:bg-slate-50 dark:hover:bg-zinc-800/60"
                             >
-                              <ArrowUp className="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={seqIdx === countsheetItems.length - 1}
-                              onClick={() => handleMoveCountsheetItem(seqIdx, 'DOWN')}
-                              className="p-1 rounded hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-500 disabled:opacity-30 cursor-pointer"
-                              title="Move down in sequence"
-                            >
-                              <ArrowDown className="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveCountsheetItem(seqIdx)}
-                              className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950/50 text-slate-400 hover:text-rose-600 cursor-pointer"
-                              title="Remove item from sequence"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
+                                  <span className="font-mono text-[11px] text-indigo-600 dark:text-indigo-400">
+                                    {parsed.itemCode || 'NO-CODE'}
+                                  </span>
+                                  <span className="truncate">{parsed.itemDescription}</span>
+                                  {alreadyInCountsheet && (
+                                    <span className="text-[9.5px] px-1.5 py-0.2 rounded bg-slate-200 dark:bg-zinc-700 text-slate-600 dark:text-slate-300">
+                                      In Countsheet
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-2 flex-wrap">
+                                  <span>Cat: {parsed.category || '—'}</span>
+                                  <span>•</span>
+                                  <span>Unit: {parsed.unit}</span>
+                                  <span>•</span>
+                                  <span>Cost: <strong>{Number(parsed.cost || 0).toFixed(2)}</strong></span>
+                                  <span>•</span>
+                                  <span>Sell: <strong>{Number(parsed.selling || 0).toFixed(2)}</strong></span>
+                                  <span>•</span>
+                                  <span>Bal: <strong>{parsed.balance ?? 0}</strong></span>
+                                  <span>•</span>
+                                  <span>
+                                    Amt:{' '}
+                                    <strong>
+                                      {Number(
+                                        parsed.amount !== undefined
+                                          ? parsed.amount
+                                          : Number(parsed.balance ?? 0) * Number(parsed.cost || 0)
+                                      ).toLocaleString('en-US', {
+                                        minimumFractionDigits: 2,
+                                        maximumFractionDigits: 2,
+                                      })}
+                                    </strong>
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  insertMissingItemAtConfiguredPosition(
+                                    {
+                                      ...parsed,
+                                      id: `missing_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                                      csCode: activeTargetCs,
+                                      isMissingItem: true,
+                                    },
+                                    activeTargetCs
+                                  );
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>Add to {activeTargetCs}</span>
+                              </button>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="p-4 text-center text-xs text-slate-400">
+                          {activeIatdCatalogItems.length === 0
+                            ? 'No IATD items loaded yet. You can select an IATD via "Update IATD" or switch to "Add Custom / Unlisted Item" above.'
+                            : onlyShowUnselectedIatd && !missingIatdSearchQuery.trim()
+                            ? 'All items from the active IATD are already in the countsheet. Uncheck "Only show items missing from countsheet" to view or re-add items.'
+                            : 'No matching items found in the active IATD.'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 items-end">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Item Code</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 100234"
+                        value={customMissingItem.itemCode}
+                        onChange={(e) => setCustomMissingItem((p) => ({ ...p, itemCode: e.target.value }))}
+                        className="w-full text-xs px-2.5 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Item Description *</label>
+                      <input
+                        type="text"
+                        placeholder="Enter item description"
+                        value={customMissingItem.itemDescription}
+                        onChange={(e) => setCustomMissingItem((p) => ({ ...p, itemDescription: e.target.value }))}
+                        className="w-full text-xs px-2.5 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Category / Unit</label>
+                      <div className="flex gap-1">
+                        <input
+                          type="text"
+                          placeholder="Category"
+                          value={customMissingItem.category}
+                          onChange={(e) => setCustomMissingItem((p) => ({ ...p, category: e.target.value }))}
+                          className="w-2/3 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
+                        />
+                        <input
+                          type="text"
+                          placeholder="PCS"
+                          value={customMissingItem.unit}
+                          onChange={(e) => setCustomMissingItem((p) => ({ ...p, unit: e.target.value }))}
+                          className="w-1/3 text-xs px-1.5 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white text-center"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Cost / Selling</label>
+                      <div className="flex gap-1">
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="Cost"
+                          value={customMissingItem.cost}
+                          onChange={(e) => setCustomMissingItem((p) => ({ ...p, cost: e.target.value }))}
+                          className="w-1/2 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
+                        />
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="Sell"
+                          value={customMissingItem.selling}
+                          onChange={(e) => setCustomMissingItem((p) => ({ ...p, selling: e.target.value }))}
+                          className="w-1/2 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Balance / Actual</label>
+                      <div className="flex gap-1">
+                        <input
+                          type="text"
+                          inputMode="text"
+                          placeholder="Bal"
+                          value={customMissingItem.balance}
+                          onChange={(e) => setCustomMissingItem((p) => ({ ...p, balance: e.target.value }))}
+                          onBlur={(e) => {
+                            const evaluated = evaluateQtyFormula(e.target.value, true);
+                            if (evaluated !== null) {
+                              setCustomMissingItem((p) => ({ ...p, balance: String(evaluated) }));
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const evaluated = evaluateQtyFormula(e.currentTarget.value, true);
+                              if (evaluated !== null) {
+                                setCustomMissingItem((p) => ({ ...p, balance: String(evaluated) }));
+                              }
+                            }
+                          }}
+                          className="w-1/2 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
+                        />
+                        <input
+                          type="text"
+                          inputMode="text"
+                          placeholder="Act"
+                          value={customMissingItem.actual}
+                          onChange={(e) => setCustomMissingItem((p) => ({ ...p, actual: e.target.value }))}
+                          onBlur={(e) => {
+                            const evaluated = evaluateQtyFormula(e.target.value, true);
+                            if (evaluated !== null) {
+                              setCustomMissingItem((p) => ({ ...p, actual: String(evaluated) }));
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const evaluated = evaluateQtyFormula(e.currentTarget.value, true);
+                              if (evaluated !== null) {
+                                setCustomMissingItem((p) => ({ ...p, actual: String(evaluated) }));
+                              }
+                            }
+                          }}
+                          className="w-1/2 text-xs px-2 py-1.5 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="col-span-2 sm:col-span-6 flex justify-end pt-1">
+                      <button
+                        type="button"
+                        disabled={!customMissingItem.itemDescription.trim() && !customMissingItem.itemCode.trim()}
+                        onClick={() => {
+                          const evalBal = evaluateQtyFormula(customMissingItem.balance, true);
+                          const balNum = evalBal !== null ? evalBal : parseFloat(customMissingItem.balance) || 0;
+                          const evalAct = evaluateQtyFormula(customMissingItem.actual, true);
+                          const actNum =
+                            customMissingItem.actual.trim() !== ''
+                              ? evalAct !== null
+                                ? evalAct
+                                : parseFloat(customMissingItem.actual)
+                              : null;
+                          const activeTargetCs =
+                            (countsheetEditorCsFilter !== 'ALL' ? countsheetEditorCsFilter : newMissingCsCode) ||
+                            availableCsCodes[0] ||
+                            'CS01';
+
+                          insertMissingItemAtConfiguredPosition({
+                            id: `custom_missing_${Date.now()}`,
+                            itemCode: customMissingItem.itemCode.trim(),
+                            barcode: customMissingItem.barcode.trim(),
+                            itemDescription: customMissingItem.itemDescription.trim() || customMissingItem.itemCode.trim(),
+                            category: customMissingItem.category.trim(),
+                            subCategory: customMissingItem.subCategory.trim(),
+                            subsubCategory: customMissingItem.subsubCategory.trim(),
+                            unit: customMissingItem.unit.trim() || 'PCS',
+                            cost: parseFloat(customMissingItem.cost) || 0,
+                            selling: parseFloat(customMissingItem.selling) || 0,
+                            balance: balNum,
+                            actual: actNum !== null && !isNaN(actNum) ? actNum : null,
+                            csCode: activeTargetCs,
+                            isMissingItem: true,
+                          }, activeTargetCs);
+                          setCustomMissingItem({
+                            itemCode: '',
+                            barcode: '',
+                            itemDescription: '',
+                            category: '',
+                            subCategory: '',
+                            subsubCategory: '',
+                            unit: 'PCS',
+                            cost: '0',
+                            selling: '0',
+                            balance: '0',
+                            actual: '',
+                          });
+                        }}
+                        className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Insert Missing Item into {((countsheetEditorCsFilter !== 'ALL' ? countsheetEditorCsFilter : newMissingCsCode) || availableCsCodes[0] || 'CS01')}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* LIVE ALLOCATION RIBBON */}
+            <div className="px-3 py-1.5 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-800/60 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <div className="flex flex-wrap items-center gap-1.5 text-slate-600 dark:text-zinc-300">
+                <span className="font-semibold text-slate-800 dark:text-zinc-100">
+                  {countsheetEditorCsFilter === 'ALL' ? 'All Countsheets' : countsheetEditorCsFilter} Allocation:
+                </span>
+                <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                  {filteredWithOriginalIndex.length} items
+                </span>
+                <span>·</span>
+                <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
+                  {activeFilteredCounted} actuals entered
+                </span>
+                {missingAddedCount > 0 && (
+                  <>
+                    <span>·</span>
+                    <span className="px-1.5 py-0.2 rounded-md bg-amber-100/80 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border border-amber-300/70 dark:border-amber-800/70 font-semibold">
+                      {missingAddedCount} missing added
+                    </span>
+                  </>
+                )}
+              </div>
+              <div className="font-mono font-bold text-emerald-700 dark:text-emerald-400">
+                {Math.round(
+                  (activeFilteredCounted / Math.max(1, filteredWithOriginalIndex.length)) * 100
+                )}% Complete
+              </div>
+            </div>
+
+            {/* ORDERED COUNTSHEET ITEMS TABLE */}
+            <div className="border border-slate-200 dark:border-zinc-800 rounded-2xl overflow-hidden bg-white dark:bg-zinc-900 shadow-xs">
+              <div
+                ref={countsheetTableScrollRef}
+                className={`max-h-[460px] lg:max-h-[520px] xl:max-h-[580px] overflow-x-auto overflow-y-auto ${
+                  draggingItemId ? 'select-none cursor-grabbing' : ''
+                }`}
+              >
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 dark:bg-zinc-800/80 sticky top-0 z-10 border-b border-slate-200 dark:border-zinc-700">
+                    <tr>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 whitespace-nowrap">Code</th>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300">Description</th>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-right whitespace-nowrap">Cost</th>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-right whitespace-nowrap">Selling</th>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-right whitespace-nowrap">Balance</th>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-right whitespace-nowrap">Actual Qty</th>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-right whitespace-nowrap">Variance</th>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-center whitespace-nowrap">Unit</th>
+                      <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300">Category</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-zinc-800/60 font-mono text-[11px]">
+                    {filteredWithOriginalIndex.length > 0 ? (
+                      filteredWithOriginalIndex.map(({ item, seqIdx }, rowIdx) => {
+                        const hasActual =
+                          item.actual !== undefined && item.actual !== null && String(item.actual).trim() !== '';
+                        const variance = hasActual ? Number(item.actual) - Number(item.balance || 0) : null;
+                        const rowKeyId = item.id || `row_${seqIdx}`;
+                        const isDraggingThisRow = draggingItemId === rowKeyId;
+
+                        return (
+                          <tr
+                            key={rowKeyId}
+                            data-seq-idx={seqIdx}
+                            onMouseDown={(e) => {
+                              if (e.button !== 0) return;
+                              const targetEl = e.target as HTMLElement;
+                              if (
+                                targetEl.closest('input, button, select, textarea, a, [data-no-row-drag]')
+                              ) {
+                                return;
+                              }
+                              rowDragStateRef.current = {
+                                seqIdx,
+                                itemId: rowKeyId,
+                                startY: e.clientY,
+                                lastClientY: e.clientY,
+                                isDragging: false,
+                              };
+                            }}
+                            title="Drag with mouse to move item in sequence"
+                            className={`group transition-colors ${
+                              isDraggingThisRow
+                                ? 'bg-indigo-50/95 dark:bg-indigo-950/60 ring-1 ring-indigo-500/50 shadow-sm cursor-grabbing'
+                                : item.isMissingItem
+                                ? 'bg-amber-50/40 dark:bg-amber-950/20 hover:bg-amber-50/70 dark:hover:bg-amber-950/35 cursor-grab'
+                                : 'hover:bg-slate-50/90 dark:hover:bg-zinc-800/50 cursor-grab'
+                            }`}
+                          >
+                            <td className="p-2.5 font-mono font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                <GripVertical className="w-3.5 h-3.5 text-slate-400 dark:text-zinc-500 group-hover:text-indigo-500 shrink-0 transition-colors" />
+                                <span>{item.itemCode || item.barcode || '—'}</span>
+                              </div>
+                            </td>
+                            <td className="p-2.5 font-sans font-medium text-slate-900 dark:text-white">
+                              <div className="flex items-center gap-1.5">
+                                <span>{item.itemDescription}</span>
+                                {item.isMissingItem && (
+                                  <span className="shrink-0 text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200">
+                                    Added Missing
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-600 dark:text-slate-400">
+                              {item.cost ? Number(item.cost).toFixed(2) : '—'}
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-600 dark:text-slate-400">
+                              {item.selling ? Number(item.selling).toFixed(2) : '—'}
+                            </td>
+                            <td className="p-2.5 text-right">
+                              <input
+                                type="text"
+                                inputMode="text"
+                                placeholder="—"
+                                data-balance-qty-row={rowIdx}
+                                value={
+                                  editingQtyDrafts[`balance_${item.id}`] !== undefined
+                                    ? editingQtyDrafts[`balance_${item.id}`]
+                                    : item.balance !== undefined && item.balance !== null
+                                    ? String(item.balance)
+                                    : ''
+                                }
+                                onChange={(e) => {
+                                  const raw = e.target.value;
+                                  const draftKey = `balance_${item.id}`;
+                                  setEditingQtyDrafts((prev) => ({ ...prev, [draftKey]: raw }));
+                                  if (raw.trim() === '') {
+                                    handleUpdateCountsheetItem(seqIdx, { balance: null });
+                                  } else {
+                                    const evaluated = evaluateQtyFormula(raw, false);
+                                    if (evaluated !== null) {
+                                      handleUpdateCountsheetItem(seqIdx, { balance: evaluated });
+                                    }
+                                  }
+                                }}
+                                onBlur={(e) => {
+                                  const raw = e.currentTarget.value;
+                                  const draftKey = `balance_${item.id}`;
+                                  if (raw.trim() === '') {
+                                    handleUpdateCountsheetItem(seqIdx, { balance: null });
+                                  } else {
+                                    const evaluated = evaluateQtyFormula(raw, true);
+                                    if (evaluated !== null) {
+                                      handleUpdateCountsheetItem(seqIdx, { balance: evaluated });
+                                    }
+                                  }
+                                  setEditingQtyDrafts((prev) => {
+                                    if (prev[draftKey] === undefined) return prev;
+                                    const next = { ...prev };
+                                    delete next[draftKey];
+                                    return next;
+                                  });
+                                }}
+                                onWheel={(e) => (e.target as HTMLElement).blur()}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const raw = e.currentTarget.value;
+                                    const draftKey = `balance_${item.id}`;
+                                    if (raw.trim() === '') {
+                                      handleUpdateCountsheetItem(seqIdx, { balance: null });
+                                    } else {
+                                      const evaluated = evaluateQtyFormula(raw, true);
+                                      if (evaluated !== null) {
+                                        handleUpdateCountsheetItem(seqIdx, { balance: evaluated });
+                                      }
+                                    }
+                                    setEditingQtyDrafts((prev) => {
+                                      if (prev[draftKey] === undefined) return prev;
+                                      const next = { ...prev };
+                                      delete next[draftKey];
+                                      return next;
+                                    });
+                                    const tbody = e.currentTarget.closest('tbody');
+                                    const nextInput = tbody?.querySelector<HTMLInputElement>(
+                                      `input[data-balance-qty-row="${rowIdx + 1}"]`
+                                    );
+                                    if (nextInput) {
+                                      nextInput.focus();
+                                      nextInput.scrollIntoView({ block: 'nearest' });
+                                    }
+                                  } else if (e.key === 'Backspace') {
+                                    const input = e.currentTarget;
+                                    const currentVal = input.value;
+                                    const draftKey = `balance_${item.id}`;
+
+                                    // If there is no character, go to the previous item and delete it
+                                    if (!currentVal || currentVal.trim() === '') {
+                                      e.preventDefault();
+                                      setEditingQtyDrafts((prev) => {
+                                        if (prev[draftKey] === undefined) return prev;
+                                        const next = { ...prev };
+                                        delete next[draftKey];
+                                        return next;
+                                      });
+                                      if (rowIdx > 0) {
+                                        const prevRowIdx = rowIdx - 1;
+                                        const prevEntry = filteredWithOriginalIndex[prevRowIdx];
+                                        if (prevEntry) {
+                                          const prevDraftKey = `balance_${prevEntry.item.id}`;
+                                          setEditingQtyDrafts((prev) => {
+                                            if (prev[prevDraftKey] === undefined) return prev;
+                                            const next = { ...prev };
+                                            delete next[prevDraftKey];
+                                            return next;
+                                          });
+                                          handleUpdateCountsheetItem(prevEntry.seqIdx, { balance: null });
+                                        }
+                                        const tbody = input.closest('tbody');
+                                        const prevInput = tbody?.querySelector<HTMLInputElement>(
+                                          `input[data-balance-qty-row="${prevRowIdx}"]`
+                                        );
+                                        if (prevInput) {
+                                          prevInput.focus();
+                                          prevInput.scrollIntoView({ block: 'nearest' });
+                                        }
+                                      }
+                                    } else if (
+                                      input.selectionStart !== null &&
+                                      input.selectionEnd !== null &&
+                                      input.selectionStart !== input.selectionEnd
+                                    ) {
+                                      // If text was selected, delete per character (just the last character) instead of wiping all text
+                                      e.preventDefault();
+                                      const end = input.selectionEnd;
+                                      const nextStr = currentVal.slice(0, end - 1) + currentVal.slice(end);
+                                      setEditingQtyDrafts((prev) => ({ ...prev, [draftKey]: nextStr }));
+                                      const evaluated = evaluateQtyFormula(nextStr, true);
+                                      handleUpdateCountsheetItem(seqIdx, {
+                                        balance: nextStr.trim() === '' || evaluated === null ? null : evaluated,
+                                      });
+                                    }
+                                  }
+                                }}
+                                className="w-20 text-right font-mono font-bold text-xs px-2 py-1 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                            </td>
+                            <td className="p-2.5 text-right">
+                              <input
+                                type="text"
+                                inputMode="text"
+                                placeholder="—"
+                                data-actual-qty-row={rowIdx}
+                                value={
+                                  editingQtyDrafts[`actual_${item.id}`] !== undefined
+                                    ? editingQtyDrafts[`actual_${item.id}`]
+                                    : item.actual !== undefined && item.actual !== null
+                                    ? String(item.actual)
+                                    : ''
+                                }
+                                onChange={(e) => {
+                                  const raw = e.target.value;
+                                  const draftKey = `actual_${item.id}`;
+                                  setEditingQtyDrafts((prev) => ({ ...prev, [draftKey]: raw }));
+                                  if (raw.trim() === '') {
+                                    handleUpdateCountsheetItem(seqIdx, { actual: null });
+                                  } else {
+                                    const evaluated = evaluateQtyFormula(raw, false);
+                                    if (evaluated !== null) {
+                                      handleUpdateCountsheetItem(seqIdx, { actual: evaluated });
+                                    }
+                                  }
+                                }}
+                                onBlur={(e) => {
+                                  const raw = e.currentTarget.value;
+                                  const draftKey = `actual_${item.id}`;
+                                  if (raw.trim() === '') {
+                                    handleUpdateCountsheetItem(seqIdx, { actual: null });
+                                  } else {
+                                    const evaluated = evaluateQtyFormula(raw, true);
+                                    if (evaluated !== null) {
+                                      handleUpdateCountsheetItem(seqIdx, { actual: evaluated });
+                                    }
+                                  }
+                                  setEditingQtyDrafts((prev) => {
+                                    if (prev[draftKey] === undefined) return prev;
+                                    const next = { ...prev };
+                                    delete next[draftKey];
+                                    return next;
+                                  });
+                                }}
+                                onWheel={(e) => (e.target as HTMLElement).blur()}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const raw = e.currentTarget.value;
+                                    const draftKey = `actual_${item.id}`;
+                                    if (raw.trim() === '') {
+                                      handleUpdateCountsheetItem(seqIdx, { actual: null });
+                                    } else {
+                                      const evaluated = evaluateQtyFormula(raw, true);
+                                      if (evaluated !== null) {
+                                        handleUpdateCountsheetItem(seqIdx, { actual: evaluated });
+                                      }
+                                    }
+                                    setEditingQtyDrafts((prev) => {
+                                      if (prev[draftKey] === undefined) return prev;
+                                      const next = { ...prev };
+                                      delete next[draftKey];
+                                      return next;
+                                    });
+                                    const tbody = e.currentTarget.closest('tbody');
+                                    const nextInput = tbody?.querySelector<HTMLInputElement>(
+                                      `input[data-actual-qty-row="${rowIdx + 1}"]`
+                                    );
+                                    if (nextInput) {
+                                      nextInput.focus();
+                                      nextInput.scrollIntoView({ block: 'nearest' });
+                                    }
+                                  } else if (e.key === 'Backspace') {
+                                    const input = e.currentTarget;
+                                    const currentVal = input.value;
+                                    const draftKey = `actual_${item.id}`;
+
+                                    // If there is no character, go to the previous item and delete it
+                                    if (!currentVal || currentVal.trim() === '') {
+                                      e.preventDefault();
+                                      setEditingQtyDrafts((prev) => {
+                                        if (prev[draftKey] === undefined) return prev;
+                                        const next = { ...prev };
+                                        delete next[draftKey];
+                                        return next;
+                                      });
+                                      if (rowIdx > 0) {
+                                        const prevRowIdx = rowIdx - 1;
+                                        const prevEntry = filteredWithOriginalIndex[prevRowIdx];
+                                        if (prevEntry) {
+                                          const prevDraftKey = `actual_${prevEntry.item.id}`;
+                                          setEditingQtyDrafts((prev) => {
+                                            if (prev[prevDraftKey] === undefined) return prev;
+                                            const next = { ...prev };
+                                            delete next[prevDraftKey];
+                                            return next;
+                                          });
+                                          handleUpdateCountsheetItem(prevEntry.seqIdx, { actual: null });
+                                        }
+                                        const tbody = input.closest('tbody');
+                                        const prevInput = tbody?.querySelector<HTMLInputElement>(
+                                          `input[data-actual-qty-row="${prevRowIdx}"]`
+                                        );
+                                        if (prevInput) {
+                                          prevInput.focus();
+                                          prevInput.scrollIntoView({ block: 'nearest' });
+                                        }
+                                      }
+                                    } else if (
+                                      input.selectionStart !== null &&
+                                      input.selectionEnd !== null &&
+                                      input.selectionStart !== input.selectionEnd
+                                    ) {
+                                      // If text was selected, delete per character (just the last character) instead of wiping all text
+                                      e.preventDefault();
+                                      const end = input.selectionEnd;
+                                      const nextStr = currentVal.slice(0, end - 1) + currentVal.slice(end);
+                                      setEditingQtyDrafts((prev) => ({ ...prev, [draftKey]: nextStr }));
+                                      const evaluated = evaluateQtyFormula(nextStr, true);
+                                      handleUpdateCountsheetItem(seqIdx, {
+                                        actual: nextStr.trim() === '' || evaluated === null ? null : evaluated,
+                                      });
+                                    }
+                                  }
+                                }}
+                                className="w-20 text-right font-mono font-bold text-xs px-2 py-1 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                            </td>
+                            <td className="p-2.5 text-right font-mono font-bold">
+                              {variance === null ? (
+                                <span className="text-slate-300 dark:text-zinc-600">—</span>
+                              ) : variance === 0 ? (
+                                <span className="text-emerald-600 dark:text-emerald-400">0</span>
+                              ) : variance > 0 ? (
+                                <span className="text-blue-600 dark:text-blue-400">+{variance}</span>
+                              ) : (
+                                <span className="text-rose-600 dark:text-rose-400">{variance}</span>
+                              )}
+                            </td>
+                            <td className="p-2.5 text-center font-mono text-slate-600 dark:text-slate-300">
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-zinc-800 text-[10px]">
+                                {item.unit || 'PCS'}
+                              </span>
+                            </td>
+                            <td className="p-2.5 font-sans text-slate-500 dark:text-slate-400 max-w-[160px]">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className="truncate">
+                                  {item.category || ''}
+                                  {item.subCategory ? ` › ${item.subCategory}` : ''}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveCountsheetItem(seqIdx)}
+                                  className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-rose-100 dark:hover:bg-rose-950/50 text-slate-400 hover:text-rose-600 transition-opacity shrink-0 cursor-pointer"
+                                  title="Remove item from sequence"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={9} className="p-8 text-center text-slate-400 font-sans">
+                          No countsheet items match the current filter.
                         </td>
                       </tr>
-                    );
-                  })
-                ) : (
-                  <tr>
-                    <td colSpan={10} className="p-6 text-center text-xs text-slate-400">
-                      No countsheet items match the current filter.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/50 border-t border-slate-200 dark:border-zinc-700 text-[11px] text-slate-500 flex items-center justify-between">
+                <span>{filteredWithOriginalIndex.length} items</span>
+                <span>
+                  {countedCount}/{countsheetItems.length} actuals entered
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     );
   };
 
+  const panelAnimationClass =
+    transitionAnim === 'slide-in-right'
+      ? 'animate-slide-in-right'
+      : transitionAnim === 'slide-out-right'
+      ? 'animate-slide-out-right'
+      : '';
+
+  const backdropClass = isTransparentBackdrop
+    ? 'bg-transparent'
+    : 'bg-slate-950/70 backdrop-blur-xs';
+
   return (
     <div 
-      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-5 md:p-6 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-200"
+      className={`fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-5 md:p-6 overflow-hidden ${backdropClass}`}
       style={{ overscrollBehavior: 'contain' }}
     >
-      <div className="relative w-[92vw] h-[88dvh] sm:h-auto sm:w-full max-w-[90vw] xl:max-w-[1440px] 2xl:max-w-[1540px] bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-zinc-800 shadow-2xl flex flex-col sm:max-h-[86dvh] overflow-hidden">
+      <div
+        data-scroll-lock-panel
+        className={`relative w-[92vw] h-[88dvh] sm:h-auto sm:w-full max-w-[90vw] xl:max-w-[1440px] 2xl:max-w-[1540px] bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-zinc-800 shadow-2xl flex flex-col sm:max-h-[86dvh] overflow-hidden ${panelAnimationClass}`}
+      >
         {/* Modal Header */}
         <div className="p-4 sm:p-5 border-b border-slate-200/90 dark:border-zinc-800 flex items-center justify-between gap-3 bg-slate-50/70 dark:bg-zinc-900/50">
           <div className="flex items-center gap-2.5 min-w-0">
@@ -2480,13 +5085,20 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  setStep('SOURCE_IATD');
-                  setImportedCountsheetSession(null);
-                  setShowCountsheetImportPicker(false);
-                  setSourceViewMode((prev) => (prev === 'EMAIL' ? 'DRIVE' : 'EMAIL'));
+                  if (importedCountsheetSession) {
+                    setStep('SOURCE_IATD');
+                    setShowAddMissingPanel(false);
+                    setShowUpdateIatdPanel(true);
+                    setUpdateIatdSourceTab('EMAIL');
+                    handleRefreshEmails();
+                  } else {
+                    setStep('SOURCE_IATD');
+                    setSourceViewMode((prev) => (prev === 'EMAIL' ? 'DRIVE' : 'EMAIL'));
+                  }
                 }}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition cursor-pointer ${
-                  step === 'SOURCE_IATD' && sourceViewMode === 'EMAIL'
+                  (step === 'SOURCE_IATD' && sourceViewMode === 'EMAIL' && !importedCountsheetSession) ||
+                  (importedCountsheetSession && showUpdateIatdPanel && updateIatdSourceTab === 'EMAIL')
                     ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
                     : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-zinc-700 hover:border-indigo-400 dark:hover:border-indigo-500'
                 }`}
@@ -2592,12 +5204,12 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
             <>
           {/* STEP 1: SELECT IATD SPREADSHEET */}
           {step === 'SOURCE_IATD' && (
-            <div className="space-y-4 w-full max-w-5xl mx-auto animate-in fade-in">
-              {importedCountsheetSession && renderPreGeneratedCountsheetEditor()}
+            <div className={`space-y-4 w-full ${(importedCountsheetSession || initialCountsheetSession) ? '' : 'max-w-5xl mx-auto'}`}>
+              {(importedCountsheetSession || initialCountsheetSession) && renderPreGeneratedCountsheetEditor()}
 
-              {!importedCountsheetSession && !showCountsheetImportPicker && (
+              {!(importedCountsheetSession || initialCountsheetSession) && (
                 <>
-                  {/* Recent Generated Audit Reports Section with Horizontal Import Button */}
+                  {/* Recent Generated Audit Reports Section */}
                   <div className="p-3.5 bg-gradient-to-r from-indigo-500/10 via-indigo-500/5 to-transparent dark:from-indigo-950/30 dark:via-indigo-950/10 dark:to-transparent border border-indigo-500/20 rounded-2xl space-y-2.5 shadow-2xs">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div className="flex items-center gap-2 min-w-0">
@@ -2611,16 +5223,6 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={() => setShowCountsheetImportPicker(true)}
-                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg flex items-center gap-1.5 shadow-xs transition cursor-pointer shrink-0 active:scale-95"
-                          title="Use the IATD and selected items from a recent countsheet session"
-                        >
-                          <FileSpreadsheet className="w-3.5 h-3.5" />
-                          <span>Import Countsheet Items</span>
-                        </button>
-
                         <button
                           type="button"
                           onClick={handleSyncCloudRecents}
@@ -3806,7 +6408,7 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
 
           {/* STEP 3: HEADER MAPPING & DATA PREVIEW */}
           {step === 'MAP_HEADERS' && (
-            <div className="space-y-4 w-full max-w-5xl mx-auto animate-in fade-in">
+            <div className={`space-y-4 w-full ${importedCountsheetSession ? '' : 'max-w-5xl mx-auto'} animate-in fade-in`}>
               {/* Spreadsheet Name Confirmation Input Box */}
               <div className="p-3 bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs shadow-2xs">
                 <label className="font-bold text-slate-900 dark:text-white shrink-0 flex items-center gap-1.5">
@@ -4225,10 +6827,18 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
           {step === 'SOURCE_IATD' && (
             <>
               <button
-                onClick={onClose}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-zinc-800 cursor-pointer"
+                type="button"
+                onClick={handleCancelOrBack}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-zinc-800 cursor-pointer flex items-center gap-1.5"
               >
-                Cancel
+                {isFromCountsheetExport ? (
+                  <>
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Back</span>
+                  </>
+                ) : (
+                  <span>Cancel</span>
+                )}
               </button>
               <button
                 onClick={handleProceedToTemplate}
@@ -4335,138 +6945,6 @@ export const CreateAuditReportModal: React.FC<CreateAuditReportModalProps> = ({
         </div>
         )}
       </div>
-
-      {/* Countsheet Import Picker Modal */}
-      {showCountsheetImportPicker && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-200">
-          <div className="relative w-full max-w-xl bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-4 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between gap-2 bg-slate-50/80 dark:bg-zinc-800/50">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                  <FileSpreadsheet className="w-4 h-4" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-slate-900 dark:text-white">
-                    Load Pre-Generated Countsheet into Encoding
-                  </h4>
-                  <p className="text-[11px] text-slate-500 dark:text-zinc-400">
-                    Import items &amp; sequence from a generated Countsheet
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowCountsheetImportPicker(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-4 space-y-4 overflow-y-auto flex-1">
-              {/* Option A: Load directly from a Countsheet Google Sheet URL or ID */}
-              <div className="space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                  Load from Pre-Generated Countsheet Google Sheet URL or ID:
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="Paste Countsheet Google Sheet link or ID..."
-                    value={countsheetUrlToImport}
-                    onChange={(e) => setCountsheetUrlToImport(e.target.value)}
-                    className="flex-1 text-xs px-3 py-2 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleImportFromCountsheetUrl}
-                    disabled={!countsheetUrlToImport.trim() || isImportingCountsheetSheet}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shrink-0 cursor-pointer transition shadow-xs"
-                  >
-                    {isImportingCountsheetSheet ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <FileSpreadsheet className="w-3.5 h-3.5" />
-                    )}
-                    <span>{isImportingCountsheetSheet ? 'Reading...' : 'Load Sheet'}</span>
-                  </button>
-                </div>
-                {countsheetImportError && (
-                  <p className="text-[11px] text-rose-600 dark:text-rose-400 font-semibold">
-                    {countsheetImportError}
-                  </p>
-                )}
-              </div>
-
-              {/* Option B: Select from Saved / Recent Countsheet Sessions */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold text-slate-700 dark:text-slate-300">
-                    Saved &amp; Recent Pre-Generated Countsheets ({recentCountsheetSessions.length}):
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleSyncCloudRecents}
-                    disabled={isSyncingRecents}
-                    className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${isSyncingRecents ? 'animate-spin' : ''}`} />
-                    <span>Sync</span>
-                  </button>
-                </div>
-
-                <div className="max-h-52 overflow-y-auto space-y-2 pr-1">
-                  {recentCountsheetSessions.length > 0 ? (
-                    recentCountsheetSessions.map((session, sIdx) => (
-                      <div
-                        key={`${session.id || 'cs'}_${session.spreadsheetId || ''}_${sIdx}`}
-                        onClick={() => handleImportCountsheet(session)}
-                        className="p-2.5 bg-slate-50 dark:bg-zinc-800/80 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border border-slate-200 dark:border-zinc-700 rounded-xl cursor-pointer transition flex items-center justify-between gap-3"
-                      >
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
-                            <span>{session.spreadsheetName}</span>
-                            {session.totalSheets > 0 && (
-                              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
-                                {session.totalSheets} CS tabs
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
-                            Source IATD: {session.sourceFile?.name || 'IATD'} •{' '}
-                            <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                              {session.totalItems} items in sequence
-                            </span>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shrink-0 cursor-pointer"
-                        >
-                          Load Countsheet
-                        </button>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="p-6 text-center text-xs text-slate-400">
-                      No saved countsheet sessions found. Generate or save a countsheet first in "Create Countsheet", or paste a Countsheet Google Sheet link above.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 border-t border-slate-200 dark:border-zinc-800 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setShowCountsheetImportPicker(false)}
-                className="px-3.5 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

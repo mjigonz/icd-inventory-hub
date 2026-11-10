@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import './index.css';
 
 // Prevent Firebase Auth popup reset assertion errors from producing unhandled browser errors
@@ -40,7 +41,7 @@ if ('caches' in window) {
     .keys()
     .then((keys) => {
       keys.forEach((key) => {
-        if (key !== 'countsheet-v14') {
+        if (key !== 'countsheet-v15') {
           caches.delete(key).catch(() => {});
         }
       });
@@ -73,4 +74,9 @@ if ('serviceWorker' in navigator) {
   }
 }
 
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
+

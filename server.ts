@@ -8,7 +8,6 @@ import type { Request as ExpressRequest, Response as ExpressResponse, NextFuncti
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import { D1BranchRoleRepository } from './src/services/d1Repository';
 import { createSqlJsD1Database } from './src/services/sqlJsD1Adapter';
 import { D1Database } from './src/db/d1Types';
@@ -704,7 +703,7 @@ async function startServer() {
           email: 'icdhubsystems@gmail.com',
           name: 'ICD Hub Systems',
           role: 'internal_compliance_manager',
-          branchName: 'All Branches',
+          branchName: '',
           status: 'active',
           createdAt: new Date().toISOString(),
         };
@@ -1153,9 +1152,142 @@ async function startServer() {
     return rows;
   }
 
+  const masterdataConfigPath = path.resolve(process.cwd(), '.data', 'masterdata_config.json');
+
+  interface MasterdataConfig {
+    spreadsheetId: string;
+    spreadsheetUrl: string;
+    additionalSheets: string[];
+    removedSheets?: string[];
+  }
+
+  function getMasterdataConfig(): MasterdataConfig {
+    const defaultConfig: MasterdataConfig = {
+      spreadsheetId: '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE/edit',
+      additionalSheets: [],
+      removedSheets: [],
+    };
+    try {
+      if (fs.existsSync(masterdataConfigPath)) {
+        const raw = fs.readFileSync(masterdataConfigPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            spreadsheetId: parsed.spreadsheetId || defaultConfig.spreadsheetId,
+            spreadsheetUrl: parsed.spreadsheetUrl || defaultConfig.spreadsheetUrl,
+            additionalSheets: Array.isArray(parsed.additionalSheets) ? parsed.additionalSheets : [],
+            removedSheets: Array.isArray(parsed.removedSheets) ? parsed.removedSheets : [],
+          };
+        }
+      }
+    } catch {}
+    return defaultConfig;
+  }
+
+  async function saveMasterdataConfig(cfg: MasterdataConfig): Promise<void> {
+    try {
+      await fs.promises.mkdir(path.dirname(masterdataConfigPath), { recursive: true });
+      await fs.promises.writeFile(masterdataConfigPath, JSON.stringify(cfg, null, 2));
+    } catch (e) {
+      console.warn('Could not save masterdata config:', e);
+    }
+  }
+
+  function parseSheetDataWithHeaderRow(values: string[][], tabName: string): string[][] {
+    if (!values || values.length < 2) return [];
+
+    // Row 0 is the Header row (Row 1 in the Google Sheet)
+    const headerRow = values[0].map((h) => (h || '').trim().toLowerCase());
+
+    const findCol = (keywords: string[], fallbackIdx: number): number => {
+      const idx = headerRow.findIndex((h) => keywords.some((kw) => h === kw || h.includes(kw)));
+      return idx >= 0 ? idx : fallbackIdx;
+    };
+
+    const codeIdx = findCol(['item code', 'itemcode', 'code'], 0);
+    const descIdx = findCol(['item description', 'description', 'item desc', 'item name'], 1);
+    const catIdx = findCol(['category'], 2);
+    const subCatIdx = findCol(['sub category', 'subcategory', 'sub-category'], 3);
+    const subSubCatIdx = findCol(
+      ['sub sub category', 'subsubcategory', 'sub-sub-category', 'sub subcategory'],
+      4
+    );
+    const bcIdx = findCol(['barcode', 'bar code'], 5);
+    const uomIdx = findCol(['uom', 'unit'], 6);
+
+    const formattedRows: string[][] = [];
+
+    for (let i = 1; i < values.length; i++) {
+      const r = values[i];
+      if (!r || r.length === 0) continue;
+
+      const code = (r[codeIdx] || '').trim();
+      const desc = (r[descIdx] || '').trim();
+      const barcode = (r[bcIdx] || '').trim();
+
+      if (!code && !desc && !barcode) continue;
+      if (code.toLowerCase() === 'item code' && desc.toLowerCase().includes('desc')) continue;
+
+      const category = (r[catIdx] || '').trim();
+      const subCategory = (r[subCatIdx] || '').trim();
+      const subSubCategory = (r[subSubCatIdx] || '').trim();
+      const uom = (r[uomIdx] || '').trim() || 'PCS';
+
+      formattedRows.push([
+        code,
+        desc,
+        category,
+        subCategory,
+        subSubCategory,
+        barcode,
+        tabName.trim().toUpperCase(),
+        uom,
+      ]);
+    }
+
+    return formattedRows;
+  }
+
+  function getMasterdataSheetsSummary(): { name: string; count: number; isDefault: boolean }[] {
+    const config = getMasterdataConfig();
+    const sheetCounts = new Map<string, number>();
+    const removedSet = new Set((config.removedSheets || []).map((s) => s.toUpperCase()));
+
+    // Include GRO and OTHERS if not removed
+    if (!removedSet.has('GRO')) {
+      sheetCounts.set('GRO', 0);
+    }
+    if (!removedSet.has('OTHERS')) {
+      sheetCounts.set('OTHERS', 0);
+    }
+    for (const s of config.additionalSheets) {
+      const u = s.toUpperCase();
+      if (!removedSet.has(u)) {
+        sheetCounts.set(u, 0);
+      }
+    }
+
+    if (cachedMasterdataPayload && Array.isArray(cachedMasterdataPayload.rows)) {
+      for (let i = 1; i < cachedMasterdataPayload.rows.length; i++) {
+        const row = cachedMasterdataPayload.rows[i];
+        const sheet = (row[6] || 'GRO').trim().toUpperCase();
+        if (sheetCounts.has(sheet)) {
+          sheetCounts.set(sheet, (sheetCounts.get(sheet) || 0) + 1);
+        }
+      }
+    }
+
+    return Array.from(sheetCounts.entries()).map(([name, count]) => ({
+      name,
+      count,
+      isDefault: name === 'GRO' || name === 'OTHERS',
+    }));
+  }
+
   async function fetchSheetValuesWithFallback(
     spreadsheetId: string,
-    tabName: 'GRO' | 'OTHERS',
+    tabName: string,
     token?: string
   ): Promise<string[][]> {
     if (token) {
@@ -1176,7 +1308,7 @@ async function startServer() {
     }
 
     // Fallback: fetch via Google Sheets gviz CSV endpoint (works in Guest Mode without OAuth token)
-    // CRITICAL: Always pass &headers=1 so Google gviz does not merge the first 309 rows of OTHERS into the header!
+    // CRITICAL: Always pass &headers=1 so Google gviz does not merge initial rows into the header!
     try {
       const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(
         tabName
@@ -1207,8 +1339,9 @@ async function startServer() {
     inFlightMasterdataRefresh = (async () => {
       try {
         const effectiveToken = (await resolveMasterdataWriteToken(token)) || token;
-        const spreadsheetId = '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE';
-        const tabsToFetch = ['GRO', 'OTHERS'] as const;
+        const config = getMasterdataConfig();
+        const spreadsheetId = config.spreadsheetId;
+        const tabsToFetch = Array.from(new Set(['GRO', 'OTHERS', ...config.additionalSheets]));
         const results = await Promise.all(
           tabsToFetch.map(async (tabName) => {
             const values = await fetchSheetValuesWithFallback(spreadsheetId, tabName, effectiveToken);
@@ -1226,27 +1359,9 @@ async function startServer() {
           ];
 
           for (const { tabName, values } of results) {
-            for (let i = 1; i < values.length; i++) {
-              const r = values[i];
-              if (!r || r.length === 0) continue;
-              const code = (r[0] || '').trim();
-              const desc = (r[1] || '').trim();
-              const bc = (r[5] || '').trim();
-              if (!code && !desc && !bc) continue;
-              if (code.toLowerCase() === 'item code' && desc.toLowerCase().includes('desc')) continue;
-
-              const uom = (r[6] || '').trim() || 'PCS';
-
-              combinedRows.push([
-                code,
-                desc,
-                (r[2] || '').trim(),
-                (r[3] || '').trim(),
-                (r[4] || '').trim(),
-                bc,
-                tabName,
-                uom,
-              ]);
+            const parsedRows = parseSheetDataWithHeaderRow(values, tabName);
+            for (const r of parsedRows) {
+              combinedRows.push(r);
             }
           }
 
@@ -1259,7 +1374,7 @@ async function startServer() {
               await fs.promises.mkdir(path.dirname(masterdataCachePath), { recursive: true });
               await fs.promises.writeFile(masterdataCachePath, JSON.stringify(cachedMasterdataPayload));
               console.log(
-                `[Masterdata] Cached ${combinedRows.length - 1} total items (GRO: ${groResult.length - 1}, OTHERS: ${othersResult.length - 1})`
+                `[Masterdata] Cached ${combinedRows.length - 1} total items across ${results.length} sheets`
               );
             } catch {}
             return cachedMasterdataPayload;
@@ -1856,6 +1971,374 @@ async function startServer() {
     } catch (err: any) {
       console.error('Error deleting masterdata item:', err);
       return res.status(500).json({ error: err.message || 'Failed to delete Masterdata item' });
+    }
+  });
+
+  async function discoverMasterdataSpreadsheetTabs(
+    spreadsheetId: string,
+    token?: string | null
+  ): Promise<string[]> {
+    const discovered: string[] = [];
+    const seenUpper = new Set<string>();
+    const addTab = (rawTitle: string) => {
+      const clean = String(rawTitle || '').trim();
+      if (!clean) return;
+      const upper = clean.toUpperCase();
+      if (!seenUpper.has(upper)) {
+        seenUpper.add(upper);
+        discovered.push(clean);
+      }
+    };
+
+    // 1. Try Google Sheets v4 API if an OAuth token is available
+    if (token) {
+      try {
+        const metaRes = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties(sheetId,title)`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (metaRes.ok) {
+          const metaData: any = await metaRes.json();
+          if (Array.isArray(metaData?.sheets)) {
+            for (const s of metaData.sheets) {
+              if (s?.properties?.title) {
+                addTab(String(s.properties.title));
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Fallback / supplement: inspect public htmlview endpoint (works without OAuth token)
+    if (discovered.length === 0) {
+      try {
+        const htmlRes = await fetch(
+          `https://docs.google.com/spreadsheets/d/${spreadsheetId}/htmlview`,
+          {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; ICDHubMasterdataDiscovery/1.0)',
+            },
+          }
+        );
+        if (htmlRes.ok) {
+          const html = await htmlRes.text();
+          const pushRe = /items\.push\(\{name:\s*"((?:[^"\\]|\\.)*)"/g;
+          let m: RegExpExecArray | null;
+          while ((m = pushRe.exec(html)) !== null) {
+            const unescaped = m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+            addTab(unescaped);
+          }
+        }
+      } catch {}
+    }
+
+    // 3. If sheets were discovered directly from the spreadsheet, return live spreadsheet tabs
+    if (discovered.length > 0) {
+      if (!seenUpper.has('GRO')) addTab('GRO');
+      if (!seenUpper.has('OTHERS')) addTab('OTHERS');
+      return discovered;
+    }
+
+    // Fallback if spreadsheet could not be read
+    const config = getMasterdataConfig();
+    for (const s of ['GRO', 'OTHERS', ...(config.additionalSheets || [])]) {
+      addTab(s);
+    }
+
+    return discovered;
+  }
+
+  // Admin: Get Masterdata sheets info
+  app.get('/api/admin/masterdata/sheets', async (req: ExpressRequest, res: ExpressResponse) => {
+    try {
+      if (!cachedMasterdataPayload || !Array.isArray(cachedMasterdataPayload.rows)) {
+        await loadMasterdataCacheFromDisk();
+      }
+      const authHeader = req.headers.authorization;
+      const bearerToken =
+        authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const token = await resolveMasterdataWriteToken(bearerToken);
+
+      const config = getMasterdataConfig();
+      let targetSpreadsheetId = config.spreadsheetId;
+      const queryUrl = typeof req.query.spreadsheetUrl === 'string' ? req.query.spreadsheetUrl.trim() : '';
+      if (queryUrl) {
+        const match = queryUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+        if (match && match[1]) {
+          targetSpreadsheetId = match[1];
+        } else if (/^[a-zA-Z0-9_-]{25,60}$/.test(queryUrl)) {
+          targetSpreadsheetId = queryUrl;
+        }
+      }
+
+      const sheets = getMasterdataSheetsSummary();
+      const availableSheets = await discoverMasterdataSpreadsheetTabs(targetSpreadsheetId, token);
+      const totalItems =
+        cachedMasterdataPayload && Array.isArray(cachedMasterdataPayload.rows) && cachedMasterdataPayload.rows.length > 1
+          ? cachedMasterdataPayload.rows.length - 1
+          : 0;
+
+      return res.json({
+        spreadsheetId: targetSpreadsheetId,
+        spreadsheetUrl: queryUrl || config.spreadsheetUrl,
+        sheets,
+        availableSheets,
+        totalItems,
+      });
+    } catch (err: any) {
+      console.error('Error fetching masterdata sheets info:', err);
+      return res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+  });
+
+  // Admin: Add or update an additional Masterdata sheet
+  app.post('/api/admin/masterdata/sheets', async (req: ExpressRequest, res: ExpressResponse) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const bearerToken =
+        authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const token = await resolveMasterdataWriteToken(bearerToken);
+
+      const { sheetName = '', spreadsheetUrl = '' } = req.body || {};
+      const rawSheetName = String(sheetName || '').trim();
+      const normSheet = rawSheetName.toUpperCase();
+
+      if (!normSheet) {
+        return res.status(400).json({ error: 'Sheet name is required' });
+      }
+
+      const config = getMasterdataConfig();
+      let spreadsheetId = config.spreadsheetId;
+
+      if (spreadsheetUrl && typeof spreadsheetUrl === 'string') {
+        const match = spreadsheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+        if (match && match[1]) {
+          spreadsheetId = match[1];
+          config.spreadsheetId = spreadsheetId;
+          config.spreadsheetUrl = spreadsheetUrl.trim();
+        }
+      }
+
+      // Resolve exact sheet tab title from spreadsheet if case differs
+      const availableSheets = await discoverMasterdataSpreadsheetTabs(spreadsheetId, token);
+      const matchedTabTitle =
+        availableSheets.find((t) => t.trim().toUpperCase() === normSheet) || rawSheetName;
+
+      // Fetch the target sheet from Google (try exact tab title first, then uppercase)
+      let values = await fetchSheetValuesWithFallback(spreadsheetId, matchedTabTitle, token || undefined);
+      if ((!values || values.length < 2) && matchedTabTitle !== normSheet) {
+        values = await fetchSheetValuesWithFallback(spreadsheetId, normSheet, token || undefined);
+      }
+      if (!values || values.length < 2) {
+        return res.status(400).json({
+          error: `Sheet "${matchedTabTitle}" was not found or has no rows in the spreadsheet.`,
+        });
+      }
+
+      const newRows = parseSheetDataWithHeaderRow(values, normSheet);
+      if (newRows.length === 0) {
+        return res.status(400).json({
+          error: `No valid data rows found in sheet "${matchedTabTitle}". Row 1 must have headers and data below.`,
+        });
+      }
+
+      if (!cachedMasterdataPayload || !Array.isArray(cachedMasterdataPayload.rows)) {
+        await loadMasterdataCacheFromDisk();
+      }
+
+      const existingHeader = (cachedMasterdataPayload?.rows && cachedMasterdataPayload.rows[0]) || [
+        'Item Code',
+        'Item Description',
+        'Category',
+        'SubCategory',
+        'SubSubCategory',
+        'Barcode',
+        'Sheet',
+        'UOM',
+      ];
+
+      // Remove existing items with this sheet tag to prevent duplicates upon re-adding
+      const existingRows = (cachedMasterdataPayload?.rows || []).slice(1);
+      const filteredExisting = existingRows.filter(
+        (r) => String(r[6] || '').trim().toUpperCase() !== normSheet
+      );
+
+      // Append new sheet rows
+      const combined = [existingHeader, ...filteredExisting, ...newRows];
+
+      cachedMasterdataPayload = {
+        updatedAt: new Date().toISOString(),
+        rows: combined,
+      };
+
+      await persistMasterdataCacheToDisk();
+
+      // Unmark from removedSheets if previously removed
+      if (config.removedSheets) {
+        config.removedSheets = config.removedSheets.filter((s) => s.toUpperCase() !== normSheet);
+      }
+      // Record sheet in config if not already present and not default
+      if (normSheet !== 'GRO' && normSheet !== 'OTHERS') {
+        if (!config.additionalSheets.includes(normSheet)) {
+          config.additionalSheets.push(normSheet);
+        }
+      }
+      await saveMasterdataConfig(config);
+
+      return res.json({
+        success: true,
+        sheetName: normSheet,
+        addedCount: newRows.length,
+        totalItems: combined.length - 1,
+        sheets: getMasterdataSheetsSummary(),
+      });
+    } catch (err: any) {
+      console.error('Error adding masterdata sheet:', err);
+      return res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+  });
+
+  // Admin: Remove a Masterdata sheet or all sheets (including GRO and OTHERS)
+  app.delete('/api/admin/masterdata/sheets', async (req: ExpressRequest, res: ExpressResponse) => {
+    try {
+      const { sheetName = '', removeAll = false } = req.body || {};
+      const normSheet = String(sheetName || '').trim().toUpperCase();
+
+      if (!removeAll && !normSheet) {
+        return res.status(400).json({ error: 'Sheet name is required' });
+      }
+
+      if (!cachedMasterdataPayload || !Array.isArray(cachedMasterdataPayload.rows)) {
+        await loadMasterdataCacheFromDisk();
+      }
+
+      const existingHeader = (cachedMasterdataPayload?.rows && cachedMasterdataPayload.rows[0]) || [
+        'Item Code',
+        'Item Description',
+        'Category',
+        'SubCategory',
+        'SubSubCategory',
+        'Barcode',
+        'Sheet',
+        'UOM',
+      ];
+
+      const config = getMasterdataConfig();
+      if (!config.removedSheets) config.removedSheets = [];
+
+      if (removeAll || normSheet === '__ALL__') {
+        cachedMasterdataPayload = {
+          updatedAt: new Date().toISOString(),
+          rows: [existingHeader],
+        };
+        await persistMasterdataCacheToDisk();
+
+        config.additionalSheets = [];
+        config.removedSheets = Array.from(new Set([...config.removedSheets, 'GRO', 'OTHERS']));
+        await saveMasterdataConfig(config);
+
+        return res.json({
+          success: true,
+          sheetName: '__ALL__',
+          totalItems: 0,
+          sheets: [],
+        });
+      }
+
+      const existingRows = (cachedMasterdataPayload?.rows || []).slice(1);
+      const filtered = existingRows.filter(
+        (r) => String(r[6] || '').trim().toUpperCase() !== normSheet
+      );
+
+      cachedMasterdataPayload = {
+        updatedAt: new Date().toISOString(),
+        rows: [existingHeader, ...filtered],
+      };
+
+      await persistMasterdataCacheToDisk();
+
+      config.additionalSheets = config.additionalSheets.filter((s) => s.toUpperCase() !== normSheet);
+      if (!config.removedSheets.includes(normSheet)) {
+        config.removedSheets.push(normSheet);
+      }
+      await saveMasterdataConfig(config);
+
+      return res.json({
+        success: true,
+        sheetName: normSheet,
+        totalItems: cachedMasterdataPayload.rows.length - 1,
+        sheets: getMasterdataSheetsSummary(),
+      });
+    } catch (err: any) {
+      console.error('Error removing masterdata sheet:', err);
+      return res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+  });
+
+  // Admin: Sync / Refresh a sheet or all sheets
+  app.post('/api/admin/masterdata/sheets/sync', async (req: ExpressRequest, res: ExpressResponse) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const bearerToken =
+        authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const token = await resolveMasterdataWriteToken(bearerToken);
+
+      const { sheetName, spreadsheetUrl } = req.body || {};
+      if (spreadsheetUrl && typeof spreadsheetUrl === 'string') {
+        const match = spreadsheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+        if (match && match[1]) {
+          const cfg = getMasterdataConfig();
+          cfg.spreadsheetId = match[1];
+          cfg.spreadsheetUrl = spreadsheetUrl.trim();
+          await saveMasterdataConfig(cfg);
+        }
+      }
+      if (sheetName) {
+        const normSheet = String(sheetName).trim().toUpperCase();
+        const config = getMasterdataConfig();
+        const values = await fetchSheetValuesWithFallback(config.spreadsheetId, normSheet, token || undefined);
+        if (values && values.length > 1) {
+          const newRows = parseSheetDataWithHeaderRow(values, normSheet);
+          if (newRows.length > 0) {
+            if (!cachedMasterdataPayload || !Array.isArray(cachedMasterdataPayload.rows)) {
+              await loadMasterdataCacheFromDisk();
+            }
+            const header = cachedMasterdataPayload?.rows[0] || [
+              'Item Code',
+              'Item Description',
+              'Category',
+              'SubCategory',
+              'SubSubCategory',
+              'Barcode',
+              'Sheet',
+              'UOM',
+            ];
+            const filtered = (cachedMasterdataPayload?.rows || []).slice(1).filter(
+              (r) => String(r[6] || '').trim().toUpperCase() !== normSheet
+            );
+            cachedMasterdataPayload = {
+              updatedAt: new Date().toISOString(),
+              rows: [header, ...filtered, ...newRows],
+            };
+            await persistMasterdataCacheToDisk();
+          }
+        }
+      } else {
+        await refreshMasterdataFromGoogle(token || undefined);
+      }
+
+      return res.json({
+        success: true,
+        totalItems:
+          cachedMasterdataPayload && Array.isArray(cachedMasterdataPayload.rows)
+            ? cachedMasterdataPayload.rows.length - 1
+            : 0,
+        sheets: getMasterdataSheetsSummary(),
+      });
+    } catch (err: any) {
+      console.error('Error syncing masterdata sheets:', err);
+      return res.status(500).json({ error: err.message || 'Internal server error' });
     }
   });
 
@@ -3239,13 +3722,13 @@ async function startServer() {
       },
       countsheetTemplates: [
         {
-          id: '19eb2315c82841b7f2920f8e1a272f52095f1e72c',
+          id: '1vaA4Tv8Be_R7LLsYMGiUrHQg1M3qtftejYCGIudSA5w',
           name: 'RANDOM INVENTORY COUNTSHEET TEMPLATE',
           gid: '1328306184',
           folderPath: 'TEMPLATE/COUNTSHEET',
           ownerEmail: HUB_OWNER_EMAIL,
           webViewLink:
-            'https://docs.google.com/spreadsheets/d/19eb2315c82841b7f2920f8e1a272f52095f1e72c/edit#gid=1328306184',
+            'https://docs.google.com/spreadsheets/d/1vaA4Tv8Be_R7LLsYMGiUrHQg1M3qtftejYCGIudSA5w/edit#gid=1328306184',
           modifiedTime: nowIso,
         },
         {
@@ -3803,9 +4286,26 @@ async function startServer() {
               );
               if (metaRes.ok) {
                 const meta: any = await metaRes.json();
-                const firstSheet = meta.sheets?.[0]?.properties;
-                if (firstSheet?.sheetId !== undefined) {
-                  gid = String(firstSheet.sheetId);
+                const allSheets: any[] = meta.sheets || [];
+                const preferredSheet =
+                  allSheets.find(
+                    (s: any) =>
+                      !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+                        s.properties?.title || ''
+                      ) &&
+                      /template|countsheet|random|periodic|actual|original|sheet/i.test(
+                        s.properties?.title || ''
+                      )
+                  ) ||
+                  allSheets.find(
+                    (s: any) =>
+                      !/monitoring|all\s*items|summary|analysis|encoding|unidentified/i.test(
+                        s.properties?.title || ''
+                      )
+                  ) ||
+                  allSheets[0];
+                if (preferredSheet?.properties?.sheetId !== undefined) {
+                  gid = String(preferredSheet.properties.sheetId);
                 }
               }
             } catch {}
@@ -4347,11 +4847,17 @@ async function startServer() {
         await saveHubAssetsCacheToDisk(hubAssetsCache);
       }
 
-      // Also allow client to push updated template specs directly into cache
+      // Also allow client to push updated template specs directly into cache (ignoring monitoring/corrupted tabs)
       if (req.body?.countsheetSpec && typeof req.body.countsheetSpec === 'object') {
         await loadHubAssetsCacheFromDisk();
         const spec = req.body.countsheetSpec;
-        if (hubAssetsCache.countsheetTemplates.length > 0) {
+        const isCorruptedSpec =
+          /monitoring/i.test(String(spec.sheetTitle || '')) ||
+          /counted\s*by|recounted\s*by|lot\s*no/i.test(
+            String(spec.printHeaders?.stockDescription || '')
+          ) ||
+          /counted\s*by|recounted\s*by/i.test(String(spec.declarationLine1 || ''));
+        if (!isCorruptedSpec && hubAssetsCache.countsheetTemplates.length > 0) {
           hubAssetsCache.countsheetTemplates[0].spec = spec;
           await saveHubAssetsCacheToDisk(hubAssetsCache);
         }
@@ -4531,8 +5037,11 @@ async function startServer() {
       req.path === '/index.html' ||
       req.path === '/sw.js' ||
       req.path === '/manifest.json' ||
-      req.path.startsWith('/src/')
+      req.path.startsWith('/src/') ||
+      req.path.startsWith('/assets/')
     ) {
+      delete req.headers['if-none-match'];
+      delete req.headers['if-modified-since'];
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
@@ -4542,8 +5051,9 @@ async function startServer() {
 
   // Static Assets / Vite integration
   if (!isProd) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);

@@ -45,7 +45,12 @@ export function getUserSyncKey(): string | null {
   try {
     const sessionToken = sessionStorage.getItem('countsheet_session_token');
     if (sessionToken && sessionToken.startsWith('auditor:')) {
-      return 'instant_preview_local';
+      const parts = sessionToken.split(':');
+      const decodedEmail = parts[1] ? decodeURIComponent(parts[1]).trim().toLowerCase() : '';
+      if (!decodedEmail || decodedEmail.endsWith('@sidc.local') || decodedEmail === 'user') {
+        return 'instant_preview_local';
+      }
+      return decodedEmail.replace(/[^a-z0-9@._-]/g, '_');
     }
   } catch {}
   const currentUser = auth.currentUser;
@@ -226,12 +231,10 @@ function parseServerMasterdataRows(rows: string[][]): InventoryItem[] {
       continue;
     }
     const rawCol6 = r[6] ? String(r[6]).trim() : '';
-    const isExplicitSheet = rawCol6.toUpperCase() === 'GRO' || rawCol6.toUpperCase() === 'OTHERS';
     const sheetTag =
-      (isExplicitSheet ? rawCol6.toUpperCase() : '') ||
+      rawCol6.toUpperCase() ||
       (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
-    const unit =
-      (!isExplicitSheet && rawCol6 ? rawCol6 : (r[7] ? String(r[7]).trim() : '')) || 'PCS';
+    const unit = (r[7] ? String(r[7]).trim() : '') || (rawCol6 && rawCol6.length <= 4 && !rawCol6.includes('GRO') && !rawCol6.includes('OTHER') ? rawCol6 : 'PCS');
 
     items[writeIdx++] = {
       itemCode,

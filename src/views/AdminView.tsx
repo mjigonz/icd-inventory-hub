@@ -52,6 +52,11 @@ import {
   getRoleDefinitionById,
   getRoleBadgeClasses,
   doesRoleHavePermission,
+  MasterdataSheetInfo,
+  fetchMasterdataSheetsInfo,
+  addMasterdataSheet,
+  removeMasterdataSheet,
+  syncMasterdataSheet,
 } from '../services/adminService';
 import {
   getAdminDriveLinksConfig,
@@ -59,7 +64,10 @@ import {
   fetchHubTemplatesFromServer,
   extractDriveResourceFromLink,
   subscribeToAdminDriveLinks,
+  getSpreadsheetTabs,
+  extractSpreadsheetId,
 } from '../services/auditReportService';
+import { CustomSelect, SelectOption } from '../components/CustomSelect';
 import { NotifyWebsiteUpdateAvailable } from '../hooks/useAppUpdate';
 import { PresenceStats, fetchOnlinePresence, PRESENCE_UPDATED_EVENT } from '../services/presenceService';
 
@@ -108,7 +116,7 @@ const DEFAULT_DIRECTORY: AdminDirectoryEntry[] = [
     email: 'icdhubsystems@gmail.com',
     name: 'ICD Hub Systems',
     role: 'internal_compliance_manager',
-    branchName: 'All Branches',
+    branchName: '',
     status: 'active',
     createdAt: new Date().toISOString(),
   },
@@ -132,9 +140,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
           <ShieldAlert className="w-6 h-6" />
         </div>
         <h2 className="text-base font-bold text-slate-900 dark:text-white">Admin Access Restricted</h2>
-        <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-          Your signed-in account (<strong className="font-mono text-slate-800 dark:text-slate-200">{userEmail || 'Guest'}</strong>) does not have Admin Console access. The Admin Console is strictly accessible only for <strong className="font-mono text-slate-800 dark:text-slate-200">icdhubsystems@gmail.com</strong>.
-        </p>
         <button
           type="button"
           onClick={onOpenBranchTab}
@@ -168,6 +173,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [dirSearch, setDirSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [selectedEmails, setSelectedEmails] = useState<string[]>([]);
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editUserForm, setEditUserForm] = useState<{
+    name: string;
+    email: string;
+    role: string;
+    status: AdminDirectoryEntry['status'];
+  }>({
+    name: '',
+    email: '',
+    role: 'senior_auditor',
+    status: 'active',
+  });
 
   // Editable Role Types & Access Control State
   const [roles, setRoles] = useState<AdminRoleDefinition[]>(() => getAdminRoleDefinitions());
@@ -227,6 +244,22 @@ export const AdminView: React.FC<AdminViewProps> = ({
     () => getAdminDriveLinksConfig().overallCountTemplateLink
   );
   const [isSavingDriveLinks, setIsSavingDriveLinks] = useState<boolean>(false);
+
+  // Masterdata Sheets State
+  const [masterdataSpreadsheetUrl, setMasterdataSpreadsheetUrl] = useState<string>(
+    'https://docs.google.com/spreadsheets/d/1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE/edit'
+  );
+  const [masterdataSheets, setMasterdataSheets] = useState<MasterdataSheetInfo[]>([
+    { name: 'GRO', count: 38864, isDefault: true },
+    { name: 'OTHERS', count: 37316, isDefault: true },
+  ]);
+  const [availableSpreadsheetTabs, setAvailableSpreadsheetTabs] = useState<string[]>([
+    'GRO',
+    'OTHERS',
+  ]);
+  const [isFetchingSpreadsheetTabs, setIsFetchingSpreadsheetTabs] = useState<boolean>(false);
+  const [inputSheetName, setInputSheetName] = useState<string>('');
+  const [isLoadingSheets, setIsLoadingSheets] = useState<boolean>(false);
 
   // Online Presence State (Real-time tracking for Google Accounts and Guest Mode users)
   const [onlinePresence, setOnlinePresence] = useState<PresenceStats>({
@@ -406,12 +439,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setRoleFormPermissions([...fallbackDef.permissions]);
   };
 
-  const handleToggleRoleFormPermission = (permKey: RolePermissionKey) => {
-    setRoleFormPermissions((prev) =>
-      prev.includes(permKey) ? prev.filter((k) => k !== permKey) : [...prev, permKey]
-    );
-  };
-
   // Helper to persist inline role changes or create a new role before/when saving
   const persistInlineRoleChanges = async (options?: {
     forceCreateNew?: boolean;
@@ -451,9 +478,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
         };
         nextRoles = [...roles, newRole];
         resolvedRoleId = newRole.id;
-        setInputRole(newRole.id);
-        setEditingRoleId(newRole.id);
-        setIsAddingNewRole(false);
       } else {
         const targetId = editingRoleId || inputRole;
         nextRoles = roles.map((r) => {
@@ -473,13 +497,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
         resolvedRoleId = targetId;
       }
 
+      setRoles(nextRoles);
+      setInputRole(resolvedRoleId);
+      setEditingRoleId(resolvedRoleId);
+      setIsAddingNewRole(false);
+
       const saved = await saveAdminRoleDefinitions(nextRoles);
       setRoles(saved);
       if (!options?.silentToast) {
         showToast(
           shouldCreateNew
-            ? `Created new Role Type "${cleanName}" with ${roleFormPermissions.length} access permissions.`
-            : `Saved Role Type "${cleanName}" and updated access permissions.`
+            ? `Added new role "${cleanName}" to dropdown.`
+            : `Saved role "${cleanName}".`
         );
       }
       return resolvedRoleId;
@@ -530,23 +559,35 @@ export const AdminView: React.FC<AdminViewProps> = ({
   };
 
   const handleDeleteCustomRole = async (roleDef: AdminRoleDefinition) => {
-    if (roleDef.isSystem) {
-      showToast('Built-in roles cannot be deleted, but you can edit their name and access permissions.', 'error');
+    if (roles.length <= 1) {
+      showToast('At least one role must remain in the dropdown.', 'error');
       return;
     }
     const nextRoles = roles.filter((r) => r.id !== roleDef.id);
-    const saved = await saveAdminRoleDefinitions(nextRoles);
-    setRoles(saved);
+    const fallbackRole = nextRoles[0]?.id || 'senior_auditor';
+    setRoles(nextRoles);
     if (inputRole === roleDef.id || editingRoleId === roleDef.id) {
-      handleSelectInputRole('senior_auditor');
+      const nextDef = nextRoles[0];
+      setInputRole(fallbackRole);
+      setIsAddingNewRole(false);
+      setEditingRoleId(fallbackRole);
+      if (nextDef) {
+        setRoleFormName(nextDef.name);
+        setRoleFormDesc(nextDef.description || '');
+        setRoleFormColor(nextDef.color || 'blue');
+        setRoleFormPermissions([...nextDef.permissions]);
+      }
     }
     if (roleFilter === roleDef.id) setRoleFilter('all');
 
-    // Reassign any directory entries using the deleted role to 'senior_auditor'
+    const saved = await saveAdminRoleDefinitions(nextRoles);
+    setRoles(saved);
+
+    // Reassign any directory entries using the deleted role to fallbackRole
     const affectedEntries = directory.filter((d) => d.role === roleDef.id);
     if (affectedEntries.length > 0) {
       const nextDir = directory.map((d) =>
-        d.role === roleDef.id ? { ...d, role: 'senior_auditor' } : d
+        d.role === roleDef.id ? { ...d, role: fallbackRole } : d
       );
       persistDirectoryLocal(nextDir);
       broadcastDirectoryUpdate(nextDir);
@@ -555,12 +596,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            entries: affectedEntries.map((d) => ({ ...d, role: 'senior_auditor' })),
+            entries: affectedEntries.map((d) => ({ ...d, role: fallbackRole })),
           }),
         });
       } catch {}
     }
-    showToast(`Deleted role "${roleDef.name}".`);
+    showToast(`Removed role "${roleDef.name}".`);
   };
 
   const handleResetRolesToDefault = async () => {
@@ -621,6 +662,199 @@ export const AdminView: React.FC<AdminViewProps> = ({
     }
   };
 
+  const loadAvailableMasterdataTabs = async (
+    targetUrl?: string,
+    options?: { silent?: boolean; syncConfigFromServer?: boolean; userInitiated?: boolean }
+  ) => {
+    const urlToUse = (targetUrl ?? masterdataSpreadsheetUrl).trim();
+    if (!options?.silent) {
+      setIsFetchingSpreadsheetTabs(true);
+    }
+    try {
+      const info = await fetchMasterdataSheetsInfo(urlToUse || undefined, accessToken);
+      if (options?.syncConfigFromServer && info.spreadsheetUrl) {
+        setMasterdataSpreadsheetUrl(info.spreadsheetUrl);
+      }
+      if (Array.isArray(info.sheets)) {
+        setMasterdataSheets(info.sheets);
+      }
+
+      const liveTabs: string[] = [];
+      const seenUpper = new Set<string>();
+      const pushTab = (raw: string) => {
+        const clean = String(raw || '').trim();
+        if (!clean) return;
+        const upper = clean.toUpperCase();
+        if (!seenUpper.has(upper)) {
+          seenUpper.add(upper);
+          liveTabs.push(clean);
+        }
+      };
+
+      if (Array.isArray(info.availableSheets) && info.availableSheets.length > 0) {
+        info.availableSheets.forEach(pushTab);
+      }
+
+      // Also inspect directly via client Google Sheets API if OAuth accessToken is present
+      const cleanId = extractSpreadsheetId(urlToUse || info.spreadsheetUrl || info.spreadsheetId || '');
+      if (accessToken && cleanId) {
+        try {
+          const clientMeta = await getSpreadsheetTabs(accessToken, cleanId);
+          clientMeta.tabs.forEach((t) => pushTab(t.title));
+        } catch {}
+      }
+
+      if (liveTabs.length === 0) {
+        (info.sheets || masterdataSheets).forEach((s) => pushTab(s.name));
+      }
+
+      if (liveTabs.length > 0) {
+        setAvailableSpreadsheetTabs(liveTabs);
+        setInputSheetName((prev) => {
+          if (prev && liveTabs.some((t) => t.toUpperCase() === prev.toUpperCase())) {
+            return prev;
+          }
+          const loadedSet = new Set(
+            (info.sheets || masterdataSheets).map((s) => s.name.trim().toUpperCase())
+          );
+          const firstUnadded = liveTabs.find((t) => !loadedSet.has(t.toUpperCase()));
+          return firstUnadded || liveTabs[0] || '';
+        });
+      }
+
+      if (options?.userInitiated) {
+        showToast(`Refreshed sheets: ${liveTabs.length} found`);
+      }
+    } catch {
+    } finally {
+      if (!options?.silent) {
+        setIsFetchingSpreadsheetTabs(false);
+      }
+    }
+  };
+
+  // Load Masterdata Sheets configuration and available tabs from server on mount
+  useEffect(() => {
+    void loadAvailableMasterdataTabs(undefined, {
+      silent: false,
+      syncConfigFromServer: true,
+    });
+  }, [accessToken]);
+
+  const masterdataSheetSelectOptions = useMemo<SelectOption[]>(() => {
+    const combined: string[] = [];
+    const seen = new Set<string>();
+    const add = (name: string) => {
+      const clean = String(name || '').trim();
+      if (!clean) return;
+      const upper = clean.toUpperCase();
+      if (!seen.has(upper)) {
+        seen.add(upper);
+        combined.push(clean);
+      }
+    };
+    availableSpreadsheetTabs.forEach(add);
+    masterdataSheets.forEach((s) => add(s.name));
+
+    return combined.map((tabName) => {
+      const activeSheet = masterdataSheets.find(
+        (s) => s.name.trim().toUpperCase() === tabName.toUpperCase()
+      );
+      return {
+        value: tabName,
+        label: tabName,
+        sublabel: activeSheet
+          ? activeSheet.isDefault
+            ? 'Default Active Sheet'
+            : 'Loaded in Masterdata'
+          : 'Available in Spreadsheet',
+        badge: activeSheet ? `${activeSheet.count.toLocaleString()} items` : 'Available',
+        dotColor: activeSheet ? 'bg-emerald-500' : 'bg-blue-500',
+      };
+    });
+  }, [availableSpreadsheetTabs, masterdataSheets]);
+
+  const isSelectedSheetAlreadyLoaded = useMemo(() => {
+    const norm = inputSheetName.trim().toUpperCase();
+    if (!norm) return false;
+    return masterdataSheets.some((s) => s.name.trim().toUpperCase() === norm);
+  }, [inputSheetName, masterdataSheets]);
+
+  const handleAddSheet = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const sheet = inputSheetName.trim();
+    if (!sheet) return;
+    setIsLoadingSheets(true);
+    try {
+      const res = await addMasterdataSheet(sheet, masterdataSpreadsheetUrl, accessToken);
+      setMasterdataSheets(res.sheets);
+      showToast(
+        isSelectedSheetAlreadyLoaded
+          ? `Updated sheet ${res.sheetName} (${res.addedCount.toLocaleString()} items)`
+          : `Added ${res.addedCount.toLocaleString()} items from sheet ${res.sheetName}`
+      );
+      void loadAvailableMasterdataTabs(masterdataSpreadsheetUrl, { silent: true });
+    } catch (err: any) {
+      showToast(err.message || `Failed to add sheet ${sheet}`, 'error');
+    } finally {
+      setIsLoadingSheets(false);
+    }
+  };
+
+  const handleRemoveSheet = async (sheetName: string) => {
+    setIsLoadingSheets(true);
+    try {
+      const res = await removeMasterdataSheet(sheetName);
+      setMasterdataSheets(res.sheets || []);
+      if (sheetName === '__ALL__' || inputSheetName.trim().toUpperCase() === sheetName.trim().toUpperCase()) {
+        setInputSheetName('');
+      }
+      showToast(sheetName === '__ALL__' ? 'Removed all masterdata sheets' : `Removed sheet ${sheetName}`);
+      void loadAvailableMasterdataTabs(masterdataSpreadsheetUrl, { silent: true });
+    } catch (err: any) {
+      showToast(err.message || `Failed to remove sheet ${sheetName}`, 'error');
+    } finally {
+      setIsLoadingSheets(false);
+    }
+  };
+
+  const handleSyncSheet = async (sheetName?: string) => {
+    setIsLoadingSheets(true);
+    try {
+      const res = await syncMasterdataSheet(sheetName, masterdataSpreadsheetUrl);
+      setMasterdataSheets(res.sheets);
+      showToast(sheetName ? `Refreshed sheet ${sheetName}` : 'Refreshed all masterdata sheets');
+      if (!sheetName) {
+        void loadAvailableMasterdataTabs(masterdataSpreadsheetUrl, { silent: true });
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to refresh sheet', 'error');
+    } finally {
+      setIsLoadingSheets(false);
+    }
+  };
+
+  const handleSaveMasterdataSheets = async () => {
+    setIsLoadingSheets(true);
+    try {
+      const cleanUrl = masterdataSpreadsheetUrl.trim();
+      if (inputSheetName.trim() && !isSelectedSheetAlreadyLoaded) {
+        const res = await addMasterdataSheet(inputSheetName.trim(), cleanUrl, accessToken);
+        setMasterdataSheets(res.sheets);
+        showToast(`Saved Masterdata link & added sheet ${res.sheetName}`);
+      } else {
+        const res = await syncMasterdataSheet(undefined, cleanUrl);
+        setMasterdataSheets(res.sheets);
+        showToast('Saved Masterdata sheets configuration.');
+      }
+      void loadAvailableMasterdataTabs(cleanUrl, { silent: true });
+    } catch (err: any) {
+      showToast(err.message || 'Failed to save Masterdata sheets', 'error');
+    } finally {
+      setIsLoadingSheets(false);
+    }
+  };
+
   const parsedFormsResource = useMemo(
     () => extractDriveResourceFromLink(formsLocationLink),
     [formsLocationLink]
@@ -668,21 +902,24 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
         setDirectory((prev) => {
           const map = new Map<string, AdminDirectoryEntry>();
-          prev.forEach((item) => map.set(item.email.toLowerCase() || item.id, item));
+          prev.forEach((item) => map.set(item.id || item.email.toLowerCase(), item));
           remoteEntries.forEach((item) => {
-            if (item && (item.email || item.id)) {
-              map.set((item.email || item.id).toLowerCase(), item);
+            if (item && (item.id || item.email)) {
+              map.set(item.id || item.email.toLowerCase(), item);
             }
           });
           discovered.forEach((d) => {
             const em = (d.email || '').trim().toLowerCase();
-            if (em && !map.has(em) && !em.endsWith('@sidc.local')) {
-              map.set(em, {
+            const hasEmailAlready = Array.from(map.values()).some(
+              (existing) => existing.email.toLowerCase() === em
+            );
+            if (em && !hasEmailAlready && !em.endsWith('@sidc.local')) {
+              map.set(`dir_${em}`, {
                 id: `dir_${em}`,
                 email: em,
                 name: d.name || em.split('@')[0],
                 role: d.role === 'owner' ? 'internal_compliance_supervisor' : 'senior_auditor',
-                branchName: d.spreadsheet_name || branch?.name || '',
+                branchName: '',
                 status: 'active',
                 createdAt: new Date().toISOString(),
               });
@@ -790,7 +1027,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       email: cleanEmail,
       name: cleanName,
       role: resolvedRoleId,
-      branchName: inputBranch.trim() || branch?.name || 'All Branches',
+      branchName: '',
       status: 'active',
       createdAt: new Date().toISOString(),
     };
@@ -853,7 +1090,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
         email: emailPart.includes('@') ? emailPart : '',
         name: namePart,
         role: resolvedRoleId,
-        branchName: inputBranch.trim() || branch?.name || 'All Branches',
+        branchName: '',
         status: 'active',
         createdAt: new Date().toISOString(),
       });
@@ -916,6 +1153,63 @@ export const AdminView: React.FC<AdminViewProps> = ({
       });
     } catch (e) {
       console.warn('Failed to update directory role on server:', e);
+    }
+  };
+
+  const handleStartEditEntry = (entry: AdminDirectoryEntry) => {
+    setEditingUserId(entry.id);
+    setEditUserForm({
+      name: entry.name || '',
+      email: entry.email || '',
+      role: getRoleDefinitionById(entry.role, roles).id,
+      status: entry.status || 'active',
+    });
+  };
+
+  const handleCancelEditEntry = () => {
+    setEditingUserId(null);
+  };
+
+  // Save changes to email / auditor entry (all user details)
+  const handleSaveEntry = async (entry: AdminDirectoryEntry) => {
+    const cleanEmail = editUserForm.email.trim().toLowerCase();
+    const cleanName =
+      editUserForm.name.trim() || (cleanEmail ? cleanEmail.split('@')[0] : entry.name);
+
+    if (!cleanEmail && !cleanName) {
+      showToast('Please enter a name or email address.', 'error');
+      return;
+    }
+
+    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      showToast('Please enter a valid email address.', 'error');
+      return;
+    }
+
+    const updatedEntry: AdminDirectoryEntry = {
+      ...entry,
+      name: cleanName,
+      email: cleanEmail,
+      role: editUserForm.role || entry.role,
+      branchName: '',
+      status: editUserForm.status || entry.status || 'active',
+    };
+
+    const nextList = directory.map((item) => (item.id === entry.id ? updatedEntry : item));
+    persistDirectoryLocal(nextList);
+    broadcastDirectoryUpdate(nextList);
+    setEditingUserId(null);
+
+    showToast(`Saved ${updatedEntry.name || updatedEntry.email}`);
+
+    try {
+      await fetch('/api/admin/directory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedEntry),
+      });
+    } catch (e) {
+      console.warn('Failed to save directory entry on server:', e);
     }
   };
 
@@ -1481,31 +1775,23 @@ export const AdminView: React.FC<AdminViewProps> = ({
         )}
       </div>
 
+      {/* Google Drive Links & Masterdata Sheets side-by-side on the same horizontal level */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
       {/* Google Drive Links Configuration: Forms Location, Inventory Template, Overall Count Template */}
-      <div className="relative bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-blue-200/90 dark:border-blue-900/60 shadow-xs space-y-3.5">
+      <div className="lg:col-span-5 relative bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-blue-200/90 dark:border-blue-900/60 shadow-xs space-y-3">
         <PanelDecoration position="top-right" tier="secondary" variant={1} />
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/25 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+            <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/25 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
               <Link2 className="w-4 h-4" />
             </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Google Drive Links — Forms &amp; Templates Storage
-                </h3>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20">
-                  Admin Storage Links
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-zinc-400">
-                Set the Google Drive / Google Sheets links for the Forms folder, Inventory Countsheet Template, and Overall Count Template so auditors can access them without signing into the admin email.
-              </p>
-            </div>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+              Google Drive Links
+            </h3>
           </div>
 
-          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             {(formsLocationLink || inventoryTemplateLink || overallCountTemplateLink) && (
               <button
                 type="button"
@@ -1522,7 +1808,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
         </div>
 
         <form onSubmit={handleSaveDriveLinks} className="space-y-3">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-2.5">
             {/* 1. Location of the Forms */}
             <div className="p-3 rounded-xl bg-slate-50/80 dark:bg-zinc-800/50 border border-slate-200/80 dark:border-zinc-700/70 space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -1561,9 +1847,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </a>
                 )}
               </div>
-              <p className="text-[10.5px] text-slate-500 dark:text-zinc-400">
-                Google Drive folder link containing printable PDF audit forms (e.g. ICD FORMS).
-              </p>
             </div>
 
             {/* 2. Inventory Template (Random / Periodic Countsheet Template) */}
@@ -1604,9 +1887,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </a>
                 )}
               </div>
-              <p className="text-[10.5px] text-slate-500 dark:text-zinc-400">
-                Google Sheet or Drive folder link for the Random / Periodic Inventory Countsheet Template.
-              </p>
             </div>
 
             {/* 3. Overall Count Template (Encoding Template) */}
@@ -1647,9 +1927,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </a>
                 )}
               </div>
-              <p className="text-[10.5px] text-slate-500 dark:text-zinc-400">
-                Google Sheet or Drive folder link for the Overall Count / Encoding Audit Template.
-              </p>
             </div>
           </div>
 
@@ -1657,13 +1934,241 @@ export const AdminView: React.FC<AdminViewProps> = ({
             <button
               type="submit"
               disabled={isSavingDriveLinks}
-              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shadow-2xs active:scale-98"
+              className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shadow-2xs active:scale-98"
             >
               <Save className={`w-3.5 h-3.5 ${isSavingDriveLinks ? 'animate-pulse' : ''}`} />
-              <span>{isSavingDriveLinks ? 'Saving & Syncing Links...' : 'Save Google Drive Links'}</span>
+              <span>{isSavingDriveLinks ? 'Saving...' : 'Save Links'}</span>
             </button>
           </div>
         </form>
+      </div>
+
+      {/* Masterdata Sheets: Additional Data (GRO, OTHERS + Custom Sheets) */}
+      <div className="lg:col-span-7 relative bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-emerald-200/90 dark:border-emerald-900/60 shadow-xs space-y-3">
+        <PanelDecoration position="top-right" tier="secondary" variant={2} />
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+              <FileSpreadsheet className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Masterdata Sheets
+                </h3>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20">
+                  {masterdataSheets.reduce((sum, s) => sum + s.count, 0).toLocaleString()} items
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleSyncSheet()}
+              disabled={isLoadingSheets || masterdataSheets.length === 0}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-slate-200 dark:border-zinc-700 text-[11px] font-bold text-slate-700 dark:text-zinc-200 flex items-center gap-1.5 cursor-pointer transition disabled:opacity-60"
+              title="Refresh all sheets from spreadsheet"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSheets ? 'animate-spin' : ''}`} />
+              <span>Refresh All</span>
+            </button>
+
+            {masterdataSheets.length > 0 && (
+              <button
+                type="button"
+                onClick={() => handleRemoveSheet('__ALL__')}
+                disabled={isLoadingSheets}
+                className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-800/70 text-[11px] font-bold text-rose-700 dark:text-rose-300 flex items-center gap-1.5 cursor-pointer transition disabled:opacity-60"
+                title="Remove all sheets from masterdata"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Remove All</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          {/* Masterdata Sheets Google Sheet Link in the horizontal bar */}
+          <div className="flex items-center gap-1.5 flex-1 min-w-[220px]">
+            <div className="relative flex-1 min-w-0">
+              <Link2 className="w-3.5 h-3.5 text-emerald-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={masterdataSpreadsheetUrl}
+                onChange={(e) => setMasterdataSpreadsheetUrl(e.target.value)}
+                onBlur={() => {
+                  if (masterdataSpreadsheetUrl.trim()) {
+                    void loadAvailableMasterdataTabs(masterdataSpreadsheetUrl.trim(), { silent: true });
+                  }
+                }}
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                aria-label="Masterdata Spreadsheet Link"
+                className="w-full pl-8 pr-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+              />
+            </div>
+
+            {/* External link to Google Spreadsheet */}
+            <a
+              href={masterdataSpreadsheetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-slate-200 dark:border-zinc-700 text-slate-600 dark:text-zinc-300 transition shrink-0 flex items-center justify-center"
+              title="Open Spreadsheet in new tab"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+          </div>
+
+          {/* Sheet Selector & Action Buttons */}
+          <form onSubmit={handleAddSheet} className="flex-1 flex items-center gap-1.5 min-w-0 flex-wrap sm:flex-nowrap">
+            <div className="flex-1 min-w-[180px]">
+              <CustomSelect
+                value={inputSheetName}
+                onChange={(val) => setInputSheetName(val)}
+                options={masterdataSheetSelectOptions}
+                placeholder={
+                  isFetchingSpreadsheetTabs
+                    ? 'Checking sheets...'
+                    : 'Select sheet...'
+                }
+                ariaLabel="Select Masterdata Sheet"
+                disabled={isLoadingSheets || isFetchingSpreadsheetTabs}
+                searchable={true}
+                searchPlaceholder="Search sheets..."
+                icon={<FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />}
+                menuMinWidth={240}
+              />
+            </div>
+
+            {/* Clear selected sheet */}
+            {inputSheetName && (
+              <button
+                type="button"
+                onClick={() => setInputSheetName('')}
+                disabled={isLoadingSheets}
+                className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-slate-200 dark:border-zinc-700 text-slate-400 hover:text-slate-600 dark:text-zinc-400 dark:hover:text-zinc-200 transition shrink-0 cursor-pointer"
+                title="Clear selected sheet"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {/* Add or Update Sheet button */}
+            <button
+              type="submit"
+              disabled={!inputSheetName.trim() || isLoadingSheets}
+              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shrink-0 shadow-2xs"
+            >
+              {isLoadingSheets ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : isSelectedSheetAlreadyLoaded ? (
+                <RefreshCw className="w-3.5 h-3.5" />
+              ) : (
+                <Plus className="w-3.5 h-3.5" />
+              )}
+              <span>{isSelectedSheetAlreadyLoaded ? 'Update Sheet' : 'Add Sheet'}</span>
+            </button>
+
+            {/* Save Masterdata Sheets button */}
+            <button
+              type="button"
+              onClick={handleSaveMasterdataSheets}
+              disabled={isLoadingSheets}
+              className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shrink-0 shadow-2xs"
+              title="Save Masterdata Sheets"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>Save</span>
+            </button>
+
+            {/* Remove selected sheet from Masterdata */}
+            {isSelectedSheetAlreadyLoaded && (
+              <button
+                type="button"
+                onClick={() => handleRemoveSheet(inputSheetName)}
+                disabled={isLoadingSheets}
+                className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shrink-0 shadow-2xs"
+                title={`Remove ${inputSheetName}`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Remove Sheet</span>
+              </button>
+            )}
+          </form>
+        </div>
+
+        {/* Sheets List */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {masterdataSheets.length === 0 ? (
+              <span className="text-xs text-slate-400 dark:text-zinc-500 italic">
+                No sheets loaded. Select a sheet from the dropdown above to load data.
+              </span>
+            ) : (
+              masterdataSheets.map((s) => {
+                const isCurrentSelected =
+                  inputSheetName.trim().toUpperCase() === s.name.trim().toUpperCase();
+                return (
+                  <div
+                    key={s.name}
+                    onClick={() => setInputSheetName(s.name)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setInputSheetName(s.name);
+                      }
+                    }}
+                    title={`Click to select ${s.name} in sheet selector`}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-xs font-medium shadow-2xs cursor-pointer transition ${
+                      isCurrentSelected
+                        ? 'bg-emerald-500/10 dark:bg-emerald-500/15 border-emerald-500/40 text-emerald-900 dark:text-emerald-200'
+                        : 'bg-slate-50 dark:bg-zinc-800 border-slate-200/90 dark:border-zinc-700 text-slate-800 dark:text-zinc-200 hover:border-emerald-500/30'
+                    }`}
+                  >
+                    <span className="font-bold">{s.name}</span>
+                    <span className="text-[11px] text-slate-500 dark:text-zinc-400 font-mono">
+                      ({s.count.toLocaleString()})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSyncSheet(s.name);
+                      }}
+                      disabled={isLoadingSheets}
+                      className="p-1 rounded text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition cursor-pointer"
+                      title={`Refresh ${s.name}`}
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveSheet(s.name);
+                      }}
+                      disabled={isLoadingSheets}
+                      className="p-1 rounded text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition cursor-pointer"
+                      title={`Remove ${s.name}`}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <span className="text-[11px] text-slate-500 dark:text-zinc-400">
+            {masterdataSheetSelectOptions.length} sheet{masterdataSheetSelectOptions.length === 1 ? '' : 's'} detected in spreadsheet
+          </span>
+        </div>
+      </div>
       </div>
 
       {/* Main Two-Column Grid: Left = Manage Emails & Auditors | Right = Reach Auditors */}
@@ -1689,108 +2194,45 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   Editable Role Type &amp; Access
                 </span>
               </div>
-
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={handleStartAddRole}
-                  className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white flex items-center gap-1 cursor-pointer transition shadow-2xs"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>New Role Type</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setIsBulkMode((prev) => !prev)}
-                  className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-300 cursor-pointer transition"
-                >
-                  {isBulkMode ? 'Single Add' : 'Bulk Paste Emails'}
-                </button>
-              </div>
             </div>
 
             <form
-              onSubmit={isBulkMode ? handleBulkAddEmails : handleAddEntry}
+              onSubmit={handleAddEntry}
               className="space-y-3"
             >
-              {!isBulkMode ? (
-                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-                  <div className="sm:col-span-4">
-                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
-                      Email Address
-                    </label>
-                    <div className="relative">
-                      <Mail className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="email"
-                        value={inputEmail}
-                        onChange={(e) => setInputEmail(e.target.value)}
-                        placeholder="auditor@gmail.com"
-                        className="w-full pl-8 pr-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="sm:col-span-4">
-                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
-                      Auditor / Branch Name
-                    </label>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                <div className="sm:col-span-6">
+                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
+                    Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
-                      type="text"
-                      value={inputName}
-                      onChange={(e) => setInputName(e.target.value)}
-                      placeholder="e.g. Juan Dela Cruz"
-                      className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div className="sm:col-span-4">
-                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
-                      Assigned Branch
-                    </label>
-                    <input
-                      type="text"
-                      value={inputBranch}
-                      onChange={(e) => setInputBranch(e.target.value)}
-                      placeholder={branch?.name || 'All Branches'}
-                      className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      type="email"
+                      value={inputEmail}
+                      onChange={(e) => setInputEmail(e.target.value)}
+                      placeholder="auditor@gmail.com"
+                      className="w-full pl-8 pr-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-                    <div className="sm:col-span-8">
-                      <label className="block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
-                        Bulk Paste Emails (Supports plain emails or Name &lt;email&gt;)
-                      </label>
-                      <textarea
-                        rows={2}
-                        value={bulkEmailsText}
-                        onChange={(e) => setBulkEmailsText(e.target.value)}
-                        placeholder="Paste emails separated by commas or new lines (e.g. juan@gmail.com, Maria <maria@sidc.com>)..."
-                        className="w-full p-2.5 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                      />
-                    </div>
-                    <div className="sm:col-span-4">
-                      <label className="block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
-                        Assigned Branch
-                      </label>
-                      <input
-                        type="text"
-                        value={inputBranch}
-                        onChange={(e) => setInputBranch(e.target.value)}
-                        placeholder={branch?.name || 'All Branches'}
-                        className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  </div>
+
+                <div className="sm:col-span-6">
+                  <label className="block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
+                    Auditor Name
+                  </label>
+                  <input
+                    type="text"
+                    value={inputName}
+                    onChange={(e) => setInputName(e.target.value)}
+                    placeholder="e.g. Juan Dela Cruz"
+                    className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
                 </div>
-              )}
+              </div>
 
               {/* ========================================================================= */}
-              {/* INLINE EDITABLE ROLE TYPE & ACCESS PERMISSIONS (DIRECTLY IN ADD PANEL)    */}
+              {/* INLINE EDITABLE ROLE TYPE (DIRECTLY IN ADD PANEL)                        */}
               {/* ========================================================================= */}
               <div className="p-3.5 rounded-2xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/90 dark:border-purple-800/70 space-y-3">
                 {/* Top Row: Role Type Selector Dropdown + Interactive Role Chips + New Role Button */}
@@ -1798,7 +2240,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div className="flex items-center gap-2 flex-wrap">
                     <Lock className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
                     <span className="text-xs font-extrabold uppercase tracking-wider text-slate-900 dark:text-white">
-                      Role / Type (Editable) &amp; Access
+                      Role / Type (Editable)
                     </span>
                     <span
                       className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md border ${getRoleBadgeClasses(
@@ -1818,7 +2260,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     >
                       {roles.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.name} ({r.permissions.length} access)
+                          {r.name}
                         </option>
                       ))}
                       <option value="__new__">+ Add New Role Type...</option>
@@ -1826,7 +2268,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
                     <button
                       type="button"
-                      onClick={handleStartAddRole}
+                      onClick={() => {
+                        if (isAddingNewRole && roleFormName.trim()) {
+                          void persistInlineRoleChanges({ forceCreateNew: true });
+                        } else {
+                          handleStartAddRole();
+                        }
+                      }}
                       className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1 cursor-pointer transition border ${
                         isAddingNewRole
                           ? 'bg-purple-600 text-white border-purple-500 shadow-2xs'
@@ -1838,60 +2286,45 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       <span>Add Role</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={handleResetRolesToDefault}
-                      disabled={isSavingRoles}
-                      className="px-2 py-1.5 rounded-xl bg-white dark:bg-zinc-900 hover:bg-slate-100 dark:hover:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-600 dark:text-zinc-300 text-[10.5px] font-bold flex items-center gap-1 cursor-pointer transition"
-                      title="Reset all roles to default"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      <span>Reset</span>
-                    </button>
+                    {!isAddingNewRole &&
+                      roles.length > 1 &&
+                      (() => {
+                        const currentDef = roles.find((r) => r.id === (editingRoleId || inputRole));
+                        if (currentDef) {
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCustomRole(currentDef)}
+                              className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition"
+                              title={`Remove role "${currentDef.name}"`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Remove Role</span>
+                            </button>
+                          );
+                        }
+                        return null;
+                      })()}
                   </div>
                 </div>
 
-                {/* Quick Role Type Selector Buttons */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {roles.map((r) => {
-                    const isSelected = !isAddingNewRole && inputRole === r.id;
-                    return (
-                      <button
-                        key={r.id}
-                        type="button"
-                        onClick={() => handleSelectInputRole(r.id)}
-                        className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border flex items-center gap-1.5 cursor-pointer transition ${
-                          isSelected
-                            ? 'bg-purple-600 text-white border-purple-500 shadow-2xs'
-                            : 'bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-purple-400'
-                        }`}
-                      >
-                        <span>{r.name}</span>
-                        <span
-                          className={`text-[9.5px] px-1.5 py-0.2 rounded ${
-                            isSelected
-                              ? 'bg-white/20 text-white'
-                              : 'bg-slate-100 dark:bg-zinc-800 text-slate-500 dark:text-zinc-400'
-                          }`}
-                        >
-                          {r.permissions.length}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Editable Role Type Name, Description & Badge Color */}
+                {/* Role Name, Description & Badge Color */}
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
                   <div className="sm:col-span-4">
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-zinc-300 mb-1">
-                      {isAddingNewRole ? 'New Role Type Name' : 'Role Type Name (Editable)'}
+                      {isAddingNewRole ? 'New Role Name' : 'Role Name'}
                     </label>
                     <input
                       type="text"
                       value={roleFormName}
                       onChange={(e) => setRoleFormName(e.target.value)}
-                      placeholder="e.g. Regional Supervisor / Checker"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleSaveRoleForm();
+                        }
+                      }}
+                      placeholder="e.g. Supervisor"
                       className="w-full px-2.5 py-1.5 text-xs font-semibold rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
                     />
                   </div>
@@ -1904,7 +2337,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       type="text"
                       value={roleFormDesc}
                       onChange={(e) => setRoleFormDesc(e.target.value)}
-                      placeholder="Short description of this role's access"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleSaveRoleForm();
+                        }
+                      }}
+                      placeholder="Short description of this role"
                       className="w-full px-2.5 py-1.5 text-xs rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
                     />
                   </div>
@@ -1930,72 +2369,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </div>
                 </div>
 
-                {/* Assignable Access Permissions Checkboxes */}
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-zinc-300">
-                      Assign Access to Role ({roleFormPermissions.length} of {ROLE_PERMISSION_CATALOG.length} active)
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setRoleFormPermissions(ROLE_PERMISSION_CATALOG.map((p) => p.key))
-                        }
-                        className="text-[10px] font-bold text-purple-600 dark:text-purple-400 hover:underline cursor-pointer"
-                      >
-                        Select All Access
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setRoleFormPermissions(
-                            !isAddingNewRole && editingRoleId === 'admin' ? ['admin_console'] : []
-                          )
-                        }
-                        className="text-[10px] font-bold text-slate-500 hover:underline cursor-pointer"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                    {ROLE_PERMISSION_CATALOG.map((perm) => {
-                      const checked = roleFormPermissions.includes(perm.key);
-                      const isLockedAdminPerm =
-                        !isAddingNewRole && editingRoleId === 'admin' && perm.key === 'admin_console';
-                      return (
-                        <label
-                          key={perm.key}
-                          className={`p-2 rounded-xl border flex items-start gap-2 cursor-pointer transition ${
-                            checked
-                              ? 'bg-white dark:bg-zinc-900 border-purple-400 dark:border-purple-500/70 shadow-2xs'
-                              : 'bg-white/60 dark:bg-zinc-900/50 border-slate-200 dark:border-zinc-800 opacity-75 hover:opacity-100'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={isLockedAdminPerm}
-                            onChange={() => handleToggleRoleFormPermission(perm.key)}
-                            className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] font-bold text-slate-900 dark:text-white leading-tight">
-                              {perm.label}
-                            </div>
-                            <div className="text-[10px] text-slate-500 dark:text-zinc-400 leading-tight mt-0.5">
-                              {perm.description}
-                            </div>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Role Action Bar & Submit Add Email / Auditor Button */}
+                {/* Role Action Bar */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1.5 border-t border-purple-200/70 dark:border-purple-800/50">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <button
@@ -2006,7 +2380,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     >
                       <Save className="w-3.5 h-3.5" />
                       <span>
-                        {isAddingNewRole ? 'Create & Save Role Type' : 'Save Role & Access Changes'}
+                        {isAddingNewRole ? 'Create & Save Role' : 'Save Role'}
                       </span>
                     </button>
 
@@ -2016,7 +2390,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         onClick={handleSaveAsNewRole}
                         disabled={isSavingRoles}
                         className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-zinc-900 hover:bg-purple-50 dark:hover:bg-purple-900/40 border border-purple-200 dark:border-purple-700 text-purple-700 dark:text-purple-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition"
-                        title="Save the typed Role Name and Access Permissions as a brand-new Role Type"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         <span>Save as New Role</span>
@@ -2024,9 +2397,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     )}
 
                     {!isAddingNewRole &&
+                      roles.length > 1 &&
                       (() => {
                         const currentDef = roles.find((r) => r.id === (editingRoleId || inputRole));
-                        if (currentDef && !currentDef.isSystem) {
+                        if (currentDef) {
                           return (
                             <button
                               type="button"
@@ -2067,40 +2441,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
           {/* Saved Emails & Auditors List Card */}
           <div className="relative bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-slate-200/90 dark:border-slate-800 shadow-xs space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => setRoleFilter('all')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                    roleFilter === 'all'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-700'
-                  }`}
-                >
-                  All ({directory.length})
-                </button>
-                {roles.map((r) => {
-                  const count = directory.filter(
-                    (d) => getRoleDefinitionById(d.role, roles).id === r.id
-                  ).length;
-                  return (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => setRoleFilter(r.id)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                        roleFilter === r.id
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-700'
-                      }`}
-                    >
-                      {r.name} ({count})
-                    </button>
-                  );
-                })}
+              <div className="text-xs font-bold text-slate-900 dark:text-white">
+                Emails &amp; Auditors ({directory.length})
               </div>
 
-              <div className="relative min-w-[200px]">
+              <div className="relative min-w-[220px] w-full sm:w-auto">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
@@ -2132,150 +2477,182 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       (entry.email && a.name.toLowerCase() === entry.email.split('@')[0].toLowerCase())
                   );
 
+                  const isEditingThisUser = editingUserId === entry.id;
+
                   return (
                     <div
                       key={entry.id}
-                      className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-3 ${
+                      className={`p-3 rounded-xl border transition-all ${
                         isSelectedForReach
                           ? 'bg-blue-50/70 dark:bg-blue-950/30 border-blue-400 dark:border-blue-500/70'
                           : 'bg-slate-50/70 dark:bg-zinc-800/50 border-slate-200/80 dark:border-zinc-700/70 hover:border-slate-300 dark:hover:border-zinc-600'
                       }`}
                     >
-                      <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <input
-                          type="checkbox"
-                          checked={isSelectedForReach}
-                          onChange={() => toggleSelectRecipient(entry)}
-                          aria-label={`Select ${entry.name}`}
-                          className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
-                        />
+                      {isEditingThisUser ? (
+                        <div className="space-y-2.5">
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                            <div className="sm:col-span-4">
+                              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
+                                Name
+                              </label>
+                              <input
+                                type="text"
+                                value={editUserForm.name}
+                                onChange={(e) =>
+                                  setEditUserForm((prev) => ({ ...prev, name: e.target.value }))
+                                }
+                                placeholder="Auditor Name"
+                                autoFocus
+                                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              />
+                            </div>
 
-                        <div className="w-8 h-8 rounded-xl bg-slate-200 dark:bg-zinc-700 text-slate-800 dark:text-zinc-100 flex items-center justify-center font-bold text-xs shrink-0">
-                          {(entry.name || entry.email || 'A').charAt(0).toUpperCase()}
-                        </div>
+                            <div className="sm:col-span-4">
+                              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
+                                Email Address
+                              </label>
+                              <input
+                                type="email"
+                                value={editUserForm.email}
+                                onChange={(e) =>
+                                  setEditUserForm((prev) => ({ ...prev, email: e.target.value }))
+                                }
+                                placeholder="auditor@gmail.com"
+                                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                              />
+                            </div>
 
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                              {entry.name}
-                            </span>
-                            <span
-                              className={`text-[9.5px] font-bold uppercase px-1.5 py-0.2 rounded border ${roleBadgeStyle(
-                                entry.role
-                              )}`}
-                              title={`Assigned Access: ${
-                                entryRoleDef.permissions
-                                  .map(
-                                    (pk) =>
-                                      ROLE_PERMISSION_CATALOG.find((p) => p.key === pk)?.label || pk
-                                  )
-                                  .join(', ') || 'View-only'
-                              }`}
+                            <div className="sm:col-span-4">
+                              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1">
+                                Role / Type
+                              </label>
+                              <select
+                                value={editUserForm.role}
+                                onChange={(e) =>
+                                  setEditUserForm((prev) => ({ ...prev, role: e.target.value }))
+                                }
+                                aria-label="Edit user role"
+                                className="w-full px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                              >
+                                {roles.map((r) => (
+                                  <option key={r.id} value={r.id}>
+                                    {r.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-end gap-1.5 pt-1">
+                            <button
+                              type="button"
+                              onClick={handleCancelEditEntry}
+                              className="px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300/80 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition"
                             >
-                              {roleLabelText(entry.role)}
-                            </span>
-                            <span className="text-[9.5px] font-semibold px-1.5 py-0.2 rounded bg-slate-200/70 dark:bg-zinc-700/70 text-slate-600 dark:text-zinc-300">
-                              {entryRoleDef.permissions.length} access
-                            </span>
-                            {liveFloorMatch && (
-                              <span className="text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-                                Active on Sheet ({liveFloorMatch.encodingRanges.length + liveFloorMatch.checkingRanges.length} CS blocks)
-                              </span>
-                            )}
+                              <X className="w-3 h-3" />
+                              <span>Cancel</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSaveEntry(entry)}
+                              className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer transition shadow-2xs"
+                            >
+                              <Save className="w-3 h-3" />
+                              <span>Save</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <input
+                              type="checkbox"
+                              checked={isSelectedForReach}
+                              onChange={() => toggleSelectRecipient(entry)}
+                              aria-label={`Select ${entry.name}`}
+                              className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+                            />
+
+                            <div className="w-8 h-8 rounded-xl bg-slate-200 dark:bg-zinc-700 text-slate-800 dark:text-zinc-100 flex items-center justify-center font-bold text-xs shrink-0">
+                              {(entry.name || entry.email || 'A').charAt(0).toUpperCase()}
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                  {entry.name}
+                                </span>
+                                <span
+                                  className={`text-[9.5px] font-bold uppercase px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${roleBadgeStyle(
+                                    entry.role
+                                  )}`}
+                                >
+                                  <span>{roleLabelText(entry.role)}</span>
+                                </span>
+                                {liveFloorMatch && (
+                                  <span className="text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                                    Active on Sheet ({liveFloorMatch.encodingRanges.length + liveFloorMatch.checkingRanges.length} CS blocks)
+                                  </span>
+                                )}
+                              </div>
+
+                              {entry.email && (
+                                <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5 flex-wrap">
+                                  <span className="font-mono truncate">{entry.email}</span>
+                                </div>
+                              )}
+                            </div>
                           </div>
 
-                          <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5 flex-wrap">
+                          <div className="flex items-center gap-1.5 shrink-0 flex-wrap sm:flex-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditEntry(entry)}
+                              className="px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300/80 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-800 dark:text-zinc-100 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition shadow-2xs"
+                              title="Edit user details"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>Edit</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleQuickReachAuditor(entry)}
+                              className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer transition shadow-2xs"
+                              title="Reach this auditor"
+                            >
+                              <Send className="w-3 h-3" />
+                              <span className="hidden sm:inline">Reach</span>
+                            </button>
+
                             {entry.email && (
-                              <span className="font-mono truncate">{entry.email}</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleCopyText(entry.email, `copy_${entry.id}`, `Copied ${entry.email}`)
+                                }
+                                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-zinc-700 transition cursor-pointer"
+                                title="Copy email"
+                              >
+                                {copiedId === `copy_${entry.id}` ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
                             )}
-                            {entry.branchName && (
-                              <span className="inline-flex items-center gap-1 text-[10px] text-slate-500 dark:text-zinc-400">
-                                <Building2 className="w-3 h-3" />
-                                <span>{entry.branchName}</span>
-                              </span>
-                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveEntry(entry)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                              title="Remove email / auditor"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap sm:flex-nowrap">
-                        {/* Designation / Role Selector (Dynamic Roles + Edit Role Button) */}
-                        <div className="flex items-center gap-1">
-                          <select
-                            value={entryRoleDef.id}
-                            onChange={(e) => {
-                              if (e.target.value === '__new__') {
-                                handleStartAddRole();
-                                document
-                                  .getElementById('admin-add-auditor-panel')
-                                  ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                return;
-                              }
-                              handleUpdateEntryRole(entry, e.target.value);
-                            }}
-                            aria-label={`Designation for ${entry.name}`}
-                            className="text-[11px] font-semibold py-1 px-2 rounded-lg bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-800 dark:text-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer shadow-2xs"
-                            title="Change designation / role"
-                          >
-                            {roles.map((r) => (
-                              <option key={r.id} value={r.id}>
-                                {r.name} ({r.permissions.length} access)
-                              </option>
-                            ))}
-                            <option value="__new__">+ Add / Edit Role Type...</option>
-                          </select>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleStartEditRole(entryRoleDef);
-                              document
-                                .getElementById('admin-add-auditor-panel')
-                                ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }}
-                            className="p-1.5 rounded-lg bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/50 dark:hover:bg-purple-900/50 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 transition cursor-pointer"
-                            title={`Edit "${entryRoleDef.name}" role type & access permissions`}
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => handleQuickReachAuditor(entry)}
-                          className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer transition shadow-2xs"
-                          title="Reach this auditor"
-                        >
-                          <Send className="w-3 h-3" />
-                          <span className="hidden sm:inline">Reach</span>
-                        </button>
-
-                        {entry.email && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleCopyText(entry.email, `copy_${entry.id}`, `Copied ${entry.email}`)
-                            }
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-zinc-700 transition cursor-pointer"
-                            title="Copy email"
-                          >
-                            {copiedId === `copy_${entry.id}` ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-500" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveEntry(entry)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
-                          title="Remove email / auditor"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      )}
                     </div>
                   );
                 })}

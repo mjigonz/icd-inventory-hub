@@ -5,6 +5,7 @@ import {
   X,
   Search,
   ArrowRight,
+  ArrowRightLeft,
   CheckCircle2,
   AlertCircle,
   RefreshCw,
@@ -39,6 +40,7 @@ import {
   Paperclip,
   FileCheck2,
   FolderOpen,
+  Save,
 } from 'lucide-react';
 import {
   searchDriveSpreadsheets,
@@ -68,6 +70,7 @@ import {
   CreateCountsheetFromTemplateResult,
   GroupCountsheetPlan,
   RecentCountsheetSession,
+  SavedCountsheetGroupState,
   PreGeneratedCountsheetItem,
   getRecentCountsheets,
   saveRecentCountsheet,
@@ -108,10 +111,15 @@ import {
   resolveValidOAuthToken,
   subscribeToTokenChanges,
 } from '../services/auth';
+import { useScrollLock } from '../hooks/useScrollLock';
 
 interface CreateRandomCountsheetModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onExportToEncoding?: (session: RecentCountsheetSession) => void;
+  initialSession?: RecentCountsheetSession | null;
+  transitionAnim?: 'none' | 'slide-out-left' | 'slide-in-left';
+  isStandby?: boolean;
   accessToken: string | null;
   userEmail?: string | null;
   userName?: string | null;
@@ -130,7 +138,8 @@ export interface ParsedIatdRow {
   subCategory: string;
   subsubCategory: string;
   unit: string;
-  balance: number;
+  balance: number | null;
+  actual?: number | null;
   cost: number;
   selling: number;
   raw: any[];
@@ -154,18 +163,29 @@ export interface SelectionGroup {
   hierarchySearchQuery: string;
   selectedItemIds: Set<string>;
   randomCountInput: number;
+  onlyItemsWithBalance: boolean;
+  insertCategorySpacers: boolean;
+  showSelectedItemsOnly: boolean;
+  itemSortBy: 'itemCode' | 'itemDescription';
 }
 
 export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalProps> = ({
   isOpen,
   onClose,
+  onExportToEncoding,
+  initialSession = null,
+  transitionAnim = 'none',
+  isStandby = false,
   accessToken,
   userEmail,
+  userName: _userName,
   isGoogleConnected: isGoogleConnectedProp,
   onConnectGoogle,
   onTokenRefreshed: _onTokenRefreshed,
 }) => {
   const [localToken, setLocalToken] = useState<string | null>(accessToken);
+
+  useScrollLock(isOpen);
 
   useEffect(() => {
     setLocalToken(accessToken);
@@ -441,6 +461,10 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       hierarchySearchQuery: '',
       selectedItemIds: new Set<string>(),
       randomCountInput: 34,
+      onlyItemsWithBalance: false,
+      insertCategorySpacers: false,
+      showSelectedItemsOnly: false,
+      itemSortBy: 'itemCode',
     };
   };
 
@@ -456,7 +480,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
 
   // Support Ctrl + P keyboard shortcut to open Countsheet Print Preview
   useEffect(() => {
-    if (!isOpen || currentStep !== 'FILTER_ITEMS') return;
+    if (!isOpen || isStandby || currentStep !== 'FILTER_ITEMS') return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
         e.preventDefault();
@@ -481,18 +505,12 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   const [isRefreshingTemplate, setIsRefreshingTemplate] = useState<boolean>(false);
   const [showTemplateSettings, setShowTemplateSettings] = useState(false);
   const [targetSpreadsheetTitle, setTargetSpreadsheetTitle] = useState<string>('');
-  // Transfer with balance tickmark:
-  // "Insert a tickamark where if checked then it will only transfer items with balance from the IATD, all items with zero balances are not incuded in transfer to Template. and if the tickmark is not on then it includes all zero items from the IATD."
-  const [onlyItemsWithBalance, setOnlyItemsWithBalance] = useState<boolean>(false);
-  const [insertCategorySpacers, setInsertCategorySpacers] = useState<boolean>(false);
-  const [showSelectedItemsOnly, setShowSelectedItemsOnly] = useState<boolean>(false);
-  const [itemSortBy, setItemSortBy] = useState<'itemCode' | 'itemDescription'>('itemCode');
   const [showSortDropdown, setShowSortDropdown] = useState<boolean>(false);
 
   const compareItemsBySortMode = (
     a: ParsedIatdRow,
     b: ParsedIatdRow,
-    mode: 'itemCode' | 'itemDescription' = itemSortBy
+    mode: 'itemCode' | 'itemDescription' = 'itemCode'
   ): number => {
     if (mode === 'itemDescription') {
       const descA = (a.itemDescription || '').trim();
@@ -537,8 +555,8 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   // within each category block; otherwise all selected items are sorted strictly A–Z.
   const groupItemsByHierarchyOrder = (
     items: ParsedIatdRow[],
-    mode: 'itemCode' | 'itemDescription' = itemSortBy,
-    groupByCategory: boolean = insertCategorySpacers
+    mode: 'itemCode' | 'itemDescription' = 'itemCode',
+    groupByCategory: boolean = false
   ): ParsedIatdRow[] => {
     if (items.length <= 1) return [...items];
     if (!groupByCategory) {
@@ -589,12 +607,14 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   const [activeSessionSpreadsheetId, setActiveSessionSpreadsheetId] = useState<string | null>(null);
   const [activeSessionWebViewLink, setActiveSessionWebViewLink] = useState<string | null>(null);
   const [savedToastMessage, setSavedToastMessage] = useState<string | null>(null);
+  const [isEditingRecent, setIsEditingRecent] = useState<boolean>(false);
 
   // Restore and resume editing / reusing from a recent countsheet session
   const handleRestoreRecentSession = async (session: RecentCountsheetSession, asCopy = false) => {
     setIsLoadingRecentSession(true);
     setIatdError(null);
     setLastAttemptedSession(session);
+    setIsEditingRecent(!asCopy);
     try {
       setActiveSessionId(asCopy ? null : session.id);
       const isRealDriveSheet =
@@ -608,33 +628,10 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       setActiveSessionWebViewLink(isRealDriveSheet ? session.webViewLink || null : null);
 
       if (session.templateUrl) setTemplateUrl(session.templateUrl);
-      if (session.onlyItemsWithBalance !== undefined) setOnlyItemsWithBalance(session.onlyItemsWithBalance);
-      if (session.insertCategorySpacers !== undefined) setInsertCategorySpacers(session.insertCategorySpacers);
       if (session.headerRow) setHeaderRow(session.headerRow);
       if (session.spreadsheetName) {
         setTargetSpreadsheetTitle(
           asCopy ? `${session.spreadsheetName} (Copy)` : session.spreadsheetName
-        );
-      }
-
-      let loadedItems: ParsedIatdRow[] = [];
-      const srcId = session.sourceFile?.id || '';
-      const isLocalOrDraftSource =
-        !srcId ||
-        srcId === 'saved-session' ||
-        srcId === 'imported-countsheet' ||
-        srcId === session.spreadsheetId ||
-        srcId.startsWith('draft_') ||
-        srcId.startsWith('cs_');
-
-      if (!isLocalOrDraftSource && session.sourceFile) {
-        loadedItems = await handleSelectIatdSpreadsheet(
-          {
-            id: srcId,
-            name: session.sourceFile.name || 'IATD',
-          },
-          session.sourceFile.tabName,
-          session.headerRow || headerRow
         );
       }
 
@@ -664,83 +661,138 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
         return mergedList;
       };
 
-      // Fallback: if IATD rows could not be fetched remotely, hydrate from existing allItems + saved orderedItems snapshot
-      if (loadedItems.length === 0) {
-        const rawSnapshotItems: PreGeneratedCountsheetItem[] =
-          session.rawItems && session.rawItems.length > 0
-            ? session.rawItems
-            : session.orderedCountsheetItems && session.orderedCountsheetItems.length > 0
-            ? session.orderedCountsheetItems
-            : (session.savedGroups || []).flatMap((sg) => sg.orderedItems || []);
-        const snapshotItems = mergeContinuationSnapshotItems(rawSnapshotItems);
+      const isDraftOrLocalId = (idVal?: string) =>
+        !idVal ||
+        idVal === 'saved-session' ||
+        idVal === 'imported-countsheet' ||
+        idVal === session.spreadsheetId ||
+        idVal.startsWith('draft_') ||
+        idVal.startsWith('cs_');
 
-        const normalizeCodeKey = (val?: string) => String(val || '').trim().toLowerCase();
-        const stripLeadingZeros = (val?: string) =>
-          normalizeCodeKey(val).replace(/^0+(?=\d)/, '');
+      const groupOrderedSnapshot = (session.savedGroups || []).flatMap(
+        (sg) => sg.orderedItems || []
+      );
+      const rawSnapshotItems: PreGeneratedCountsheetItem[] =
+        session.orderedCountsheetItems && session.orderedCountsheetItems.length > 0
+          ? session.orderedCountsheetItems
+          : groupOrderedSnapshot.length > 0
+          ? groupOrderedSnapshot
+          : [];
+      const snapshotItems = mergeContinuationSnapshotItems(rawSnapshotItems);
+      const sessionRawPool =
+        session.rawItems && session.rawItems.length > 0
+          ? mergeContinuationSnapshotItems(session.rawItems)
+          : [];
 
-        if (allItems.length > 0) {
-          // Keep current IATD inventory items and append any template items whose Item Code is missing from IATD
-          const existingCodes = new Set<string>();
-          allItems.forEach((it) => {
-            if (it.itemCode) {
-              existingCodes.add(normalizeCodeKey(it.itemCode));
-              existingCodes.add(stripLeadingZeros(it.itemCode));
+      let loadedItems: ParsedIatdRow[] = [];
+      const srcId = session.sourceFile?.id || '';
+      const isLocalOrDraftSource = isDraftOrLocalId(srcId);
+
+      if (!isLocalOrDraftSource && session.sourceFile) {
+        loadedItems = await handleSelectIatdSpreadsheet(
+          {
+            id: srcId,
+            name: session.sourceFile.name || 'IATD',
+          },
+          session.sourceFile.tabName,
+          session.headerRow || headerRow,
+          true
+        );
+      } else if (allItems.length <= snapshotItems.length && sessionRawPool.length <= snapshotItems.length) {
+        // Try to resolve an IATD source spreadsheet from currently selected file, other recent sessions, or cached Drive IATD files
+        // so unselected items from the IATD inventory still appear in the list when editing
+        const fallbackSourceFromRecents = getRecentCountsheets().find(
+          (r) => r.sourceFile?.id && !isDraftOrLocalId(r.sourceFile.id)
+        )?.sourceFile;
+        const cachedCandidate =
+          driveFiles.find((f) => /iatd/i.test(f.name) && !isDraftOrLocalId(f.id)) ||
+          getCachedDriveFiles('', userEmail).find(
+            (f) => /iatd/i.test(f.name) && !isDraftOrLocalId(f.id)
+          );
+
+        const candidateSource =
+          selectedFile && !isDraftOrLocalId(selectedFile.id)
+            ? { id: selectedFile.id, name: selectedFile.name, tabName: selectedTab }
+            : fallbackSourceFromRecents
+            ? fallbackSourceFromRecents
+            : cachedCandidate
+            ? { id: cachedCandidate.id, name: cachedCandidate.name, tabName: undefined }
+            : null;
+
+        if (candidateSource) {
+          loadedItems = await handleSelectIatdSpreadsheet(
+            {
+              id: candidateSource.id,
+              name: candidateSource.name || 'IATD',
+            },
+            candidateSource.tabName,
+            session.headerRow || headerRow,
+            true
+          );
+        }
+      }
+
+      // Fallback & merge: ensure loadedItems contains the full pool of unselected + selected items
+      if (loadedItems.length === 0 && allItems.length > 0) {
+        loadedItems = [...allItems];
+      }
+
+      const mapPreGeneratedToRow = (it: PreGeneratedCountsheetItem, idx: number): ParsedIatdRow => ({
+        id: it.id || `snap_${idx}_${it.itemCode || it.barcode || idx}`,
+        rowIndex: it.rowIndex ?? idx,
+        itemCode: it.itemCode || '',
+        barcode: it.barcode || '',
+        itemDescription: it.itemDescription || `Item ${idx + 1}`,
+        category: it.category || '',
+        subCategory: it.subCategory || '',
+        subsubCategory: it.subsubCategory || '',
+        unit: it.unit || 'PCS',
+        balance: it.balance !== undefined ? it.balance : 0,
+        actual: it.actual ?? null,
+        cost: it.cost ?? 0,
+        selling: it.selling ?? 0,
+        raw: it.raw || [],
+      });
+
+      const loadedFromLiveIatd = loadedItems.length > 0;
+
+      if (sessionRawPool.length > 0) {
+        if (loadedItems.length === 0) {
+          loadedItems = sessionRawPool.map((it, idx) => mapPreGeneratedToRow(it, idx));
+        } else {
+          const existingCodes = new Set(
+            loadedItems
+              .map((i) => String(i.itemCode || i.barcode || '').trim().toLowerCase())
+              .filter(Boolean)
+          );
+          const existingIds = new Set(loadedItems.map((i) => i.id));
+          sessionRawPool.forEach((it, idx) => {
+            const rowObj = mapPreGeneratedToRow(it, loadedItems.length + idx);
+            const codeKey = String(rowObj.itemCode || rowObj.barcode || '').trim().toLowerCase();
+            if (!existingIds.has(rowObj.id) && (!codeKey || !existingCodes.has(codeKey))) {
+              existingIds.add(rowObj.id);
+              if (codeKey) existingCodes.add(codeKey);
+              loadedItems.push(rowObj);
             }
           });
-          const merged = [...allItems];
-          snapshotItems.forEach((it, idx) => {
-            const cKey = normalizeCodeKey(it.itemCode);
-            const cStripped = stripLeadingZeros(it.itemCode);
-            if (!cKey || (!existingCodes.has(cKey) && !existingCodes.has(cStripped))) {
-              const newRowIndex = merged.length;
-              merged.push({
-                id: it.id || `${it.itemCode || it.barcode || idx}_${newRowIndex}`,
-                rowIndex: newRowIndex,
-                itemCode: it.itemCode || '',
-                barcode: it.barcode || '',
-                itemDescription: it.itemDescription || `Item ${idx + 1}`,
-                category: it.category || '',
-                subCategory: it.subCategory || '',
-                subsubCategory: it.subsubCategory || '',
-                unit: it.unit || 'PCS',
-                balance: it.balance ?? 0,
-                cost: it.cost ?? 0,
-                selling: it.selling ?? 0,
-                raw: it.raw || [],
-              });
-              if (cKey) existingCodes.add(cKey);
-              if (cStripped) existingCodes.add(cStripped);
-            }
+        }
+      }
+
+      if (loadedItems.length === 0 && snapshotItems.length > 0) {
+        setIatdError(null);
+        loadedItems = snapshotItems.map((it, idx) => mapPreGeneratedToRow(it, idx));
+      }
+
+      if (loadedItems.length > 0) {
+        setIatdError(null);
+        if (session.iatdHeaders && session.iatdHeaders.length > 0 && rawHeaders.length === 0) {
+          setRawHeaders(session.iatdHeaders);
+        }
+        if (session.sourceFile && !selectedFile) {
+          setSelectedFile({
+            id: session.sourceFile.id || 'saved-session',
+            name: session.sourceFile.name || session.spreadsheetName || 'Saved Countsheet',
           });
-          loadedItems = merged;
-          setAllItems(loadedItems);
-        } else if (snapshotItems.length > 0) {
-          setIatdError(null);
-          loadedItems = snapshotItems.map((it, idx) => ({
-            id: it.id || `${it.itemCode || it.barcode || idx}_${it.rowIndex ?? idx}`,
-            rowIndex: it.rowIndex ?? idx,
-            itemCode: it.itemCode || '',
-            barcode: it.barcode || '',
-            itemDescription: it.itemDescription || `Item ${idx + 1}`,
-            category: it.category || '',
-            subCategory: it.subCategory || '',
-            subsubCategory: it.subsubCategory || '',
-            unit: it.unit || 'PCS',
-            balance: it.balance ?? 0,
-            cost: it.cost ?? 0,
-            selling: it.selling ?? 0,
-            raw: it.raw || [],
-          }));
-          setAllItems(loadedItems);
-          if (session.iatdHeaders && session.iatdHeaders.length > 0) {
-            setRawHeaders(session.iatdHeaders);
-          }
-          if (session.sourceFile) {
-            setSelectedFile({
-              id: session.sourceFile.id || 'saved-session',
-              name: session.sourceFile.name || session.spreadsheetName || 'Saved Countsheet',
-            });
-          }
         }
       }
 
@@ -748,65 +800,215 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       const stripZeroLookup = (val?: string) =>
         normalizeCodeLookup(val).replace(/^0+(?=\d)/, '');
 
-      const idLookup = new Set(loadedItems.map((i) => i.id));
+      const itemByIdMap = new Map<string, ParsedIatdRow>();
       const byRowIndex = new Map<number, string>();
-      const byCode = new Map<string, string>();
-      const byStrippedCode = new Map<string, string>();
-      loadedItems.forEach((i) => {
-        byRowIndex.set(i.rowIndex, i.id);
+      const byCodeList = new Map<string, string[]>();
+      const byStrippedCodeList = new Map<string, string[]>();
+
+      const pushMapList = (map: Map<string, string[]>, key: string, id: string) => {
+        if (!key) return;
+        const arr = map.get(key);
+        if (arr) {
+          if (!arr.includes(id)) arr.push(id);
+        } else {
+          map.set(key, [id]);
+        }
+      };
+
+      const indexLoadedItem = (i: ParsedIatdRow) => {
+        itemByIdMap.set(i.id, i);
+        if (!byRowIndex.has(i.rowIndex)) {
+          byRowIndex.set(i.rowIndex, i.id);
+        }
         if (i.itemCode) {
           const exact = normalizeCodeLookup(i.itemCode);
           const stripped = stripZeroLookup(i.itemCode);
-          if (!byCode.has(exact)) byCode.set(exact, i.id);
-          if (stripped && !byStrippedCode.has(stripped)) byStrippedCode.set(stripped, i.id);
+          pushMapList(byCodeList, exact, i.id);
+          pushMapList(byStrippedCodeList, stripped, i.id);
         }
         if (i.barcode) {
           const barExact = normalizeCodeLookup(i.barcode);
-          if (!byCode.has(barExact)) byCode.set(barExact, i.id);
+          const barStripped = stripZeroLookup(i.barcode);
+          pushMapList(byCodeList, barExact, i.id);
+          pushMapList(byStrippedCodeList, barStripped, i.id);
         }
-      });
+      };
 
-      const findIdByItemCode = (rawCode?: string): string | undefined => {
+      loadedItems.forEach(indexLoadedItem);
+
+      const findUnusedIdByCode = (rawCode: string | undefined, usedSet: Set<string>): string | undefined => {
         const clean = normalizeCodeLookup(rawCode);
         if (!clean) return undefined;
-        if (byCode.has(clean)) return byCode.get(clean);
+        const exactCandidates = byCodeList.get(clean) || [];
+        for (const candId of exactCandidates) {
+          if (!usedSet.has(candId)) return candId;
+        }
         const stripped = stripZeroLookup(rawCode);
-        if (stripped && byStrippedCode.has(stripped)) return byStrippedCode.get(stripped);
+        if (stripped) {
+          const strippedCandidates = byStrippedCodeList.get(stripped) || [];
+          for (const candId of strippedCandidates) {
+            if (!usedSet.has(candId)) return candId;
+          }
+        }
         return undefined;
       };
 
       if (session.savedGroups && session.savedGroups.length > 0) {
+        // Expand any multi-CS saved group (whose orderedItems contain multiple distinct CSxx codes)
+        // so that each countsheet (CS01, CS02, ...) is restored 1-to-1 with its exact items.
+        const expandedSavedGroups: SavedCountsheetGroupState[] = [];
+        session.savedGroups.forEach((sg) => {
+          if (sg.orderedItems && sg.orderedItems.length > 0) {
+            const cleanedItems = mergeContinuationSnapshotItems(sg.orderedItems);
+            const byCs = new Map<string, PreGeneratedCountsheetItem[]>();
+            cleanedItems.forEach((it) => {
+              const csMatch = String(it.csCode || '').trim().match(/^CS0*(\d+)$/i);
+              const csKey = csMatch
+                ? `CS${String(parseInt(csMatch[1], 10)).padStart(2, '0')}`
+                : 'DEFAULT';
+              if (!byCs.has(csKey)) byCs.set(csKey, []);
+              byCs.get(csKey)!.push(it);
+            });
+            if (byCs.size > 1 && !byCs.has('DEFAULT')) {
+              let pageIdx = 0;
+              byCs.forEach((pageItems, csKey) => {
+                const pageTitle = pageItems[0]?.sheetTitle || sg.baseSheetName || csKey;
+                expandedSavedGroups.push({
+                  ...sg,
+                  id: pageIdx === 0 ? sg.id : `${sg.id}_${csKey}`,
+                  name: csKey,
+                  baseSheetName: pageTitle,
+                  csUsed: 1,
+                  orderedItems: pageItems,
+                  selectedItemIds: pageItems.map((it) => it.id),
+                  selectedItemCodes: pageItems.map((it) => it.itemCode).filter(Boolean),
+                  selectedBarcodes: pageItems.map((it) => it.barcode).filter(Boolean),
+                });
+                pageIdx++;
+              });
+              return;
+            }
+          }
+          expandedSavedGroups.push(sg);
+        });
+
         let runningCs = 1;
-        const restoredGroups: SelectionGroup[] = session.savedGroups.map((sg, idx) => {
+        const restoredGroups: SelectionGroup[] = expandedSavedGroups.map((sg, idx) => {
           const resolvedIds: string[] = [];
+          const usedInGroup = new Set<string>();
           const addId = (id?: string) => {
-            if (id && !resolvedIds.includes(id)) resolvedIds.push(id);
+            if (id && !usedInGroup.has(id)) {
+              usedInGroup.add(id);
+              resolvedIds.push(id);
+            }
           };
 
-          // Priority 1: Rebuild the list of items per sheet using the Item Code from the template
-          if (sg.orderedItems && sg.orderedItems.length > 0) {
-            sg.orderedItems.forEach((oi) => {
-              const matchedByCode = findIdByItemCode(oi.itemCode) || findIdByItemCode(oi.barcode);
-              if (matchedByCode) {
-                addId(matchedByCode);
-              } else if (oi.id && idLookup.has(oi.id)) {
-                addId(oi.id);
-              } else if (!isLocalOrDraftSource && oi.rowIndex !== undefined && byRowIndex.has(oi.rowIndex)) {
-                addId(byRowIndex.get(oi.rowIndex));
+          const cleanedGroupOrdered =
+            sg.orderedItems && sg.orderedItems.length > 0
+              ? mergeContinuationSnapshotItems(sg.orderedItems)
+              : [];
+
+          // Priority 1: Rebuild the exact list of items per countsheet from sg.orderedItems
+          if (cleanedGroupOrdered.length > 0) {
+            cleanedGroupOrdered.forEach((oi, oiIdx) => {
+              let matchedId: string | undefined;
+
+              // 1a. Try matching by exact itemCode or barcode among unused items in loadedItems
+              matchedId =
+                findUnusedIdByCode(oi.itemCode, usedInGroup) ||
+                findUnusedIdByCode(oi.barcode, usedInGroup);
+
+              // 1b. Try matching by exact id if code also matches
+              if (!matchedId && oi.id && itemByIdMap.has(oi.id) && !usedInGroup.has(oi.id)) {
+                const cand = itemByIdMap.get(oi.id)!;
+                const oiCode = stripZeroLookup(oi.itemCode || oi.barcode);
+                const candCode = stripZeroLookup(cand.itemCode || cand.barcode);
+                if (!oiCode || oiCode === candCode) {
+                  matchedId = oi.id;
+                }
+              }
+
+              const snapMatch =
+                snapshotItems.find((s) => s.id && s.id === oi.id) ||
+                snapshotItems.find(
+                  (s) =>
+                    stripZeroLookup(s.itemCode || s.barcode) &&
+                    stripZeroLookup(s.itemCode || s.barcode) ===
+                      stripZeroLookup(oi.itemCode || oi.barcode) &&
+                    (!s.csCode || !oi.csCode || s.csCode === oi.csCode)
+                );
+              const resolvedBalance =
+                snapMatch && snapMatch.balance !== undefined
+                  ? snapMatch.balance
+                  : oi.balance !== undefined
+                  ? oi.balance
+                  : undefined;
+              const resolvedActual =
+                snapMatch && snapMatch.actual !== undefined && snapMatch.actual !== null
+                  ? snapMatch.actual
+                  : oi.actual !== undefined
+                  ? oi.actual
+                  : null;
+
+              if (matchedId && itemByIdMap.has(matchedId)) {
+                const existing = itemByIdMap.get(matchedId)!;
+                // Keep live IATD cost/selling/balance when loaded from a live IATD spreadsheet; fill missing fields and restore actual qty
+                if (!existing.itemCode && oi.itemCode) existing.itemCode = oi.itemCode;
+                if (!existing.barcode && oi.barcode) existing.barcode = oi.barcode;
+                if (!existing.itemDescription && oi.itemDescription) existing.itemDescription = oi.itemDescription;
+                if (!existing.category && oi.category) existing.category = oi.category;
+                if (!existing.subCategory && oi.subCategory) existing.subCategory = oi.subCategory;
+                if (!existing.subsubCategory && oi.subsubCategory) existing.subsubCategory = oi.subsubCategory;
+                if (!existing.unit && oi.unit) existing.unit = oi.unit;
+                if (!loadedFromLiveIatd) {
+                  if (oi.cost !== undefined && oi.cost !== null) existing.cost = oi.cost;
+                  if (oi.selling !== undefined && oi.selling !== null) existing.selling = oi.selling;
+                  if (resolvedBalance !== undefined) existing.balance = resolvedBalance;
+                } else if (resolvedBalance === null) {
+                  existing.balance = null;
+                }
+                if (resolvedActual !== undefined) existing.actual = resolvedActual;
+                addId(matchedId);
+              } else {
+                // Append missing or duplicate-code item directly to loadedItems so zero items are ever dropped
+                const newRowIndex = loadedItems.length;
+                const uniqueId =
+                  oi.id && !itemByIdMap.has(oi.id)
+                    ? oi.id
+                    : `cs_restored_${idx}_${oiIdx}_${newRowIndex}_${Date.now()}`;
+                const createdRow: ParsedIatdRow = {
+                  id: uniqueId,
+                  rowIndex: newRowIndex,
+                  itemCode: oi.itemCode || '',
+                  barcode: oi.barcode || '',
+                  itemDescription: oi.itemDescription || `Item ${oiIdx + 1}`,
+                  category: oi.category || '',
+                  subCategory: oi.subCategory || '',
+                  subsubCategory: oi.subsubCategory || '',
+                  unit: oi.unit || 'PCS',
+                  balance: resolvedBalance !== undefined ? resolvedBalance : 0,
+                  actual: resolvedActual ?? null,
+                  cost: oi.cost ?? 0,
+                  selling: oi.selling ?? 0,
+                  raw: oi.raw || [],
+                };
+                loadedItems.push(createdRow);
+                indexLoadedItem(createdRow);
+                addId(uniqueId);
               }
             });
           }
 
           if (resolvedIds.length === 0 && sg.selectedItemCodes && sg.selectedItemCodes.length > 0) {
             sg.selectedItemCodes.forEach((c) => {
-              const matchedByCode = findIdByItemCode(c);
+              const matchedByCode = findUnusedIdByCode(c, usedInGroup);
               if (matchedByCode) addId(matchedByCode);
             });
           }
 
           if (resolvedIds.length === 0 && sg.selectedItemIds && sg.selectedItemIds.length > 0) {
             sg.selectedItemIds.forEach((rawId) => {
-              if (idLookup.has(rawId)) {
+              if (itemByIdMap.has(rawId)) {
                 addId(rawId);
               }
             });
@@ -820,13 +1022,55 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
 
           const finalIds = resolvedIds.length > 0 ? resolvedIds : sg.selectedItemIds || [];
           const resolvedItemsForGroup = finalIds
-            .map((fid) => loadedItems.find((li) => li.id === fid))
+            .map((fid) => itemByIdMap.get(fid))
             .filter(Boolean) as ParsedIatdRow[];
+
+          const hasZeroBalanceItem = resolvedItemsForGroup.some(
+            (ri) => ri.balance === 0 || ri.balance === null || ri.balance === undefined
+          );
+          const grpOnlyItemsWithBalance = hasZeroBalanceItem
+            ? false
+            : sg.onlyItemsWithBalance !== undefined
+            ? sg.onlyItemsWithBalance
+            : Boolean(session.onlyItemsWithBalance);
+
+          let grpInsertCategorySpacers =
+            sg.insertCategorySpacers !== undefined
+              ? sg.insertCategorySpacers
+              : Boolean(session.insertCategorySpacers);
+
+          const targetCsUsed = sg.csUsed && sg.csUsed > 0 ? sg.csUsed : 1;
+          if (grpInsertCategorySpacers) {
+            const packedWithSpacers = packItemsInto34RowSheets(
+              resolvedItemsForGroup,
+              COUNTSHEET_MAX_ROWS_PER_SHEET,
+              COUNTSHEET_DESC_MAX_CHARS,
+              true
+            );
+            const packedWithoutSpacers = packItemsInto34RowSheets(
+              resolvedItemsForGroup,
+              COUNTSHEET_MAX_ROWS_PER_SHEET,
+              COUNTSHEET_DESC_MAX_CHARS,
+              false
+            );
+            if (
+              packedWithSpacers.length > targetCsUsed &&
+              packedWithoutSpacers.length <= targetCsUsed
+            ) {
+              grpInsertCategorySpacers = false;
+            }
+          }
+
+          // Always show unselected items below the selected items (at the top) when editing a countsheet
+          const grpShowSelectedItemsOnly = false;
+          const grpItemSortBy: 'itemCode' | 'itemDescription' =
+            sg.itemSortBy === 'itemDescription' ? 'itemDescription' : 'itemCode';
+
           const packedForGroup = packItemsInto34RowSheets(
             resolvedItemsForGroup,
             COUNTSHEET_MAX_ROWS_PER_SHEET,
             COUNTSHEET_DESC_MAX_CHARS,
-            session.insertCategorySpacers ?? insertCategorySpacers
+            grpInsertCategorySpacers
           );
           const csUsed = Math.max(1, packedForGroup.length);
           const csLabel = formatCsCode(runningCs);
@@ -834,24 +1078,66 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
           const savedBase = sg.baseSheetName && !isDefaultGroupOrCsName(sg.baseSheetName)
             ? sg.baseSheetName
             : csLabel;
-          const restoredCats =
+          let restoredCats =
             sg.selectedCats && sg.selectedCats.length > 0
               ? sg.selectedCats
               : sg.selectedCat
               ? [sg.selectedCat]
               : [];
-          const restoredSubCats =
+          let restoredSubCats =
             sg.selectedSubCats && sg.selectedSubCats.length > 0
               ? sg.selectedSubCats
               : sg.selectedSubCat
               ? [sg.selectedSubCat]
               : [];
-          const restoredSubSubCats =
+          let restoredSubSubCats =
             sg.selectedSubSubCats && sg.selectedSubSubCats.length > 0
               ? sg.selectedSubSubCats
               : sg.selectedSubSubCat
               ? [sg.selectedSubSubCat]
               : [];
+
+          // If the saved category/subcategory/subsubcategory filters would leave 0 unselected items in the list
+          // (for example, if all items in that narrow sub-filter are already selected), relax the filter so unselected items appear below the selected items
+          const finalIdSet = new Set(finalIds);
+          const unselectedPool = loadedItems.filter((it) => !finalIdSet.has(it.id));
+          if (unselectedPool.length > 0) {
+            const countMatchingUnselected = (
+              cats: string[],
+              subCats: string[],
+              subSubCats: string[]
+            ) =>
+              unselectedPool.filter(
+                (it) =>
+                  matchesCategoryList(it.category, cats) &&
+                  matchesSubLevelList(it.subCategory, subCats) &&
+                  matchesSubLevelList(it.subsubCategory, subSubCats)
+              ).length;
+
+            if (
+              restoredSubSubCats.length > 0 &&
+              countMatchingUnselected(restoredCats, restoredSubCats, restoredSubSubCats) === 0
+            ) {
+              restoredSubSubCats = [];
+            }
+            if (
+              restoredSubCats.length > 0 &&
+              countMatchingUnselected(restoredCats, restoredSubCats, restoredSubSubCats) === 0
+            ) {
+              restoredSubCats = [];
+            }
+            if (
+              restoredCats.length > 0 &&
+              countMatchingUnselected(restoredCats, restoredSubCats, restoredSubSubCats) === 0
+            ) {
+              restoredCats = [];
+            }
+          }
+
+          const restoredHeaderBtn: HeaderButtonType =
+            sg.activeHeaderButton && sg.activeHeaderButton !== 'itemDescription'
+              ? sg.activeHeaderButton
+              : 'cat';
           return {
             id: sg.id || `grp-${idx + 1}`,
             name: csLabel,
@@ -863,15 +1149,22 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
             selectedSubCats: restoredSubCats,
             selectedSubSubCats: restoredSubSubCats,
             lastSelectedHierarchy: sg.lastSelectedHierarchy || '',
-            activeHeaderButton: 'itemDescription' as HeaderButtonType,
+            activeHeaderButton: restoredHeaderBtn,
             itemSearchQuery: '',
-            hierarchySearchQuery: sg.hierarchySearchQuery || '',
+            hierarchySearchQuery: '',
             selectedItemIds: new Set(finalIds),
-            randomCountInput: sg.randomCountInput || 34,
+            randomCountInput: sg.randomCountInput || finalIds.length || 34,
+            onlyItemsWithBalance: grpOnlyItemsWithBalance,
+            insertCategorySpacers: grpInsertCategorySpacers,
+            showSelectedItemsOnly: grpShowSelectedItemsOnly,
+            itemSortBy: grpItemSortBy,
           };
         });
+        setAllItems([...loadedItems]);
         setGroups(restoredGroups);
         setActiveGroupId(restoredGroups[0]?.id || 'grp-1');
+      } else {
+        setAllItems([...loadedItems]);
       }
 
       setCurrentStep('FILTER_ITEMS');
@@ -1051,7 +1344,8 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
               groupId: g.id,
               groupName: g.name,
               baseSheetName: g.baseSheetName || g.lastSelectedHierarchy || g.name,
-              items: getOrderedGroupItems(g, onlyItemsWithBalance),
+              items: getOrderedGroupItems(g),
+              insertCategorySpacers: g.insertCategorySpacers,
             }))
             .filter((g) => g.items.length > 0);
           if (groupPlans.length > 0) {
@@ -1061,7 +1355,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
               existingSpreadsheetId: linkedSheetId,
               targetSpreadsheetTitle:
                 targetSpreadsheetTitle || `Audit Countsheets - ${selectedFile?.name || 'IATD'}`,
-              insertCategorySpacers,
+              insertCategorySpacers: groups.some((g) => g.insertCategorySpacers),
               groups: groupPlans,
             });
             if (refreshedSheet) {
@@ -1102,22 +1396,34 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
-      setCurrentStep('SELECT_FILE');
-      setIatdError(null);
-      setSaveError(null);
-      setSavedResult(null);
-      setActiveSessionId(null);
-      setActiveSessionSpreadsheetId(null);
-      setActiveSessionWebViewLink(null);
-      setEditingBaseSheetName(false);
-      setOnlyItemsWithBalance(false);
-      setInsertCategorySpacers(false);
-      const initial = [createInitialGroup(1)];
-      setGroups(initial);
-      setActiveGroupId(initial[0].id);
-      setRecentCountsheets(getRecentCountsheets());
-      handleSyncCloudRecents();
-      handleRefreshTemplate(false);
+      if (initialSession) {
+        setIatdError(null);
+        setSaveError(null);
+        setSavedResult(null);
+        setEditingBaseSheetName(false);
+        setShowSortDropdown(false);
+        setRecentCountsheets(getRecentCountsheets());
+        handleSyncCloudRecents();
+        handleRefreshTemplate(false);
+        void handleRestoreRecentSession(initialSession, false);
+      } else {
+        setCurrentStep('SELECT_FILE');
+        setIatdError(null);
+        setSaveError(null);
+        setSavedResult(null);
+        setActiveSessionId(null);
+        setActiveSessionSpreadsheetId(null);
+        setActiveSessionWebViewLink(null);
+        setIsEditingRecent(false);
+        setEditingBaseSheetName(false);
+        setShowSortDropdown(false);
+        const initial = [createInitialGroup(1)];
+        setGroups(initial);
+        setActiveGroupId(initial[0].id);
+        setRecentCountsheets(getRecentCountsheets());
+        handleSyncCloudRecents();
+        handleRefreshTemplate(false);
+      }
 
       // Fetch drive files (immediately show cached files, then refresh from Drive)
       const cached = getCachedDriveFiles(driveQuery, userEmail);
@@ -1152,6 +1458,102 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       document.body.style.overflow = '';
     };
   }, [isOpen, effectiveToken, userEmail]);
+
+  // Sync updated IATD catalog, Cost, Selling, Balance & Actual Qty back into allItems when initialSession is updated from Export to Encoding (Update IATD / Save Edits / Back)
+  useEffect(() => {
+    if (!isOpen || !initialSession) return;
+    if (
+      initialSession.sourceFile?.id &&
+      (!selectedFile || selectedFile.id !== initialSession.sourceFile.id)
+    ) {
+      setSelectedFile({
+        id: initialSession.sourceFile.id,
+        name: initialSession.sourceFile.name || initialSession.spreadsheetName || 'IATD',
+      });
+      if (initialSession.sourceFile.tabName) {
+        setSelectedTab(initialSession.sourceFile.tabName);
+      }
+    }
+    if (initialSession.iatdHeaders && initialSession.iatdHeaders.length > 0) {
+      setRawHeaders(initialSession.iatdHeaders);
+    }
+
+    setAllItems((prev) => {
+      const byId = new Map<string, PreGeneratedCountsheetItem>();
+      const byCode = new Map<string, PreGeneratedCountsheetItem>();
+      (initialSession.orderedCountsheetItems || []).forEach((it) => {
+        if (it.id) byId.set(it.id, it);
+        const c = String(it.itemCode || it.barcode || '').trim().toLowerCase();
+        if (c && !byCode.has(c)) byCode.set(c, it);
+      });
+
+      // If Export to Encoding updated the IATD catalog (rawItems), rebuild allItems from the updated catalog + any selected items
+      if (initialSession.rawItems && initialSession.rawItems.length > 0) {
+        const rebuilt: ParsedIatdRow[] = initialSession.rawItems.map((r, idx) => {
+          const c = String(r.itemCode || r.barcode || '').trim().toLowerCase();
+          const selMatch = (r.id && byId.get(r.id)) || (c ? byCode.get(c) : undefined);
+          return {
+            id: selMatch?.id || r.id || `item_${idx}`,
+            rowIndex: r.rowIndex ?? idx,
+            itemCode: r.itemCode || '',
+            barcode: r.barcode || '',
+            itemDescription: r.itemDescription || '',
+            category: r.category || '',
+            subCategory: r.subCategory || '',
+            subsubCategory: r.subsubCategory || '',
+            unit: r.unit || 'PCS',
+            cost: selMatch?.cost !== undefined ? selMatch.cost : r.cost ?? 0,
+            selling: selMatch?.selling !== undefined ? selMatch.selling : r.selling ?? 0,
+            balance: selMatch && selMatch.balance !== undefined ? selMatch.balance : r.balance ?? 0,
+            actual: selMatch && selMatch.actual !== undefined ? selMatch.actual : r.actual ?? null,
+            raw: r.raw || [],
+          };
+        });
+        const existingIds = new Set(rebuilt.map((i) => i.id));
+        const existingCodes = new Set(
+          rebuilt.map((i) => String(i.itemCode || i.barcode || '').trim().toLowerCase()).filter(Boolean)
+        );
+        (initialSession.orderedCountsheetItems || []).forEach((it, idx) => {
+          const c = String(it.itemCode || it.barcode || '').trim().toLowerCase();
+          if (!existingIds.has(it.id) && (!c || !existingCodes.has(c))) {
+            existingIds.add(it.id);
+            if (c) existingCodes.add(c);
+            rebuilt.push({
+              id: it.id || `sel_${idx}`,
+              rowIndex: rebuilt.length,
+              itemCode: it.itemCode || '',
+              barcode: it.barcode || '',
+              itemDescription: it.itemDescription || '',
+              category: it.category || '',
+              subCategory: it.subCategory || '',
+              subsubCategory: it.subsubCategory || '',
+              unit: it.unit || 'PCS',
+              cost: it.cost ?? 0,
+              selling: it.selling ?? 0,
+              balance: it.balance !== undefined ? it.balance : 0,
+              actual: it.actual ?? null,
+              raw: it.raw || [],
+            });
+          }
+        });
+        return rebuilt;
+      }
+
+      if (prev.length === 0 || !initialSession.orderedCountsheetItems?.length) return prev;
+      return prev.map((row) => {
+        const c = String(row.itemCode || row.barcode || '').trim().toLowerCase();
+        const match = byId.get(row.id) || (c ? byCode.get(c) : undefined);
+        if (!match) return row;
+        return {
+          ...row,
+          cost: match.cost !== undefined ? match.cost : row.cost,
+          selling: match.selling !== undefined ? match.selling : row.selling,
+          balance: match.balance !== undefined ? match.balance : row.balance,
+          actual: match.actual !== undefined ? match.actual : row.actual ?? null,
+        };
+      });
+    });
+  }, [isOpen, initialSession]);
 
   // Search drive spreadsheets when query changes
   useEffect(() => {
@@ -1225,8 +1627,21 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
           const found = itemById.get(id);
           if (found) rawOrdered.push(found);
         });
-        const ordered = groupItemsByHierarchyOrder(rawOrdered, itemSortBy, insertCategorySpacers);
-        const validItems = onlyItemsWithBalance
+        const ordered = grp.insertCategorySpacers
+          ? (() => {
+              const buckets = new Map<string, ParsedIatdRow[]>();
+              for (const item of rawOrdered) {
+                const key = getNormalizedItemHierarchyKey(item);
+                const bucket = buckets.get(key);
+                if (bucket) bucket.push(item);
+                else buckets.set(key, [item]);
+              }
+              const res: ParsedIatdRow[] = [];
+              buckets.forEach((b) => res.push(...b));
+              return res;
+            })()
+          : rawOrdered;
+        const validItems = grp.onlyItemsWithBalance
           ? ordered.filter(
               (item) => item.balance !== 0 && item.balance !== undefined && item.balance !== null
             )
@@ -1236,7 +1651,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
           validItems,
           CHUNK_SIZE,
           COUNTSHEET_DESC_MAX_CHARS,
-          insertCategorySpacers
+          grp.insertCategorySpacers
         );
         physicalRowCount = packed.reduce((sum, p) => sum + p.rowsUsed, 0);
         csUsed = Math.max(1, packed.length);
@@ -1263,7 +1678,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       nextAvailableCsNumber: nextCsNumber,
       nextAvailableCsName: formatCsCode(nextCsNumber),
     };
-  }, [groups, allItems, onlyItemsWithBalance, insertCategorySpacers, itemSortBy]);
+  }, [groups, allItems]);
 
   // Keep each group's name (and default baseSheetName when no category is chosen) synced to its dynamic CS number
   useEffect(() => {
@@ -1294,6 +1709,11 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   const activeGroup = useMemo(() => {
     return groups.find((g) => g.id === activeGroupId) || groups[0];
   }, [groups, activeGroupId]);
+
+  const onlyItemsWithBalance = activeGroup.onlyItemsWithBalance;
+  const insertCategorySpacers = activeGroup.insertCategorySpacers;
+  const showSelectedItemsOnly = activeGroup.showSelectedItemsOnly;
+  const itemSortBy = activeGroup.itemSortBy;
 
   const activeGroupMeta = useMemo(() => {
     const meta = groupCsMeta.byGroupId.get(activeGroup.id);
@@ -1346,14 +1766,30 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
   const handleSelectIatdSpreadsheet = async (
     file: DriveSpreadsheetFile,
     preferredTab?: string,
-    customHeaderRow?: number
+    customHeaderRow?: number,
+    preserveEditingRecent: boolean = false
   ) => {
     setIsLoadingIatd(true);
     setIatdError(null);
     setSelectedFile(file);
+    const shouldKeepActiveSession =
+      preserveEditingRecent ||
+      isEditingRecent ||
+      Boolean(activeSessionId) ||
+      groups.some((g) => g.selectedItemIds.size > 0);
+    if (!shouldKeepActiveSession) {
+      setIsEditingRecent(false);
+      setSavedResult(null);
+      setActiveSessionId(null);
+      setActiveSessionSpreadsheetId(null);
+      setActiveSessionWebViewLink(null);
+    }
 
     try {
-      const tokenToUse = (await resolveValidOAuthToken(effectiveToken, { allowPopup: true })) || effectiveToken || '';
+      const tokenToUse =
+        (await resolveValidOAuthToken(effectiveToken, { allowPopup: !preserveEditingRecent })) ||
+        effectiveToken ||
+        '';
       let activeFile = file;
       const isExcelOrCsv =
         (file.mimeType && file.mimeType !== 'application/vnd.google-apps.spreadsheet') ||
@@ -1469,18 +1905,27 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
         balanceCol
       );
 
-      // If groups already have selected items (e.g., from an imported Countsheet template),
-      // re-link their selectedItemIds to the newly loaded IATD items using Item Code!
+      // If groups already have selected items (e.g., from an imported Countsheet template or when changing IATD),
+      // re-link their selectedItemIds to the newly loaded IATD items using Item Code / Barcode / Description,
+      // preserve any entered Actual Qty, and retain any previously selected items not found in the new IATD!
       if (allItems.length > 0 && groups.some((g) => g.selectedItemIds.size > 0)) {
         const oldItemById = new Map<string, ParsedIatdRow>();
         allItems.forEach((it) => oldItemById.set(it.id, it));
 
         const normCode = (v?: string) => String(v || '').trim().toLowerCase();
         const stripZero = (v?: string) => normCode(v).replace(/^0+(?=\d)/, '');
+        const normDesc = (v?: string) =>
+          String(v || '')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, ' ');
 
+        const newItemById = new Map<string, ParsedIatdRow>();
         const newByCode = new Map<string, string>();
         const newByStripped = new Map<string, string>();
+        const newByDesc = new Map<string, string>();
         parsedItems.forEach((it) => {
+          newItemById.set(it.id, it);
           if (it.itemCode) {
             const c = normCode(it.itemCode);
             const s = stripZero(it.itemCode);
@@ -1489,7 +1934,13 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
           }
           if (it.barcode) {
             const b = normCode(it.barcode);
+            const bs = stripZero(it.barcode);
             if (!newByCode.has(b)) newByCode.set(b, it.id);
+            if (bs && !newByStripped.has(bs)) newByStripped.set(bs, it.id);
+          }
+          if (it.itemDescription) {
+            const d = normDesc(it.itemDescription);
+            if (d && !newByDesc.has(d)) newByDesc.set(d, it.id);
           }
         });
 
@@ -1502,10 +1953,37 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
               const rawCode = oldItem?.itemCode || oldItem?.barcode || '';
               const c = normCode(rawCode);
               const s = stripZero(rawCode);
-              const matchedId =
+              const d = normDesc(oldItem?.itemDescription);
+              let matchedId =
                 (c && newByCode.get(c)) ||
                 (s && newByStripped.get(s)) ||
-                (parsedItems.some((p) => p.id === oldId) ? oldId : undefined);
+                (d && newByDesc.get(d));
+
+              if (matchedId && newItemById.has(matchedId)) {
+                const matchedNewItem = newItemById.get(matchedId)!;
+                if (oldItem?.actual !== undefined && oldItem?.actual !== null) {
+                  matchedNewItem.actual = oldItem.actual;
+                }
+                if (oldItem?.balance === null) {
+                  matchedNewItem.balance = null;
+                }
+              } else if (oldItem) {
+                // Keep previously selected item even if absent in the new IATD so zero selected items are dropped
+                const carryId = !newItemById.has(oldItem.id)
+                  ? oldItem.id
+                  : `retained_${parsedItems.length}_${oldItem.id}`;
+                const carriedItem: ParsedIatdRow = {
+                  ...oldItem,
+                  id: carryId,
+                  rowIndex: parsedItems.length,
+                };
+                parsedItems.push(carriedItem);
+                newItemById.set(carryId, carriedItem);
+                if (c && !newByCode.has(c)) newByCode.set(c, carryId);
+                if (s && !newByStripped.has(s)) newByStripped.set(s, carryId);
+                matchedId = carryId;
+              }
+
               if (matchedId && !remappedIds.includes(matchedId)) {
                 remappedIds.push(matchedId);
               }
@@ -1519,20 +1997,24 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
 
       setAllItems(parsedItems);
 
-      // Set target spreadsheet name default
-      const dateStr = new Date().toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
-      setTargetSpreadsheetTitle(`Audit Countsheets - ${file.name || 'IATD'} (${dateStr})`);
+      // Set target spreadsheet name default when selecting a fresh or updated IATD file
+      if (!preserveEditingRecent) {
+        const dateStr = new Date().toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        });
+        setTargetSpreadsheetTitle(`Audit Countsheets - ${activeFile.name || file.name || 'IATD'} (${dateStr})`);
+      }
 
       setCurrentStep('FILTER_ITEMS');
       return parsedItems;
     } catch (err: any) {
-      console.error('Failed to load IATD:', err);
+      console.warn('Could not load IATD:', err);
       setDriveFiles(getCachedDriveFiles(driveQuery));
-      setIatdError(err.message || 'Could not load IATD spreadsheet. Check access permissions.');
+      if (!preserveEditingRecent) {
+        setIatdError(err.message || 'Could not load IATD spreadsheet. Check access permissions.');
+      }
       return [];
     } finally {
       setIsLoadingIatd(false);
@@ -1784,24 +2266,32 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       });
   }, [allItems, activeSelectedCats, activeSelectedSubCats, activeGroup.hierarchySearchQuery]);
 
-  // 4. FILTERED ITEMS LIST FOR ACTIVE GROUP
+  // 4. FILTERED ITEMS LIST FOR ACTIVE GROUP (Selected items appear on the first lines in exact selection sequence)
   const displayedItems = useMemo(() => {
     const qLower = safeLower(activeGroup.itemSearchQuery);
     const hqLower = safeLower(activeGroup.hierarchySearchQuery);
 
+    const orderedSelected = getOrderedGroupItems(activeGroup, onlyItemsWithBalance);
+    const filteredSelected = qLower
+      ? orderedSelected.filter((item) => {
+          const matchesDesc = safeLower(item.itemDescription).includes(qLower);
+          const matchesCode = safeLower(item.itemCode).includes(qLower);
+          const matchesBar = safeLower(item.barcode).includes(qLower);
+          return matchesDesc || matchesCode || matchesBar;
+        })
+      : orderedSelected;
+
     if (showSelectedItemsOnly) {
-      const orderedSelected = getOrderedGroupItems(activeGroup, onlyItemsWithBalance);
-      if (!qLower) return orderedSelected;
-      return orderedSelected.filter((item) => {
-        const matchesDesc = safeLower(item.itemDescription).includes(qLower);
-        const matchesCode = safeLower(item.itemCode).includes(qLower);
-        const matchesBar = safeLower(item.barcode).includes(qLower);
-        return matchesDesc || matchesCode || matchesBar;
-      });
+      return filteredSelected;
     }
 
-    return allItems
+    const selectedIdSet = activeGroup.selectedItemIds;
+
+    const unselectedItems = allItems
       .filter((item) => {
+        if (selectedIdSet.has(item.id)) {
+          return false;
+        }
         // Balance filter: if checked, only transfer items with balance (non-zero balance)
         if (
           onlyItemsWithBalance &&
@@ -1846,6 +2336,8 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
         return true;
       })
       .sort((a, b) => compareItemsBySortMode(a, b, itemSortBy));
+
+    return [...filteredSelected, ...unselectedItems];
   }, [
     allItems,
     activeGroup,
@@ -1856,30 +2348,38 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
     activeGroup.hierarchySearchQuery,
     onlyItemsWithBalance,
     showSelectedItemsOnly,
+    insertCategorySpacers,
     itemSortBy,
   ]);
 
   const handleChangeItemSort = (mode: 'itemCode' | 'itemDescription') => {
-    setItemSortBy(mode);
     setShowSortDropdown(false);
-    // Arrange selected items in the countsheet A–Z based on Item Code or Item Description
+    // Arrange selected items in the active countsheet A–Z based on Item Code or Item Description
     const itemById = new Map<string, ParsedIatdRow>();
     allItems.forEach((it) => itemById.set(it.id, it));
-    setGroups((prev) =>
-      prev.map((g) => {
-        if (g.selectedItemIds.size <= 1) return g;
-        const rawOrdered: ParsedIatdRow[] = [];
-        g.selectedItemIds.forEach((id) => {
-          const found = itemById.get(id);
-          if (found) rawOrdered.push(found);
-        });
-        const sortedItems = groupItemsByHierarchyOrder(rawOrdered, mode, insertCategorySpacers);
+    updateActiveGroup((g) => {
+      if (g.selectedItemIds.size <= 1) {
         return {
           ...g,
-          selectedItemIds: new Set(sortedItems.map((item) => item.id)),
+          itemSortBy: mode,
         };
-      })
-    );
+      }
+      const rawOrdered: ParsedIatdRow[] = [];
+      g.selectedItemIds.forEach((id) => {
+        const found = itemById.get(id);
+        if (found) rawOrdered.push(found);
+      });
+      const sortedItems = groupItemsByHierarchyOrder(
+        rawOrdered,
+        mode,
+        g.insertCategorySpacers
+      );
+      return {
+        ...g,
+        itemSortBy: mode,
+        selectedItemIds: new Set(sortedItems.map((item) => item.id)),
+      };
+    });
   };
 
   const deriveHierarchyLabelAndSheetName = (
@@ -2065,13 +2565,15 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
 
     for (const candidate of shuffled) {
       const candidateList = groupItemsByHierarchyOrder(
-        [...picked, candidate].sort((a, b) => compareItemsBySortMode(a, b, itemSortBy))
+        [...picked, candidate].sort((a, b) => compareItemsBySortMode(a, b, activeGroup.itemSortBy)),
+        activeGroup.itemSortBy,
+        activeGroup.insertCategorySpacers
       );
       const packed = packItemsInto34RowSheets(
         candidateList,
         COUNTSHEET_MAX_ROWS_PER_SHEET,
         COUNTSHEET_DESC_MAX_CHARS,
-        insertCategorySpacers
+        activeGroup.insertCategorySpacers
       );
       const totalPhysicalRows =
         packed.length <= 1
@@ -2092,7 +2594,9 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
     }
 
     const selected = groupItemsByHierarchyOrder(
-      picked.sort((a, b) => compareItemsBySortMode(a, b, itemSortBy))
+      picked.sort((a, b) => compareItemsBySortMode(a, b, activeGroup.itemSortBy)),
+      activeGroup.itemSortBy,
+      activeGroup.insertCategorySpacers
     );
 
     updateActiveGroup((prev) => ({
@@ -2101,8 +2605,8 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
     }));
   };
 
-  // Helper: Get group items ordered for the countsheet (A–Z by Item Code or Item Description)
-  const getOrderedGroupItems = (g: SelectionGroup, filterBalance = onlyItemsWithBalance): ParsedIatdRow[] => {
+  // Helper: Get group items ordered in exact selection sequence from g.selectedItemIds
+  function getOrderedGroupItems(g: SelectionGroup, filterBalance = g.onlyItemsWithBalance): ParsedIatdRow[] {
     const itemById = new Map<string, ParsedIatdRow>();
     allItems.forEach((item) => itemById.set(item.id, item));
     const rawOrdered: ParsedIatdRow[] = [];
@@ -2110,14 +2614,27 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       const found = itemById.get(id);
       if (found) rawOrdered.push(found);
     });
-    const ordered = groupItemsByHierarchyOrder(rawOrdered, itemSortBy, insertCategorySpacers);
+    const ordered = g.insertCategorySpacers
+      ? (() => {
+          const buckets = new Map<string, ParsedIatdRow[]>();
+          for (const item of rawOrdered) {
+            const key = getNormalizedItemHierarchyKey(item);
+            const bucket = buckets.get(key);
+            if (bucket) bucket.push(item);
+            else buckets.set(key, [item]);
+          }
+          const res: ParsedIatdRow[] = [];
+          buckets.forEach((b) => res.push(...b));
+          return res;
+        })()
+      : rawOrdered;
     if (filterBalance) {
       return ordered.filter(
         (item) => item.balance !== 0 && item.balance !== undefined && item.balance !== null
       );
     }
     return ordered;
-  };
+  }
 
   // Template row & spacer allocation for the active group (Rows 1..34 per countsheet tab)
   const activeGroupRowAllocation = useMemo(() => {
@@ -2199,7 +2716,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
     const usedTitles = new Set<string>(['all items']);
 
     groups.forEach((grp, gIdx) => {
-      const validItems = getOrderedGroupItems(grp, onlyItemsWithBalance);
+      const validItems = getOrderedGroupItems(grp);
       const itemsCount = validItems.length;
       if (itemsCount === 0) return;
 
@@ -2207,7 +2724,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
         validItems,
         CHUNK_SIZE,
         COUNTSHEET_DESC_MAX_CHARS,
-        insertCategorySpacers
+        grp.insertCategorySpacers
       );
       const meta = groupCsMeta.byGroupId.get(grp.id);
       const fallbackCsName = meta?.csName || formatCsCode(gIdx + 1);
@@ -2262,17 +2779,17 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
     });
 
     return planList;
-  }, [groups, allItems, onlyItemsWithBalance, insertCategorySpacers, itemSortBy, groupCsMeta]);
+  }, [groups, allItems, groupCsMeta]);
 
   const totalSelectedCount = useMemo(() => {
     return groups.reduce((acc, g) => {
       const groupItems = allItems.filter((item) => g.selectedItemIds.has(item.id));
-      const validItems = onlyItemsWithBalance
+      const validItems = g.onlyItemsWithBalance
         ? groupItems.filter((item) => item.balance !== 0 && item.balance !== undefined && item.balance !== null)
         : groupItems;
       return acc + validItems.length;
     }, 0);
-  }, [groups, allItems, onlyItemsWithBalance]);
+  }, [groups, allItems]);
 
   // Build full RecentCountsheetSession payload for saving/reusing & Create Encoding integration
   const buildSessionSavePayload = (
@@ -2285,22 +2802,32 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
     let runningCs = 1;
     const allOrderedCountsheetItems: PreGeneratedCountsheetItem[] = [];
 
-    const savedGroups = groups.map((g) => {
-      const groupItems = getOrderedGroupItems(g, onlyItemsWithBalance);
+    const savedGroups: SavedCountsheetGroupState[] = [];
+    groups.forEach((g) => {
+      const groupItems = getOrderedGroupItems(g);
       const packedPages = packItemsInto34RowSheets(
         groupItems,
         CHUNK_SIZE,
         COUNTSHEET_DESC_MAX_CHARS,
-        insertCategorySpacers
+        g.insertCategorySpacers
       );
-      const csUsed = Math.max(1, packedPages.length);
-      const startCsNumber = runningCs;
-      const endCsNumber = startCsNumber + csUsed - 1;
+      const pagesToSave =
+        packedPages.length > 0 ? packedPages : [{ items: [], physicalRows: [], rowsUsed: 0 }];
 
-      const orderedItems: PreGeneratedCountsheetItem[] = [];
-      packedPages.forEach((page, pageIdx) => {
-        const csCode = formatCsCode(startCsNumber + pageIdx);
-        page.items.forEach((item) => {
+      pagesToSave.forEach((page, pageIdx) => {
+        const currentCsNum = runningCs;
+        const csCode = formatCsCode(currentCsNum);
+        runningCs += 1;
+
+        const baseName = (g.baseSheetName || csCode).trim();
+        const pageSheetTitle =
+          pagesToSave.length > 1 && !/^CS\d+$/i.test(baseName)
+            ? `${baseName} ${pageIdx + 1}`
+            : /^CS\d+$/i.test(baseName)
+            ? csCode
+            : baseName;
+
+        const orderedItems: PreGeneratedCountsheetItem[] = page.items.map((item) => {
           const entry: PreGeneratedCountsheetItem = {
             id: item.id,
             rowIndex: item.rowIndex,
@@ -2313,53 +2840,57 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
             unit: item.unit || 'PCS',
             cost: item.cost ?? 0,
             selling: item.selling ?? 0,
-            balance: item.balance ?? 0,
-            actual: null,
+            balance: item.balance !== undefined ? item.balance : 0,
+            actual: item.actual ?? null,
             csCode,
-            sheetTitle: g.baseSheetName || csCode,
+            sheetTitle: pageSheetTitle,
             raw: item.raw,
           };
-          orderedItems.push(entry);
           allOrderedCountsheetItems.push(entry);
+          return entry;
+        });
+
+        savedGroups.push({
+          id: pageIdx === 0 ? g.id : `${g.id}_${csCode}`,
+          name: csCode,
+          baseSheetName: pageSheetTitle,
+          selectedCat: g.selectedCat,
+          selectedSubCat: g.selectedSubCat,
+          selectedSubSubCat: g.selectedSubSubCat,
+          selectedCats: getGroupSelectedCats(g),
+          selectedSubCats: getGroupSelectedSubCats(g),
+          selectedSubSubCats: getGroupSelectedSubSubCats(g),
+          lastSelectedHierarchy: g.lastSelectedHierarchy,
+          activeHeaderButton: g.activeHeaderButton,
+          itemSearchQuery: g.itemSearchQuery,
+          hierarchySearchQuery: g.hierarchySearchQuery,
+          selectedItemIds: page.items.map((i) => i.id),
+          selectedRowIndices: page.items.map((i) => i.rowIndex),
+          selectedItemCodes: page.items.map((i) => i.itemCode).filter(Boolean),
+          selectedBarcodes: page.items.map((i) => i.barcode).filter(Boolean),
+          randomCountInput: page.items.length || g.randomCountInput,
+          onlyItemsWithBalance: g.onlyItemsWithBalance,
+          insertCategorySpacers: g.insertCategorySpacers,
+          showSelectedItemsOnly: g.showSelectedItemsOnly,
+          itemSortBy: g.itemSortBy,
+          startCsNumber: currentCsNum,
+          endCsNumber: currentCsNum,
+          csUsed: 1,
+          orderedItems,
         });
       });
-
-      runningCs += csUsed;
-
-      return {
-        id: g.id,
-        name: formatCsCode(startCsNumber),
-        baseSheetName: g.baseSheetName,
-        selectedCat: g.selectedCat,
-        selectedSubCat: g.selectedSubCat,
-        selectedSubSubCat: g.selectedSubSubCat,
-        selectedCats: getGroupSelectedCats(g),
-        selectedSubCats: getGroupSelectedSubCats(g),
-        selectedSubSubCats: getGroupSelectedSubSubCats(g),
-        lastSelectedHierarchy: g.lastSelectedHierarchy,
-        hierarchySearchQuery: g.hierarchySearchQuery,
-        selectedItemIds: Array.from(g.selectedItemIds),
-        selectedRowIndices: groupItems.map((i) => i.rowIndex),
-        selectedItemCodes: groupItems.map((i) => i.itemCode).filter(Boolean),
-        selectedBarcodes: groupItems.map((i) => i.barcode).filter(Boolean),
-        randomCountInput: g.randomCountInput,
-        startCsNumber,
-        endCsNumber,
-        csUsed,
-        orderedItems,
-      };
     });
 
     const sessionId = activeSessionId || `cs_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const preservedSpreadsheetId =
-      overrideSpreadsheetId ||
-      savedResult?.spreadsheetId ||
-      activeSessionSpreadsheetId ||
+      overrideSpreadsheetId ??
+      savedResult?.spreadsheetId ??
+      activeSessionSpreadsheetId ??
       sessionId;
     const preservedWebViewLink =
-      overrideWebViewLink ||
-      savedResult?.webViewLink ||
-      activeSessionWebViewLink ||
+      overrideWebViewLink ??
+      savedResult?.webViewLink ??
+      activeSessionWebViewLink ??
       '';
     const titleToUse =
       overrideSpreadsheetName ||
@@ -2368,6 +2899,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
 
     return {
       id: sessionId,
+      createdAt: new Date().toISOString(),
       spreadsheetId: preservedSpreadsheetId,
       spreadsheetName: titleToUse,
       webViewLink: preservedWebViewLink,
@@ -2379,8 +2911,8 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
         tabName: selectedTab,
       },
       templateUrl: templateUrl || DEFAULT_COUNTSHEET_TEMPLATE_URL,
-      onlyItemsWithBalance,
-      insertCategorySpacers,
+      onlyItemsWithBalance: groups.some((g) => g.onlyItemsWithBalance),
+      insertCategorySpacers: groups.some((g) => g.insertCategorySpacers),
       sheetsCreated:
         overrideSheetsCreated ||
         overallPlan.map((p, idx) => ({
@@ -2395,11 +2927,27 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       iatdHeaders: rawHeaders,
       headerRow,
       orderedCountsheetItems: allOrderedCountsheetItems,
+      rawItems: allItems.map((item) => ({
+        id: item.id,
+        rowIndex: item.rowIndex,
+        itemCode: item.itemCode,
+        barcode: item.barcode,
+        itemDescription: item.itemDescription,
+        category: item.category,
+        subCategory: item.subCategory,
+        subsubCategory: item.subsubCategory,
+        unit: item.unit || 'PCS',
+        cost: item.cost ?? 0,
+        selling: item.selling ?? 0,
+        balance: item.balance !== undefined ? item.balance : 0,
+        actual: item.actual ?? null,
+        csCode: '',
+        sheetTitle: '',
+      })),
     };
   };
 
-  // Save pre-generated countsheet session directly for retrieval & reuse in Create Countsheet & Create Encoding
-  // If linked to an existing Google Spreadsheet on Drive, also updates that Google Sheet (and its B9:H42 borders) in-place!
+  // Save countsheet edit session only (does not create/generate the Google Sheet)
   const handleSaveCountsheetSessionOnly = async () => {
     if (totalSelectedCount === 0) {
       setSaveError('Please select at least 1 item across your groups to save.');
@@ -2407,71 +2955,36 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
     }
     setSaveError(null);
     try {
-      const linkedSheetId = savedResult?.spreadsheetId || activeSessionSpreadsheetId;
-      let updatedSheetResult: CreateCountsheetFromTemplateResult | null = null;
-
-      if (
-        linkedSheetId &&
-        !linkedSheetId.startsWith('cs_') &&
-        !linkedSheetId.startsWith('draft_')
-      ) {
-        setIsSaving(true);
-        setSaveProgress('Updating Google Sheet items & borders (Col B to H)...');
-        try {
-          const tokenToUse =
-            (await resolveValidOAuthToken(effectiveToken, { allowPopup: false })) ||
-            effectiveToken ||
-            '';
-          if (tokenToUse) {
-            const groupPlans: GroupCountsheetPlan[] = groups
-              .map((g) => ({
-                groupId: g.id,
-                groupName: g.name,
-                baseSheetName: g.baseSheetName || g.lastSelectedHierarchy || g.name,
-                items: getOrderedGroupItems(g, onlyItemsWithBalance),
-              }))
-              .filter((g) => g.items.length > 0);
-
-            updatedSheetResult = await updateExistingCountsheetSpreadsheet({
-              accessToken: tokenToUse,
-              existingSpreadsheetId: linkedSheetId,
-              targetSpreadsheetTitle:
-                targetSpreadsheetTitle || `Audit Countsheets - ${selectedFile?.name || 'IATD'}`,
-              insertCategorySpacers,
-              groups: groupPlans,
-              onProgress: (status) => setSaveProgress(status),
-            });
-            if (updatedSheetResult) {
-              setSavedResult(updatedSheetResult);
-              setActiveSessionSpreadsheetId(updatedSheetResult.spreadsheetId);
-              setActiveSessionWebViewLink(updatedSheetResult.webViewLink);
-            }
-          }
-        } catch (syncErr) {
-          console.warn('Could not sync in-place Google Sheet update:', syncErr);
-        } finally {
-          setIsSaving(false);
-        }
-      }
+      const sessionId = activeSessionId || `cs_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      setSavedResult(null);
+      setActiveSessionSpreadsheetId(null);
+      setActiveSessionWebViewLink(null);
 
       const payload = buildSessionSavePayload(
-        updatedSheetResult?.spreadsheetId,
-        updatedSheetResult?.spreadsheetName,
-        updatedSheetResult?.webViewLink,
-        updatedSheetResult?.sheetsCreated
+        sessionId,
+        undefined,
+        ''
       );
       const saved = await saveRecentCountsheet(payload);
       setActiveSessionId(saved.id);
       setRecentCountsheets(getRecentCountsheets());
       setSavedToastMessage(
-        updatedSheetResult
-          ? `Saved & updated Google Sheet "${saved.spreadsheetName}" (${saved.totalItems} items across ${saved.totalSheets} CS)`
-          : `Saved "${saved.spreadsheetName}" (${saved.totalItems} items across ${saved.totalSheets} CS)`
+        `Saved "${saved.spreadsheetName}" (${saved.totalItems} items across ${saved.totalSheets} CS)`
       );
       setTimeout(() => setSavedToastMessage(null), 3500);
     } catch (err: any) {
       setSaveError(err.message || 'Could not save countsheet session.');
     }
+  };
+
+  // Export current countsheet items directly to Encoding (Create Audit Report modal)
+  const handleExportToEncoding = () => {
+    if (totalSelectedCount === 0) return;
+    const payload = buildSessionSavePayload();
+    onExportToEncoding?.(payload);
+    void saveRecentCountsheet(payload).catch((err) => {
+      console.warn('Could not save countsheet session before exporting to encoding:', err);
+    });
   };
 
   // EXECUTE COUNTSHEET GENERATION
@@ -2495,12 +3008,13 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
       // Build group plans preserving exact selection sequence
       const groupPlans: GroupCountsheetPlan[] = groups
         .map((g) => {
-          const finalItems = getOrderedGroupItems(g, onlyItemsWithBalance);
+          const finalItems = getOrderedGroupItems(g);
           return {
             groupId: g.id,
             groupName: g.name,
             baseSheetName: g.baseSheetName || g.lastSelectedHierarchy || g.name,
             items: finalItems,
+            insertCategorySpacers: g.insertCategorySpacers,
           };
         })
         .filter((g) => g.items.length > 0);
@@ -2509,7 +3023,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
         accessToken: tokenToUse,
         templateSpreadsheetId: templateUrl || DEFAULT_COUNTSHEET_TEMPLATE_URL,
         targetSpreadsheetTitle: targetSpreadsheetTitle || `Audit Countsheets - ${selectedFile?.name || 'IATD'}`,
-        insertCategorySpacers,
+        insertCategorySpacers: groups.some((g) => g.insertCategorySpacers),
         groups: groupPlans,
         onProgress: (status) => setSaveProgress(status),
       });
@@ -2542,12 +3056,24 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
 
   if (!isOpen) return null;
 
+  const panelAnimationClass =
+    transitionAnim === 'slide-out-left'
+      ? 'animate-slide-out-left'
+      : transitionAnim === 'slide-in-left'
+      ? 'animate-slide-in-left'
+      : '';
+
   return (
     <div 
-      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-5 md:p-6 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-200"
+      className={`fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-5 md:p-6 bg-slate-950/70 backdrop-blur-xs overflow-hidden ${
+        isStandby ? 'hidden pointer-events-none' : ''
+      }`}
       style={{ overscrollBehavior: 'contain' }}
     >
-      <div className="relative w-[92vw] h-[88dvh] sm:h-auto sm:w-full max-w-[90vw] xl:max-w-[1440px] 2xl:max-w-[1540px] bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-zinc-800 shadow-2xl flex flex-col sm:max-h-[86dvh] overflow-hidden">
+      <div
+        data-scroll-lock-panel
+        className={`relative w-[92vw] h-[88dvh] sm:h-auto sm:w-full max-w-[90vw] xl:max-w-[1440px] 2xl:max-w-[1540px] bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-zinc-800 shadow-2xl flex flex-col sm:max-h-[86dvh] overflow-hidden ${panelAnimationClass}`}
+      >
         {/* Header */}
         <div className="p-4 sm:p-5 border-b border-slate-200/90 dark:border-zinc-800 flex items-center justify-between gap-3 bg-slate-50/70 dark:bg-zinc-900/50">
           <div className="flex items-center gap-3 min-w-0">
@@ -3360,830 +3886,944 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
           )}
 
           {/* STEP 2: GROUP & ITEM SELECTION */}
+          {/* STEP 2: GROUP & ITEM SELECTION (2-COLUMN RESPONSIVE LAYOUT) */}
           {currentStep === 'FILTER_ITEMS' && (
             <div className="space-y-4">
-              {/* Top File Bar & RANDOM INVENTORY COUNTSHEET TEMPLATE Sync Bar */}
-              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 space-y-2.5 text-xs">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                  {/* Left: Source of Items (IATD from User Drive/Email) */}
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                      <FileSpreadsheet className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
-                          User IATD Source (Your Drive / Email)
-                        </span>
-                        <span className="font-bold text-slate-800 dark:text-white truncate">
-                          {selectedFile?.name || 'Spreadsheet'}
-                        </span>
+              <div className="grid grid-cols-1 lg:grid-cols-10 gap-4 items-start">
+                {/* LEFT COLUMN: User IATD to Category Selection (30%) */}
+                <div className="lg:col-span-3 xl:col-span-3 min-w-0 space-y-3.5">
+                  {/* 1. User IATD Source & Form Source Bar */}
+                  <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 space-y-3 text-xs">
+                    {/* User IATD Source Info */}
+                    <div className="flex items-start justify-between gap-2.5">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                          <FileSpreadsheet className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+                              IATD Source
+                            </span>
+                          </div>
+                          <span className="font-bold text-slate-800 dark:text-white truncate block mt-0.5 text-xs sm:text-sm">
+                            {selectedFile?.name || 'Spreadsheet'}
+                          </span>
+                          <span className="text-slate-400 truncate block text-[11px]">
+                            {allItems.length.toLocaleString()} items
+                          </span>
+                        </div>
                       </div>
-                      <span className="text-slate-400 truncate block text-[11px]">
-                        {allItems.length} items loaded from your IATD
-                      </span>
-                    </div>
-                  </div>
 
-                  {/* Right: Admin Countsheet Template Selector (icdhubsystems@gmail.com) & File Actions */}
-                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                    <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-800/60">
-                      <span className="hidden xl:inline text-[10px] font-bold text-blue-700 dark:text-blue-300 px-1.5">
-                        Form Source (Saved Admin Link):
-                      </span>
-                      {hubCountsheetTemplates.map((tmpl) => {
-                        const isPeriodic = /periodic/i.test(tmpl.name);
-                        const isCurrentlySelected = isPeriodic
-                          ? /periodic/i.test(templateUrl) || /periodic/i.test(templateSpec.spreadsheetTitle || '')
-                          : !/periodic/i.test(templateUrl) && !/periodic/i.test(templateSpec.spreadsheetTitle || '');
-                        return (
+                      <button
+                        type="button"
+                        onClick={() => setCurrentStep('SELECT_FILE')}
+                        className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-300 font-semibold transition-colors shrink-0 text-[11px] cursor-pointer"
+                        title="Change IATD source file"
+                      >
+                        Change IATD
+                      </button>
+                    </div>
+
+                    {/* Form Source (Admin Template Selector & Actions) */}
+                    <div className="pt-2.5 border-t border-slate-200/80 dark:border-zinc-800/80 space-y-2">
+                      <div className="flex items-center justify-between gap-1 flex-wrap">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300">
+                          Form Source:
+                        </span>
+                        <div className="flex items-center gap-1.5">
                           <button
-                            key={tmpl.id}
+                            type="button"
+                            onClick={() => handleRefreshTemplate(true)}
+                            disabled={isRefreshingTemplate}
+                            className="px-2 py-1 rounded-lg border border-blue-300 dark:border-blue-700 bg-blue-600 hover:bg-blue-500 text-white font-bold transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50 text-[10.5px] shadow-2xs"
+                            title="Refresh active Countsheet Template from icdhubsystems@gmail.com"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isRefreshingTemplate ? 'animate-spin' : ''}`} />
+                            <span>{isRefreshingTemplate ? 'Refreshing...' : 'Refresh'}</span>
+                          </button>
+
+                          <button
                             type="button"
                             onClick={() => {
-                              const nextUrl =
-                                tmpl.webViewLink ||
-                                `https://docs.google.com/spreadsheets/d/${tmpl.id}/edit#gid=${tmpl.gid || '1328306184'}`;
-                              handleRefreshTemplate(false, nextUrl);
+                              setShowImportPlottedModal(true);
+                              setImportPlottedError(null);
+                              setImportPlottedSuccess(null);
                             }}
-                            className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold transition cursor-pointer flex items-center gap-1 ${
-                              isCurrentlySelected
-                                ? 'bg-blue-600 text-white shadow-2xs'
-                                : 'text-blue-800 dark:text-blue-200 hover:bg-blue-100/80 dark:hover:bg-blue-900/40'
-                            }`}
-                            title={`${tmpl.name} (${HUB_OWNER_EMAIL})`}
+                            className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors flex items-center gap-1 cursor-pointer text-[10.5px]"
+                            title="Import a generated Countsheet template and rebuild items per sheet by Item Code"
                           >
-                            <Table className="w-3 h-3 shrink-0" />
-                            <span>{isPeriodic ? 'Periodic Countsheet' : 'Random Inventory Countsheet'}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleRefreshTemplate(true)}
-                      disabled={isRefreshingTemplate}
-                      className="px-3 py-1.5 rounded-xl border border-blue-300 dark:border-blue-700 bg-blue-600 hover:bg-blue-500 text-white font-bold transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
-                      title="Refresh active Countsheet Template from icdhubsystems@gmail.com"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingTemplate ? 'animate-spin' : ''}`} />
-                      <span>{isRefreshingTemplate ? 'Refreshing...' : 'Refresh Template'}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowImportPlottedModal(true);
-                        setImportPlottedError(null);
-                        setImportPlottedSuccess(null);
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
-                      title="Import a generated Countsheet template and rebuild items per sheet by Item Code"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5" />
-                      <span>Import Countsheet</span>
-                    </button>
-                    <button
-                      onClick={() => setCurrentStep('SELECT_FILE')}
-                      className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-300 font-semibold transition-colors shrink-0"
-                    >
-                      Change IATD
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* GROUPS TAB BAR */}
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                    {groups.map((grp, gIdx) => {
-                      const isActive = grp.id === activeGroup.id;
-                      const itemsCount = grp.selectedItemIds.size;
-                      const meta = groupCsMeta.byGroupId.get(grp.id);
-                      const displayCsName = meta?.csName || grp.name;
-
-                      return (
-                        <div
-                          key={`grp_tab_${grp.id}_${gIdx}`}
-                          onClick={() => setActiveGroupId(grp.id)}
-                          className={`group relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl cursor-pointer text-xs font-semibold transition-all border shrink-0 ${
-                            isActive
-                              ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                              : 'bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:bg-slate-50 dark:hover:bg-zinc-800/80'
-                          }`}
-                        >
-                          <span>{displayCsName}</span>
-                          <span
-                            className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                              isActive
-                                ? 'bg-white/20 text-white'
-                                : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400'
-                            }`}
-                          >
-                            {itemsCount}
-                          </span>
-
-                          {groups.length > 1 && (
-                            <button
-                              onClick={(e) => handleRemoveGroup(grp.id, e)}
-                              className={`p-0.5 rounded-md transition-colors ${
-                                isActive
-                                  ? 'hover:bg-white/20 text-white/80 hover:text-white'
-                                  : 'hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-400'
-                              }`}
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={() => {
-                        setPreviewActiveGroupId('ALL');
-                        setShowGroupsPreview(true);
-                        handleRefreshTemplate(false);
-                      }}
-                      title="Preview Countsheets as in Google Sheets (Ctrl + P)"
-                      className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-200 text-xs font-bold flex items-center gap-1.5 transition-colors"
-                    >
-                      <Printer className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                      <span>Preview</span>
-                    </button>
-
-                    <button
-                      onClick={handleAddGroup}
-                      className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1 transition-colors"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>{groupCsMeta.nextAvailableCsName}</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Sheet Name & Selected Count Bar */}
-                <div className="px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 flex items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-slate-500 dark:text-zinc-400 font-medium">Sheet Name:</span>
-                    {editingBaseSheetName ? (
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="text"
-                          value={activeGroup.baseSheetName}
-                          onChange={(e) => updateActiveGroup({ baseSheetName: e.target.value })}
-                          className="px-2 py-0.5 text-xs font-bold rounded-lg border border-blue-300 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white"
-                        />
-                        <button
-                          onClick={() => setEditingBaseSheetName(false)}
-                          className="p-1 text-emerald-600 font-bold"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1">
-                        <span className="font-bold text-blue-700 dark:text-blue-300">
-                          {activeGroup.baseSheetName || activeGroup.name}
-                        </span>
-                        <button
-                          onClick={() => setEditingBaseSheetName(true)}
-                          className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300"
-                        >
-                          <Edit3 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="font-bold text-slate-700 dark:text-zinc-200 flex items-center gap-1.5 font-mono">
-                    <span>{activeGroup.selectedItemIds.size} selected</span>
-                    {(() => {
-                      const activeMeta = groupCsMeta.byGroupId.get(activeGroup.id);
-                      if (
-                        activeMeta &&
-                        activeMeta.validItemCount > 0 &&
-                        activeMeta.physicalRowCount !== activeMeta.validItemCount
-                      ) {
-                        return (
-                          <span className="text-[11px] px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
-                            {activeMeta.physicalRowCount} rows
-                          </span>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </div>
-                </div>
-              </div>
-
-              {/* CATEGORY / SUBCAT / SUBSUBCAT FILTER BAR */}
-              <div className="p-3 rounded-2xl bg-slate-100 dark:bg-zinc-800/70 border border-slate-200 dark:border-zinc-700/80 space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => updateActiveGroup({ activeHeaderButton: 'cat' })}
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all border ${
-                        activeGroup.activeHeaderButton === 'cat'
-                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                          : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
-                      }`}
-                    >
-                      <span>Category</span>
-                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
-                        activeGroup.activeHeaderButton === 'cat' ? 'bg-white/20 text-white' : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
-                      }`}>
-                        {uniqueCategories.length}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => updateActiveGroup({ activeHeaderButton: 'subCat' })}
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all border ${
-                        activeGroup.activeHeaderButton === 'subCat'
-                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                          : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
-                      }`}
-                    >
-                      <span>SubCategory</span>
-                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
-                        activeGroup.activeHeaderButton === 'subCat' ? 'bg-white/20 text-white' : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
-                      }`}>
-                        {uniqueSubCategories.length}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => updateActiveGroup({ activeHeaderButton: 'subSubCat' })}
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all border ${
-                        activeGroup.activeHeaderButton === 'subSubCat'
-                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                          : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
-                      }`}
-                    >
-                      <span>SubSubCategory</span>
-                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
-                        activeGroup.activeHeaderButton === 'subSubCat' ? 'bg-white/20 text-white' : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
-                      }`}>
-                        {uniqueSubSubCategories.length}
-                      </span>
-                    </button>
-
-                    {activeSelectedCats.map((cat) => (
-                      <span
-                        key={`sel_cat_${cat}`}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-blue-200 dark:border-blue-800/70 font-semibold text-blue-700 dark:text-blue-300"
-                      >
-                        <span>{cat}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleSelectCategory(cat)}
-                          className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer"
-                          title={`Remove category ${cat}`}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-
-                    {activeSelectedSubCats.map((subCat) => (
-                      <span
-                        key={`sel_subcat_${subCat}`}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-indigo-200 dark:border-indigo-800/70 font-semibold text-indigo-700 dark:text-indigo-300"
-                      >
-                        <span>{subCat}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleSelectSubCategory(subCat)}
-                          className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer"
-                          title={`Remove subcategory ${subCat}`}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-
-                    {activeSelectedSubSubCats.map((subSubCat) => (
-                      <span
-                        key={`sel_subsubcat_${subSubCat}`}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-purple-200 dark:border-purple-800/70 font-semibold text-purple-700 dark:text-purple-300"
-                      >
-                        <span>{subSubCat}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleSelectSubSubCategory(subSubCat)}
-                          className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer"
-                          title={`Remove sub-subcategory ${subSubCat}`}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-
-                  {(activeSelectedCats.length > 0 ||
-                    activeSelectedSubCats.length > 0 ||
-                    activeSelectedSubSubCats.length > 0 ||
-                    activeGroup.hierarchySearchQuery) && (
-                    <button
-                      onClick={() =>
-                        updateActiveGroup({
-                          selectedCat: '',
-                          selectedSubCat: '',
-                          selectedSubSubCat: '',
-                          selectedCats: [],
-                          selectedSubCats: [],
-                          selectedSubSubCats: [],
-                          hierarchySearchQuery: '',
-                          lastSelectedHierarchy: '',
-                          baseSheetName: activeGroup.name,
-                        })
-                      }
-                      className="text-xs font-semibold text-rose-600 dark:text-rose-400 hover:underline shrink-0 ml-auto"
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-
-                {/* Search Category / SubCategory */}
-                <div className="relative">
-                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    value={activeGroup.hierarchySearchQuery || ''}
-                    onChange={(e) => updateActiveGroup({ hierarchySearchQuery: e.target.value })}
-                    placeholder="Search category..."
-                    className="w-full pl-9 pr-8 py-2 text-xs rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
-                  />
-                  {activeGroup.hierarchySearchQuery && (
-                    <button
-                      onClick={() => updateActiveGroup({ hierarchySearchQuery: '' })}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 text-xs px-1"
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* CATEGORY / SUBCAT / SUBSUBCAT OPTIONS */}
-              {activeGroup.activeHeaderButton === 'cat' && (
-                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
-                  <div className="flex flex-wrap gap-2 max-h-44 overflow-y-auto pr-1">
-                    {uniqueCategories.map((c) => {
-                      const isSel = activeSelectedCats.some(
-                        (sel) => safeLower(sel) === safeLower(c.name)
-                      );
-                      return (
-                        <button
-                          key={c.name}
-                          type="button"
-                          onClick={() => handleSelectCategory(c.name)}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
-                            isSel
-                              ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                              : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
-                          }`}
-                        >
-                          {isSel && <Check className="w-3 h-3 shrink-0" />}
-                          <span>
-                            {c.name} <span className="opacity-70 text-[10px]">({c.count})</span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {activeGroup.activeHeaderButton === 'subCat' && (
-                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
-                  {uniqueSubCategories.length > 0 ? (
-                    <div className="flex flex-wrap gap-2 max-h-44 overflow-y-auto pr-1">
-                      {uniqueSubCategories.map((sc) => {
-                        const isSel = activeSelectedSubCats.some(
-                          (sel) => safeLower(sel) === safeLower(sc.name)
-                        );
-                        return (
-                          <button
-                            key={sc.name}
-                            type="button"
-                            onClick={() => handleSelectSubCategory(sc.name)}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
-                              isSel
-                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                                : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
-                            }`}
-                          >
-                            {isSel && <Check className="w-3 h-3 shrink-0" />}
-                            <span>
-                              {sc.name} <span className="opacity-70 text-[10px]">({sc.count})</span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="p-3 text-center text-xs text-slate-400">
-                      No subcategories found.
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {activeGroup.activeHeaderButton === 'subSubCat' && (
-                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
-                  {uniqueSubSubCategories.length > 0 ? (
-                    <div className="flex flex-wrap gap-2 max-h-44 overflow-y-auto pr-1">
-                      {uniqueSubSubCategories.map((ssc) => {
-                        const isSel = activeSelectedSubSubCats.some(
-                          (sel) => safeLower(sel) === safeLower(ssc.name)
-                        );
-                        return (
-                          <button
-                            key={ssc.name}
-                            type="button"
-                            onClick={() => handleSelectSubSubCategory(ssc.name)}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
-                              isSel
-                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                                : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
-                            }`}
-                          >
-                            {isSel && <Check className="w-3 h-3 shrink-0" />}
-                            <span>
-                              {ssc.name}{' '}
-                              <span className="opacity-70 text-[10px]">({ssc.count})</span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="p-3 text-center text-xs text-slate-400">
-                      No sub-subcategories found.
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ITEM SEARCH & SIMPLE ACTION BUTTONS */}
-              <div className="flex flex-wrap items-center justify-between gap-2.5 text-xs">
-                <div className="relative flex-1 min-w-[200px]">
-                  <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    value={activeGroup.itemSearchQuery}
-                    onChange={(e) => updateActiveGroup({ itemSearchQuery: e.target.value })}
-                    placeholder="Search items..."
-                    className="w-full pl-10 pr-8 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  {activeGroup.itemSearchQuery && (
-                    <button
-                      onClick={() => updateActiveGroup({ itemSearchQuery: '' })}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      min={1}
-                      max={displayedItems.length || 1000}
-                      value={activeGroup.randomCountInput}
-                      onChange={(e) => updateActiveGroup({ randomCountInput: parseInt(e.target.value) || 1 })}
-                      className="w-16 px-2 py-1.5 text-center rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white font-bold"
-                    />
-                    <button
-                      onClick={() => handlePickRandomItems(activeGroup.randomCountInput)}
-                      className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold flex items-center gap-1 transition-colors"
-                    >
-                      <Shuffle className="w-3.5 h-3.5" />
-                      <span>Random</span>
-                    </button>
-                  </div>
-
-                  <label
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none transition-all ${
-                      onlyItemsWithBalance
-                        ? 'bg-amber-500/15 border-amber-500/50 text-amber-900 dark:text-amber-200'
-                        : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={onlyItemsWithBalance}
-                      onChange={(e) => setOnlyItemsWithBalance(e.target.checked)}
-                      className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
-                    />
-                    <span>With Balance</span>
-                  </label>
-
-                  <label
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none transition-all ${
-                      insertCategorySpacers
-                        ? 'bg-amber-500/15 border-amber-500/50 text-amber-900 dark:text-amber-200'
-                        : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300'
-                    }`}
-                    title="Insert a 1-row blank space in the countsheet template whenever Category, SubCategory, or SubSubCategory changes"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={insertCategorySpacers}
-                      onChange={(e) => setInsertCategorySpacers(e.target.checked)}
-                      className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
-                    />
-                    <span>Space Categories</span>
-                  </label>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowSelectedItemsOnly((prev) => !prev)}
-                    className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1.5 ${
-                      showSelectedItemsOnly
-                        ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
-                        : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:border-blue-400'
-                    }`}
-                    title="Filter table to show only selected items in their exact countsheet sequence with 1-row category spacers"
-                  >
-                    <span>Selected Only ({activeGroup.selectedItemIds.size})</span>
-                  </button>
-
-                  <button
-                    onClick={handleSelectAllDisplayed}
-                    className="px-3 py-1.5 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 hover:border-emerald-500 text-emerald-600 font-bold text-xs cursor-pointer"
-                  >
-                    Select All
-                  </button>
-                  <button
-                    onClick={handleDeselectAllDisplayed}
-                    className="px-3 py-1.5 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 hover:border-rose-500 text-rose-500 font-bold text-xs cursor-pointer"
-                  >
-                    Clear
-                  </button>
-
-                  {/* Sort Dropdown (Item Code / Item Description) */}
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setShowSortDropdown((prev) => !prev)}
-                      className="px-3 py-1.5 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 hover:border-blue-500 text-slate-700 dark:text-zinc-200 font-bold text-xs inline-flex items-center gap-1.5 transition-colors cursor-pointer"
-                    >
-                      <span>Sort</span>
-                      <ChevronDown
-                        className={`w-3.5 h-3.5 text-slate-400 transition-transform ${
-                          showSortDropdown ? 'rotate-180' : ''
-                        }`}
-                      />
-                    </button>
-
-                    {showSortDropdown && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-20"
-                          onClick={() => setShowSortDropdown(false)}
-                        />
-                        <div className="absolute right-0 mt-1.5 w-44 rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 shadow-xl py-1 z-30">
-                          <button
-                            type="button"
-                            onClick={() => handleChangeItemSort('itemCode')}
-                            className={`w-full px-3 py-2 text-left text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
-                              itemSortBy === 'itemCode'
-                                ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
-                                : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800'
-                            }`}
-                          >
-                            <span>Item Code</span>
-                            {itemSortBy === 'itemCode' && (
-                              <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleChangeItemSort('itemDescription')}
-                            className={`w-full px-3 py-2 text-left text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
-                              itemSortBy === 'itemDescription'
-                                ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
-                                : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800'
-                            }`}
-                          >
-                            <span>Item Description</span>
-                            {itemSortBy === 'itemDescription' && (
-                              <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                            )}
+                            <FileSpreadsheet className="w-3 h-3" />
+                            <span>Import</span>
                           </button>
                         </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
+                      </div>
 
-              {/* LIVE TEMPLATE ROW & CATEGORY SPACER ALLOCATION RIBBON */}
-              {activeGroup.selectedItemIds.size > 0 && (
-                <div className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <div className="flex flex-wrap items-center gap-2 text-slate-600 dark:text-zinc-300">
-                    <span className="font-semibold text-slate-800 dark:text-zinc-100">
-                      {activeGroupMeta?.csRangeLabel || activeGroup.name} Allocation:
-                    </span>
-                    <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
-                      {activeGroupMeta?.validItemCount || activeGroup.selectedItemIds.size} items
-                    </span>
-                    <span>·</span>
-                    <span className="font-mono">
-                      {activeGroupMeta?.physicalRowCount || 0} template rows
-                    </span>
-                    {activeGroupRowAllocation.spacerCount > 0 && (
-                      <>
-                        <span>·</span>
-                        <span className="px-2 py-0.5 rounded-md bg-amber-100/80 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border border-amber-300/70 dark:border-amber-800/70 font-semibold">
-                          {activeGroupRowAllocation.spacerCount} blank spacer row{activeGroupRowAllocation.spacerCount === 1 ? '' : 's'} (Category / SubCat / SubSubCat breaks)
-                        </span>
-                      </>
-                    )}
-                  </div>
-                  <div className="font-mono font-bold text-emerald-700 dark:text-emerald-400">
-                    {activeGroupMeta?.sheetsNeeded || 1} × 34-row sheet{(activeGroupMeta?.sheetsNeeded || 1) === 1 ? '' : 's'}
-                  </div>
-                </div>
-              )}
-
-              {/* ITEMS TABLE FOR ACTIVE GROUP */}
-              <div className="border border-slate-200 dark:border-zinc-800 rounded-2xl overflow-hidden bg-white dark:bg-zinc-900 shadow-xs">
-                <div className="max-h-72 overflow-x-auto overflow-y-auto">
-                  <table className="w-full min-w-[640px] text-left text-xs">
-                    <thead className="bg-slate-50 dark:bg-zinc-800/80 sticky top-0 z-10 border-b border-slate-200 dark:border-zinc-700">
-                      <tr>
-                        <th className="p-3 w-10 text-center">
-                          <span className="sr-only">Select</span>
-                        </th>
-                        <th className="p-3 font-bold text-slate-700 dark:text-zinc-300">Code</th>
-                        <th className="p-3 font-bold text-slate-700 dark:text-zinc-300">Description</th>
-                        <th className="p-3 font-bold text-slate-700 dark:text-zinc-300 text-right">Cost</th>
-                        <th className="p-3 font-bold text-slate-700 dark:text-zinc-300 text-right">Selling</th>
-                        <th className="p-3 font-bold text-slate-700 dark:text-zinc-300 text-right">Balance</th>
-                        <th className="p-3 font-bold text-slate-700 dark:text-zinc-300 text-center">Unit</th>
-                        <th className="p-3 font-bold text-slate-700 dark:text-zinc-300">Category</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-zinc-800/60 font-mono text-[11px]">
-                      {displayedItems.length > 0 ? (
-                        displayedItems.slice(0, 300).map((item, itmIdx) => {
-                          const isSelected = activeGroup.selectedItemIds.has(item.id);
-                          const rowAlloc = isSelected
-                            ? activeGroupRowAllocation.itemAllocation.get(item.id)
-                            : undefined;
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 p-1 rounded-xl bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-800/60">
+                        {hubCountsheetTemplates.map((tmpl) => {
+                          const isPeriodic = /periodic/i.test(tmpl.name);
+                          const isCurrentlySelected = isPeriodic
+                            ? /periodic/i.test(templateUrl) || /periodic/i.test(templateSpec.spreadsheetTitle || '')
+                            : !/periodic/i.test(templateUrl) && !/periodic/i.test(templateSpec.spreadsheetTitle || '');
                           return (
-                            <React.Fragment key={`item_row_${item.id || 'itm'}_${itmIdx}`}>
-                              {rowAlloc?.precededBySpacerRow !== null &&
-                                rowAlloc?.precededBySpacerRow !== undefined && (
-                                  <tr className="bg-amber-50/70 dark:bg-amber-950/25 border-y border-dashed border-amber-300 dark:border-amber-800/70 text-[10.5px] font-sans text-amber-800 dark:text-amber-300">
-                                    <td colSpan={8} className="px-3 py-1">
-                                      <div className="flex items-center justify-between">
-                                        <span className="font-semibold">
-                                          Template Row {rowAlloc.precededBySpacerRow}: Blank Space (Different Category / SubCat / SubSubCat)
-                                        </span>
-                                        <span className="font-mono text-[10px] opacity-80">
-                                          {rowAlloc.csLabel} • Next item starts at Row {rowAlloc.startRow}
-                                        </span>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                )}
-                              <tr
-                                onClick={() => handleToggleSelectItem(item.id)}
-                                className={`cursor-pointer transition-colors ${
-                                  isSelected
-                                    ? 'bg-blue-50/70 dark:bg-blue-950/20 text-slate-900 dark:text-white'
-                                    : 'hover:bg-slate-50 dark:hover:bg-zinc-800/40 text-slate-700 dark:text-zinc-300'
+                            <button
+                              key={tmpl.id}
+                              type="button"
+                              onClick={() => {
+                                const nextUrl =
+                                  tmpl.webViewLink ||
+                                  `https://docs.google.com/spreadsheets/d/${tmpl.id}/edit#gid=${tmpl.gid || '1328306184'}`;
+                                handleRefreshTemplate(false, nextUrl);
+                              }}
+                              className={`px-2 py-1.5 rounded-lg text-[10.5px] font-bold transition cursor-pointer flex items-center justify-center gap-1 text-center ${
+                                isCurrentlySelected
+                                  ? 'bg-blue-600 text-white shadow-2xs'
+                                  : 'text-blue-800 dark:text-blue-200 hover:bg-blue-100/80 dark:hover:bg-blue-900/40'
+                              }`}
+                              title={`${tmpl.name} (${HUB_OWNER_EMAIL})`}
+                            >
+                              <Table className="w-3 h-3 shrink-0" />
+                              <span className="truncate">{isPeriodic ? 'Periodic Countsheet' : 'Random Countsheet'}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 2. Countsheets (CS01, CS02...) Vertical List & Sheet Name */}
+                  <div className="space-y-2.5 p-3 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
+                    {/* Top Header Row: Countsheets Label + Preview & Add CS Buttons */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-zinc-200">
+                        <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                        <span>Countsheets ({Math.max(groups.length, groupCsMeta.nextAvailableCsNumber - 1)})</span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPreviewActiveGroupId('ALL');
+                            setShowGroupsPreview(true);
+                            handleRefreshTemplate(false);
+                          }}
+                          title="Preview Countsheets as in Google Sheets (Ctrl + P)"
+                          className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <Printer className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                          <span>Preview</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleAddGroup}
+                          className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                          title="Add next countsheet group"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>{groupCsMeta.nextAvailableCsName}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Vertical List of CS01, CS02 Onwards */}
+                    <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1 scrollbar-thin">
+                      {groups.map((grp, gIdx) => {
+                        const isActive = grp.id === activeGroup.id;
+                        const itemsCount = grp.selectedItemIds.size;
+                        const meta = groupCsMeta.byGroupId.get(grp.id);
+                        const displayCsName =
+                          meta && meta.csUsed > 1
+                            ? `${formatCsCode(meta.startCsNumber)}–${formatCsCode(meta.endCsNumber)}`
+                            : meta?.csName || grp.name;
+                        const customLabel =
+                          grp.baseSheetName && !isDefaultGroupOrCsName(grp.baseSheetName)
+                            ? grp.baseSheetName
+                            : grp.lastSelectedHierarchy || '';
+
+                        return (
+                          <div
+                            key={`grp_tab_${grp.id}_${gIdx}`}
+                            onClick={() => {
+                              setActiveGroupId(grp.id);
+                              setEditingBaseSheetName(false);
+                              setShowSortDropdown(false);
+                            }}
+                            className={`group relative w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl cursor-pointer text-xs font-semibold transition-all border ${
+                              isActive
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                : 'bg-white dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:bg-slate-100/80 dark:hover:bg-zinc-800/80 hover:border-blue-300 dark:hover:border-blue-700'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <span
+                                className={`font-mono font-bold px-2 py-0.5 rounded-lg text-[11px] shrink-0 ${
+                                  isActive
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/60'
                                 }`}
                               >
-                                <td className="p-3 text-center">
-                                  <div className="flex flex-col items-center gap-0.5">
-                                    <input
-                                      type="checkbox"
-                                      checked={isSelected}
-                                      onChange={() => {}}
-                                      className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
-                                    />
-                                    {rowAlloc && (
-                                      <span className="px-1 py-0.2 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 text-[9px] font-sans font-bold whitespace-nowrap">
-                                        {rowAlloc.startRow === rowAlloc.endRow
-                                          ? `R${rowAlloc.startRow}`
-                                          : `R${rowAlloc.startRow}-${rowAlloc.endRow}`}
-                                      </span>
-                                    )}
-                                  </div>
-                                </td>
-                                <td className="p-3 font-semibold text-slate-800 dark:text-zinc-200">
-                                  {item.itemCode || item.barcode || '—'}
-                                </td>
-                                <td className="p-3 font-sans font-medium text-slate-900 dark:text-white max-w-md">
-                                  {(() => {
-                                    const lines = splitItemDescriptionLines(
-                                      item.itemDescription,
-                                      COUNTSHEET_DESC_MAX_CHARS
-                                    );
-                                    if (lines.length <= 1) {
-                                      return <span className="block truncate">{item.itemDescription}</span>;
-                                    }
-                                    return (
-                                      <div className="space-y-0.5">
-                                        <div className="flex items-center gap-1.5">
-                                          <span className="truncate">{lines[0]}</span>
-                                          <span className="shrink-0 px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300/70 dark:border-amber-800 text-[9.5px] font-bold">
-                                            {lines.length} rows
-                                          </span>
-                                        </div>
-                                        {lines.slice(1).map((ln, lIdx) => (
-                                          <div
-                                            key={lIdx}
-                                            className="text-[10.5px] text-blue-700 dark:text-blue-300 font-normal truncate"
-                                          >
-                                            ↳ {ln}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    );
-                                  })()}
-                                </td>
-                                <td className="p-3 text-right">
-                                  {item.cost ? item.cost.toFixed(2) : '—'}
-                                </td>
-                                <td className="p-3 text-right">
-                                  {item.selling ? item.selling.toFixed(2) : '—'}
-                                </td>
-                                <td className="p-3 text-right font-bold text-blue-600 dark:text-blue-400">
-                                  {item.balance}
-                                </td>
-                                <td className="p-3 text-center">
-                                  <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-zinc-800 text-[10px]">
-                                    {item.unit || 'PCS'}
-                                  </span>
-                                </td>
-                                <td className="p-3 font-sans text-slate-500 dark:text-zinc-400 truncate max-w-[160px]">
-                                  {item.category || ''}
-                                  {item.subCategory ? ` › ${item.subCategory}` : ''}
-                                  {item.subsubCategory ? ` › ${item.subsubCategory}` : ''}
-                                </td>
-                              </tr>
-                            </React.Fragment>
-                          );
-                        })
-                      ) : (
-                        <tr>
-                          <td colSpan={8} className="p-8 text-center text-slate-400 font-sans">
-                            No items found.
-                          </td>
-                        </tr>
+                                {displayCsName}
+                              </span>
+                              <span
+                                className={`truncate text-xs ${
+                                  isActive
+                                    ? 'text-white font-bold'
+                                    : customLabel
+                                    ? 'text-slate-700 dark:text-zinc-200 font-medium'
+                                    : 'text-slate-400 dark:text-zinc-500 font-normal'
+                                }`}
+                              >
+                                {customLabel || `Countsheet ${meta?.csName || grp.name}`}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span
+                                className={`text-[10.5px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                                  isActive
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                                }`}
+                              >
+                                {itemsCount} {itemsCount === 1 ? 'item' : 'items'}
+                              </span>
+
+                              {groups.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleRemoveGroup(grp.id, e)}
+                                  title={`Remove ${displayCsName}`}
+                                  className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                                    isActive
+                                      ? 'hover:bg-white/20 text-white/80 hover:text-white'
+                                      : 'hover:bg-rose-100 dark:hover:bg-rose-950/40 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400'
+                                  }`}
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Sheet Name & Selected Count Bar */}
+                    <div className="pt-2 border-t border-slate-200/80 dark:border-zinc-800/80 flex items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-slate-500 dark:text-zinc-400 font-medium">Sheet Name:</span>
+                        {editingBaseSheetName ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="text"
+                              value={activeGroup.baseSheetName}
+                              onChange={(e) => updateActiveGroup({ baseSheetName: e.target.value })}
+                              className="px-2 py-0.5 text-xs font-bold rounded-lg border border-blue-300 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setEditingBaseSheetName(false)}
+                              className="p-1 text-emerald-600 font-bold cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <span className="font-bold text-blue-700 dark:text-blue-300 truncate">
+                              {activeGroup.baseSheetName || activeGroup.name}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingBaseSheetName(true)}
+                              className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 cursor-pointer"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="font-bold text-slate-700 dark:text-zinc-200 flex items-center gap-1.5 font-mono text-[11px] shrink-0">
+                        <span>{activeGroup.selectedItemIds.size} selected</span>
+                        {(() => {
+                          const activeMeta = groupCsMeta.byGroupId.get(activeGroup.id);
+                          if (
+                            activeMeta &&
+                            activeMeta.validItemCount > 0 &&
+                            activeMeta.physicalRowCount !== activeMeta.validItemCount
+                          ) {
+                            return (
+                              <span className="px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                                {activeMeta.physicalRowCount} rows
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 3. Category / SubCat / SubSubCat Selection */}
+                  <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-zinc-800/70 border border-slate-200 dark:border-zinc-700/80 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => updateActiveGroup({ activeHeaderButton: 'cat' })}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all border cursor-pointer ${
+                            activeGroup.activeHeaderButton === 'cat'
+                              ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                              : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                          }`}
+                        >
+                          <span>Category</span>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
+                              activeGroup.activeHeaderButton === 'cat'
+                                ? 'bg-white/20 text-white'
+                                : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
+                            }`}
+                          >
+                            {uniqueCategories.length}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => updateActiveGroup({ activeHeaderButton: 'subCat' })}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all border cursor-pointer ${
+                            activeGroup.activeHeaderButton === 'subCat'
+                              ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                              : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                          }`}
+                        >
+                          <span>SubCat</span>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
+                              activeGroup.activeHeaderButton === 'subCat'
+                                ? 'bg-white/20 text-white'
+                                : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
+                            }`}
+                          >
+                            {uniqueSubCategories.length}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => updateActiveGroup({ activeHeaderButton: 'subSubCat' })}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all border cursor-pointer ${
+                            activeGroup.activeHeaderButton === 'subSubCat'
+                              ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                              : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                          }`}
+                        >
+                          <span>SubSubCat</span>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
+                              activeGroup.activeHeaderButton === 'subSubCat'
+                                ? 'bg-white/20 text-white'
+                                : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
+                            }`}
+                          >
+                            {uniqueSubSubCategories.length}
+                          </span>
+                        </button>
+                      </div>
+
+                      {(activeSelectedCats.length > 0 ||
+                        activeSelectedSubCats.length > 0 ||
+                        activeSelectedSubSubCats.length > 0 ||
+                        activeGroup.hierarchySearchQuery) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateActiveGroup({
+                              selectedCat: '',
+                              selectedSubCat: '',
+                              selectedSubSubCat: '',
+                              selectedCats: [],
+                              selectedSubCats: [],
+                              selectedSubSubCats: [],
+                              hierarchySearchQuery: '',
+                              lastSelectedHierarchy: '',
+                              baseSheetName: activeGroup.name,
+                            })
+                          }
+                          className="text-xs font-semibold text-rose-600 dark:text-rose-400 hover:underline shrink-0 cursor-pointer"
+                        >
+                          Clear All
+                        </button>
                       )}
-                    </tbody>
-                  </table>
+                    </div>
+
+                    {/* Active Filter Pills */}
+                    {(activeSelectedCats.length > 0 || activeSelectedSubCats.length > 0 || activeSelectedSubSubCats.length > 0) && (
+                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                        {activeSelectedCats.map((cat) => (
+                          <span
+                            key={`sel_cat_${cat}`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-blue-200 dark:border-blue-800/70 font-semibold text-blue-700 dark:text-blue-300 text-[11px]"
+                          >
+                            <span>{cat}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectCategory(cat)}
+                              className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer font-bold"
+                              title={`Remove category ${cat}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+
+                        {activeSelectedSubCats.map((subCat) => (
+                          <span
+                            key={`sel_subcat_${subCat}`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-indigo-200 dark:border-indigo-800/70 font-semibold text-indigo-700 dark:text-indigo-300 text-[11px]"
+                          >
+                            <span>{subCat}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectSubCategory(subCat)}
+                              className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer font-bold"
+                              title={`Remove subcategory ${subCat}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+
+                        {activeSelectedSubSubCats.map((subSubCat) => (
+                          <span
+                            key={`sel_subsubcat_${subSubCat}`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white dark:bg-zinc-800 border border-purple-200 dark:border-purple-800/70 font-semibold text-purple-700 dark:text-purple-300 text-[11px]"
+                          >
+                            <span>{subSubCat}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectSubSubCategory(subSubCat)}
+                              className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 ml-0.5 cursor-pointer font-bold"
+                              title={`Remove sub-subcategory ${subSubCat}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Search Category / SubCategory */}
+                    <div className="relative">
+                      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        value={activeGroup.hierarchySearchQuery || ''}
+                        onChange={(e) => updateActiveGroup({ hierarchySearchQuery: e.target.value })}
+                        placeholder="Search category..."
+                        className="w-full pl-9 pr-8 py-2 text-xs rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                      />
+                      {activeGroup.hierarchySearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => updateActiveGroup({ hierarchySearchQuery: '' })}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 text-xs px-1 cursor-pointer"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Category / SubCat / SubSubCat Options Chips List */}
+                    <div className="p-3 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
+                      {activeGroup.activeHeaderButton === 'cat' && (
+                        <div className="flex flex-wrap gap-1.5 max-h-56 lg:max-h-72 overflow-y-auto pr-1">
+                          {uniqueCategories.map((c) => {
+                            const isSel = activeSelectedCats.some(
+                              (sel) => safeLower(sel) === safeLower(c.name)
+                            );
+                            return (
+                              <button
+                                key={c.name}
+                                type="button"
+                                onClick={() => handleSelectCategory(c.name)}
+                                className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
+                                  isSel
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                    : 'bg-slate-50 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                                }`}
+                              >
+                                {isSel && <Check className="w-3 h-3 shrink-0" />}
+                                <span>
+                                  {c.name} <span className="opacity-70 text-[10px]">({c.count})</span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {activeGroup.activeHeaderButton === 'subCat' && (
+                        uniqueSubCategories.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5 max-h-56 lg:max-h-72 overflow-y-auto pr-1">
+                            {uniqueSubCategories.map((sc) => {
+                              const isSel = activeSelectedSubCats.some(
+                                (sel) => safeLower(sel) === safeLower(sc.name)
+                              );
+                              return (
+                                <button
+                                  key={sc.name}
+                                  type="button"
+                                  onClick={() => handleSelectSubCategory(sc.name)}
+                                  className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
+                                    isSel
+                                      ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                      : 'bg-slate-50 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                                  }`}
+                                >
+                                  {isSel && <Check className="w-3 h-3 shrink-0" />}
+                                  <span>
+                                    {sc.name} <span className="opacity-70 text-[10px]">({sc.count})</span>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="p-3 text-center text-xs text-slate-400">
+                            No subcategories found.
+                          </div>
+                        )
+                      )}
+
+                      {activeGroup.activeHeaderButton === 'subSubCat' && (
+                        uniqueSubSubCategories.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5 max-h-56 lg:max-h-72 overflow-y-auto pr-1">
+                            {uniqueSubSubCategories.map((ssc) => {
+                              const isSel = activeSelectedSubSubCats.some(
+                                (sel) => safeLower(sel) === safeLower(ssc.name)
+                              );
+                              return (
+                                <button
+                                  key={ssc.name}
+                                  type="button"
+                                  onClick={() => handleSelectSubSubCategory(ssc.name)}
+                                  className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all border inline-flex items-center gap-1.5 cursor-pointer ${
+                                    isSel
+                                      ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                      : 'bg-slate-50 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:border-blue-400'
+                                  }`}
+                                >
+                                  {isSel && <Check className="w-3 h-3 shrink-0" />}
+                                  <span>
+                                    {ssc.name} <span className="opacity-70 text-[10px]">({ssc.count})</span>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="p-3 text-center text-xs text-slate-400">
+                            No sub-subcategories found.
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/50 border-t border-slate-200 dark:border-zinc-700 text-[11px] text-slate-500 flex items-center justify-between">
-                  <span>{displayedItems.length} items</span>
-                  <span>
-                    {activeGroup.selectedItemIds.size} selected
-                    {activeGroupMeta
-                      ? ` • ${activeGroupMeta.physicalRowCount} template row${
-                          activeGroupMeta.physicalRowCount === 1 ? '' : 's'
-                        }${
-                          activeGroupRowAllocation.spacerCount > 0
-                            ? ` (incl. ${activeGroupRowAllocation.spacerCount} space row${
-                                activeGroupRowAllocation.spacerCount === 1 ? '' : 's'
-                              })`
-                            : ''
-                        }`
-                      : ''}
-                  </span>
+                {/* RIGHT COLUMN: The Item Being Selected (70%) */}
+                <div className="lg:col-span-7 xl:col-span-7 min-w-0 space-y-3.5">
+                  {/* ITEM SEARCH & SIMPLE ACTION BUTTONS */}
+                  <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 space-y-2.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="relative flex-1 min-w-[200px]">
+                        <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          value={activeGroup.itemSearchQuery}
+                          onChange={(e) => updateActiveGroup({ itemSearchQuery: e.target.value })}
+                          placeholder="Search items to select..."
+                          className="w-full pl-10 pr-8 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                        />
+                        {activeGroup.itemSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => updateActiveGroup({ itemSearchQuery: '' })}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min={1}
+                            max={displayedItems.length || 1000}
+                            value={activeGroup.randomCountInput}
+                            onChange={(e) => updateActiveGroup({ randomCountInput: parseInt(e.target.value) || 1 })}
+                            className="w-14 px-2 py-1.5 text-center rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-white font-bold text-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handlePickRandomItems(activeGroup.randomCountInput)}
+                            className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold flex items-center gap-1 transition-colors cursor-pointer text-xs"
+                            title="Pick random items"
+                          >
+                            <Shuffle className="w-3.5 h-3.5" />
+                            <span>Random</span>
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleSelectAllDisplayed}
+                          className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 hover:border-emerald-500 text-emerald-600 font-bold text-xs cursor-pointer"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDeselectAllDisplayed}
+                          className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 hover:border-rose-500 text-rose-500 font-bold text-xs cursor-pointer"
+                        >
+                          Clear
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleSaveCountsheetSessionOnly}
+                          disabled={totalSelectedCount === 0 || isSaving}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all duration-200 cursor-pointer shadow-2xs select-none active:scale-95 disabled:opacity-50 disabled:pointer-events-none ${
+                            savedToastMessage
+                              ? 'bg-emerald-500 text-white shadow-md ring-2 ring-emerald-300 dark:ring-emerald-400/60'
+                              : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                          }`}
+                          title="Save this countsheet session"
+                        >
+                          {savedToastMessage ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                              <span>Saved!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Save className="w-3.5 h-3.5" />
+                              <span>Save Countsheet</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200/80 dark:border-zinc-800/80">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <label
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none transition-all ${
+                            onlyItemsWithBalance
+                              ? 'bg-amber-500/15 border-amber-500/50 text-amber-900 dark:text-amber-200'
+                              : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={onlyItemsWithBalance}
+                            onChange={(e) =>
+                              updateActiveGroup({ onlyItemsWithBalance: e.target.checked })
+                            }
+                            className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
+                          />
+                          <span>With Balance</span>
+                        </label>
+
+                        <label
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none transition-all ${
+                            insertCategorySpacers
+                              ? 'bg-amber-500/15 border-amber-500/50 text-amber-900 dark:text-amber-200'
+                              : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300'
+                          }`}
+                          title="Insert a 1-row blank space in the countsheet template whenever Category, SubCategory, or SubSubCategory changes"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={insertCategorySpacers}
+                            onChange={(e) =>
+                              updateActiveGroup({ insertCategorySpacers: e.target.checked })
+                            }
+                            className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
+                          />
+                          <span>Space Categories</span>
+                        </label>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateActiveGroup((prev) => ({
+                              ...prev,
+                              showSelectedItemsOnly: !prev.showSelectedItemsOnly,
+                            }))
+                          }
+                          className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1.5 ${
+                            showSelectedItemsOnly
+                              ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                              : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:border-blue-400'
+                          }`}
+                          title="Filter table to show only selected items in their exact countsheet sequence with 1-row category spacers"
+                        >
+                          <span>Selected ({activeGroup.selectedItemIds.size})</span>
+                        </button>
+                      </div>
+
+                      {/* Sort Dropdown */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setShowSortDropdown((prev) => !prev)}
+                          className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 hover:border-blue-500 text-slate-700 dark:text-zinc-200 font-bold text-xs inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <span>Sort: {itemSortBy === 'itemCode' ? 'Code' : 'Description'}</span>
+                          <ChevronDown
+                            className={`w-3.5 h-3.5 text-slate-400 transition-transform ${
+                              showSortDropdown ? 'rotate-180' : ''
+                            }`}
+                          />
+                        </button>
+
+                        {showSortDropdown && (
+                          <>
+                            <div
+                              className="fixed inset-0 z-20"
+                              onClick={() => setShowSortDropdown(false)}
+                            />
+                            <div className="absolute right-0 mt-1.5 w-44 rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 shadow-xl py-1 z-30">
+                              <button
+                                type="button"
+                                onClick={() => handleChangeItemSort('itemCode')}
+                                className={`w-full px-3 py-2 text-left text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
+                                  itemSortBy === 'itemCode'
+                                    ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
+                                    : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                                }`}
+                              >
+                                <span>Item Code</span>
+                                {itemSortBy === 'itemCode' && (
+                                  <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleChangeItemSort('itemDescription')}
+                                className={`w-full px-3 py-2 text-left text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
+                                  itemSortBy === 'itemDescription'
+                                    ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
+                                    : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                                }`}
+                              >
+                                <span>Item Description</span>
+                                {itemSortBy === 'itemDescription' && (
+                                  <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                                )}
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* LIVE TEMPLATE ROW & CATEGORY SPACER ALLOCATION RIBBON */}
+                  {activeGroup.selectedItemIds.size > 0 && (
+                    <div className="px-3 py-1.5 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-800/60 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <div className="flex flex-wrap items-center gap-1.5 text-slate-600 dark:text-zinc-300">
+                        <span className="font-semibold text-slate-800 dark:text-zinc-100">
+                          {activeGroupMeta?.csRangeLabel || activeGroup.name} Allocation:
+                        </span>
+                        <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                          {activeGroupMeta?.validItemCount || activeGroup.selectedItemIds.size} items
+                        </span>
+                        <span>·</span>
+                        <span className="font-mono">
+                          {activeGroupMeta?.physicalRowCount || 0} template rows
+                        </span>
+                        {activeGroupRowAllocation.spacerCount > 0 && (
+                          <>
+                            <span>·</span>
+                            <span className="px-1.5 py-0.2 rounded-md bg-amber-100/80 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border border-amber-300/70 dark:border-amber-800/70 font-semibold">
+                              {activeGroupRowAllocation.spacerCount} spacer row{activeGroupRowAllocation.spacerCount === 1 ? '' : 's'}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      <div className="font-mono font-bold text-emerald-700 dark:text-emerald-400">
+                        {activeGroupMeta?.sheetsNeeded || 1} × 34-row sheet{(activeGroupMeta?.sheetsNeeded || 1) === 1 ? '' : 's'}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ITEMS TABLE FOR ACTIVE GROUP */}
+                  <div className="border border-slate-200 dark:border-zinc-800 rounded-2xl overflow-hidden bg-white dark:bg-zinc-900 shadow-xs">
+                    <div className="max-h-[460px] lg:max-h-[520px] xl:max-h-[580px] overflow-x-auto overflow-y-auto">
+                      <table className="w-full min-w-[620px] text-left text-xs">
+                        <thead className="bg-slate-50 dark:bg-zinc-800/80 sticky top-0 z-10 border-b border-slate-200 dark:border-zinc-700">
+                          <tr>
+                            <th className="p-2.5 w-10 text-center">
+                              <span className="sr-only">Select</span>
+                            </th>
+                            <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300">Code</th>
+                            <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300">Description</th>
+                            <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-right">Cost</th>
+                            <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-right">Selling</th>
+                            <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-right">Balance</th>
+                            <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300 text-center">Unit</th>
+                            <th className="p-2.5 font-bold text-slate-700 dark:text-zinc-300">Category</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-zinc-800/60 font-mono text-[11px]">
+                          {displayedItems.length > 0 ? (
+                            displayedItems.slice(0, 300).map((item, itmIdx) => {
+                              const isSelected = activeGroup.selectedItemIds.has(item.id);
+                              const rowAlloc = isSelected
+                                ? activeGroupRowAllocation.itemAllocation.get(item.id)
+                                : undefined;
+                              return (
+                                <React.Fragment key={`item_row_${item.id || 'itm'}_${itmIdx}`}>
+                                  {rowAlloc?.precededBySpacerRow !== null &&
+                                    rowAlloc?.precededBySpacerRow !== undefined && (
+                                      <tr className="bg-amber-50/70 dark:bg-amber-950/25 border-y border-dashed border-amber-300 dark:border-amber-800/70 text-[10px] font-sans text-amber-800 dark:text-amber-300">
+                                        <td colSpan={8} className="px-2.5 py-1">
+                                          <div className="flex items-center justify-between">
+                                            <span className="font-semibold">
+                                              Template Row {rowAlloc.precededBySpacerRow}: Blank Space (Different Category)
+                                            </span>
+                                            <span className="font-mono text-[9.5px] opacity-80">
+                                              {rowAlloc.csLabel} • Row {rowAlloc.startRow}
+                                            </span>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    )}
+                                  <tr
+                                    onClick={() => handleToggleSelectItem(item.id)}
+                                    className={`cursor-pointer transition-colors ${
+                                      isSelected
+                                        ? 'bg-blue-50/70 dark:bg-blue-950/20 text-slate-900 dark:text-white'
+                                        : 'hover:bg-slate-50 dark:hover:bg-zinc-800/40 text-slate-700 dark:text-zinc-300'
+                                    }`}
+                                  >
+                                    <td className="p-2.5 text-center">
+                                      <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        onChange={() => {}}
+                                        className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                      />
+                                    </td>
+                                    <td className="p-2.5 font-semibold text-slate-800 dark:text-zinc-200">
+                                      {item.itemCode || item.barcode || '—'}
+                                    </td>
+                                    <td className="p-2.5 font-sans font-medium text-slate-900 dark:text-white max-w-xs xl:max-w-md">
+                                      {(() => {
+                                        const lines = splitItemDescriptionLines(
+                                          item.itemDescription,
+                                          COUNTSHEET_DESC_MAX_CHARS
+                                        );
+                                        if (lines.length <= 1) {
+                                          return <span className="block truncate">{item.itemDescription}</span>;
+                                        }
+                                        return (
+                                          <div className="space-y-0.5">
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="truncate">{lines[0]}</span>
+                                              <span className="shrink-0 px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300/70 dark:border-amber-800 text-[9px] font-bold">
+                                                {lines.length} rows
+                                              </span>
+                                            </div>
+                                            {lines.slice(1).map((ln, lIdx) => (
+                                              <div
+                                                key={lIdx}
+                                                className="text-[10px] text-blue-700 dark:text-blue-300 font-normal truncate"
+                                              >
+                                                ↳ {ln}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        );
+                                      })()}
+                                    </td>
+                                    <td className="p-2.5 text-right">
+                                      {item.cost ? item.cost.toFixed(2) : '—'}
+                                    </td>
+                                    <td className="p-2.5 text-right">
+                                      {item.selling ? item.selling.toFixed(2) : '—'}
+                                    </td>
+                                    <td className="p-2.5 text-right font-bold text-blue-600 dark:text-blue-400">
+                                      {item.balance}
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-zinc-800 text-[10px]">
+                                        {item.unit || 'PCS'}
+                                      </span>
+                                    </td>
+                                    <td className="p-2.5 font-sans text-slate-500 dark:text-zinc-400 truncate max-w-[140px]">
+                                      {item.category || ''}
+                                      {item.subCategory ? ` › ${item.subCategory}` : ''}
+                                      {item.subsubCategory ? ` › ${item.subsubCategory}` : ''}
+                                    </td>
+                                  </tr>
+                                </React.Fragment>
+                              );
+                            })
+                          ) : (
+                            <tr>
+                              <td colSpan={8} className="p-8 text-center text-slate-400 font-sans">
+                                No items found.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/50 border-t border-slate-200 dark:border-zinc-700 text-[11px] text-slate-500 flex items-center justify-between">
+                      <span>{displayedItems.length} items</span>
+                      <span>
+                        {activeGroup.selectedItemIds.size} selected
+                        {activeGroupMeta
+                          ? ` • ${activeGroupMeta.physicalRowCount} template row${
+                              activeGroupMeta.physicalRowCount === 1 ? '' : 's'
+                            }${
+                              activeGroupRowAllocation.spacerCount > 0
+                                ? ` (incl. ${activeGroupRowAllocation.spacerCount} space row${
+                                    activeGroupRowAllocation.spacerCount === 1 ? '' : 's'
+                                  })`
+                                : ''
+                            }`
+                          : ''}
+                      </span>
+                    </div>
+                  </div>
+
+                  {saveError && (
+                    <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{saveError}</span>
+                    </div>
+                  )}
+                  {isSaving && (
+                    <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/30 text-blue-700 dark:text-blue-300 text-xs flex items-center gap-3">
+                      <RefreshCw className="w-4 h-4 animate-spin shrink-0 text-blue-600 dark:text-blue-400" />
+                      <span className="font-bold">{saveProgress || 'Creating...'}</span>
+                    </div>
+                  )}
                 </div>
               </div>
-
-              {saveError && (
-                <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{saveError}</span>
-                </div>
-              )}
-              {isSaving && (
-                <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/30 text-blue-700 dark:text-blue-300 text-xs flex items-center gap-3">
-                  <RefreshCw className="w-4 h-4 animate-spin shrink-0 text-blue-600 dark:text-blue-400" />
-                  <span className="font-bold">{saveProgress || 'Creating...'}</span>
-                </div>
-              )}
             </div>
           )}
 
@@ -4303,7 +4943,10 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
           <div className="p-3.5 sm:p-5 border-t border-slate-200/90 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-3 bg-slate-50/70 dark:bg-zinc-900/50">
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setCurrentStep('SELECT_FILE')}
+                onClick={() => {
+                  setCurrentStep('SELECT_FILE');
+                  setIsEditingRecent(false);
+                }}
                 className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 text-xs font-bold transition-colors cursor-pointer"
               >
                 Back
@@ -4317,15 +4960,18 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleSaveCountsheetSessionOnly}
-                disabled={totalSelectedCount === 0 || isSaving}
-                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-all disabled:opacity-50 disabled:pointer-events-none cursor-pointer"
-              >
-                <Check className="w-4 h-4" />
-                <span>Save Countsheet</span>
-              </button>
+              {(isEditingRecent || Boolean(onExportToEncoding)) && (
+                <button
+                  type="button"
+                  onClick={handleExportToEncoding}
+                  disabled={totalSelectedCount === 0 || isSaving}
+                  className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-all disabled:opacity-50 disabled:pointer-events-none cursor-pointer"
+                  title="Export to Encoding"
+                >
+                  <ArrowRightLeft className="w-4 h-4" />
+                  <span>Export to Encoding</span>
+                </button>
+              )}
 
               <button
                 onClick={handleGenerateCountsheets}
@@ -4351,7 +4997,10 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
         {/* GOOGLE SHEETS CTRL+P PRINT PREVIEW MODAL */}
         {showGroupsPreview && (
           <div className="fixed inset-0 z-60 flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-150">
-            <div className="relative w-full max-w-[1280px] h-[94vh] bg-[#3c4043] rounded-2xl border border-zinc-700 shadow-2xl flex flex-col overflow-hidden text-white">
+            <div
+              data-scroll-lock-panel
+              className="relative w-full max-w-[1280px] h-[94vh] bg-[#3c4043] rounded-2xl border border-zinc-700 shadow-2xl flex flex-col overflow-hidden text-white"
+            >
               {/* Top Google Sheets Print Preview Toolbar */}
               <div className="px-4 py-2.5 bg-[#202124] border-b border-zinc-700/80 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
@@ -4459,52 +5108,60 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                 </div>
               </div>
 
-              {/* Group / Countsheet Tab Selector Bar */}
-              <div className="px-4 py-2 bg-[#292a2d] border-b border-zinc-700/80 flex items-center gap-2 overflow-x-auto">
-                <button
-                  onClick={() => setPreviewActiveGroupId('ALL')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 border cursor-pointer ${
-                    previewActiveGroupId === 'ALL'
-                      ? 'bg-blue-600 text-white border-blue-500 shadow-2xs'
-                      : 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700'
-                  }`}
-                >
-                  <span>All Sheets</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/25 font-mono">
-                    {overallPlan.length}
-                  </span>
-                </button>
+              {/* Main Preview Container: Vertical CS01, CS02 Sidebar + Preview Canvas */}
+              <div className="flex-1 flex flex-col sm:flex-row min-h-0 overflow-hidden">
+                {/* Vertical Countsheets (CS01, CS02...) Sidebar */}
+                <div className="w-full sm:w-48 bg-[#292a2d] border-b sm:border-b-0 sm:border-r border-zinc-700/80 p-2.5 flex flex-col gap-1.5 max-h-36 sm:max-h-none overflow-y-auto shrink-0 scrollbar-thin">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 px-1.5 py-0.5">
+                    Countsheets ({groups.length})
+                  </div>
+                  <button
+                    onClick={() => setPreviewActiveGroupId('ALL')}
+                    className={`w-full px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 flex items-center justify-between gap-1.5 border cursor-pointer ${
+                      previewActiveGroupId === 'ALL'
+                        ? 'bg-blue-600 text-white border-blue-500 shadow-2xs'
+                        : 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700'
+                    }`}
+                  >
+                    <span>All Sheets</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/25 font-mono">
+                      {overallPlan.length}
+                    </span>
+                  </button>
 
-                {groups.map((grp, gIdx) => {
-                  const isSelected = grp.id === previewActiveGroupId;
-                  const count = grp.selectedItemIds.size;
-                  const meta = groupCsMeta.byGroupId.get(grp.id);
-                  const displayCsName = meta?.csName || grp.name;
+                  {groups.map((grp, gIdx) => {
+                    const isSelected = grp.id === previewActiveGroupId;
+                    const count = grp.selectedItemIds.size;
+                    const meta = groupCsMeta.byGroupId.get(grp.id);
+                    const displayCsName =
+                      meta && meta.csUsed > 1
+                        ? `${formatCsCode(meta.startCsNumber)}–${formatCsCode(meta.endCsNumber)}`
+                        : meta?.csName || grp.name;
 
-                  return (
-                    <button
-                      key={`grp_pill_${grp.id}_${gIdx}`}
-                      onClick={() => setPreviewActiveGroupId(grp.id)}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 border cursor-pointer ${
-                        isSelected
-                          ? 'bg-blue-600 text-white border-blue-500 shadow-2xs'
-                          : 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700'
-                      }`}
-                    >
-                      <span>{displayCsName}</span>
-                      <span
-                        className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                          isSelected ? 'bg-white/20 text-white' : 'bg-zinc-700 text-zinc-300'
+                    return (
+                      <button
+                        key={`grp_pill_${grp.id}_${gIdx}`}
+                        onClick={() => setPreviewActiveGroupId(grp.id)}
+                        className={`w-full px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 flex items-center justify-between gap-1.5 border cursor-pointer ${
+                          isSelected
+                            ? 'bg-blue-600 text-white border-blue-500 shadow-2xs'
+                            : 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700'
                         }`}
                       >
-                        {count}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+                        <span className="truncate">{displayCsName}</span>
+                        <span
+                          className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono shrink-0 ${
+                            isSelected ? 'bg-white/20 text-white' : 'bg-zinc-700 text-zinc-300'
+                          }`}
+                        >
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
 
-              {/* Body: Google Sheets Print Preview / Sheet Grid Canvas */}
+                {/* Body: Google Sheets Print Preview / Sheet Grid Canvas */}
               {(() => {
                 const CHUNK_SIZE = COUNTSHEET_MAX_ROWS_PER_SHEET;
                 const cutoffRows = templateSpec.cutoffRows;
@@ -4547,12 +5204,12 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
 
                 const pages: PreviewSheetPage[] = [];
                 targetGroups.forEach((grp) => {
-                  const filteredSelected = getOrderedGroupItems(grp, onlyItemsWithBalance);
+                  const filteredSelected = getOrderedGroupItems(grp);
                   const packedPages = packItemsInto34RowSheets(
                     filteredSelected,
                     CHUNK_SIZE,
                     COUNTSHEET_DESC_MAX_CHARS,
-                    insertCategorySpacers
+                    grp.insertCategorySpacers
                   );
                   const totalSheetsForGroup = Math.max(1, packedPages.length);
                   const curMeta = groupCsMeta.byGroupId.get(grp.id);
@@ -4910,6 +5567,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                                               borderTop: topBorder,
                                               borderBottom: bottomBorder,
                                               borderLeft: '1px solid #000',
+                                              borderRight: '1px solid #000',
                                               padding: '0 4px',
                                               fontSize: `${fs.itemCodeCell.fontSizePt}pt`,
                                               fontFamily: fs.itemCodeCell.fontFamily,
@@ -4927,6 +5585,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                                             style={{
                                               borderTop: topBorder,
                                               borderBottom: bottomBorder,
+                                              borderLeft: '1px solid #000',
                                               borderRight: '1px solid #000',
                                               padding: '0 4px',
                                               fontSize: `${fs.itemDescCell.fontSizePt}pt`,
@@ -5279,7 +5938,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                                       <td className="bg-[#f8f9fa] border border-[#dadce0] text-center text-[10px] text-[#5f6368]">4</td>
                                       <td
                                         colSpan={7}
-                                        className="border border-[#e2e8f0] px-1 truncate"
+                                        className="border border-[#e2e8f0] px-1 leading-tight"
                                         style={{
                                           fontFamily: fs.privacyNotice.fontFamily,
                                           fontSize: `${fs.privacyNotice.fontSizePt}pt`,
@@ -5426,6 +6085,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                                               borderTop: topBorder,
                                               borderBottom: bottomBorder,
                                               borderLeft: '1px solid #000',
+                                              borderRight: '1px solid #000',
                                               fontFamily: fs.itemCodeCell.fontFamily,
                                               fontSize: `${fs.itemCodeCell.fontSizePt}pt`,
                                               fontWeight: fs.itemCodeCell.bold ? 700 : 400,
@@ -5439,6 +6099,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                                             style={{
                                               borderTop: topBorder,
                                               borderBottom: bottomBorder,
+                                              borderLeft: '1px solid #000',
                                               borderRight: '1px solid #000',
                                               fontFamily: fs.itemDescCell.fontFamily,
                                               fontSize: `${fs.itemDescCell.fontSizePt}pt`,
@@ -5566,6 +6227,203 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                                         </tr>
                                       );
                                     })}
+
+                                    {/* Row 43: Accuracy Declaration */}
+                                    <tr style={{ height: `${rh.declarationRow43}px` }}>
+                                      <td className="bg-[#f8f9fa] border border-[#dadce0] text-center text-[10px] text-[#5f6368]">
+                                        43
+                                      </td>
+                                      <td
+                                        colSpan={7}
+                                        className="border border-[#e2e8f0] px-1 leading-tight"
+                                        style={{
+                                          fontFamily: fs.declaration.fontFamily,
+                                          fontSize: `${fs.declaration.fontSizePt}pt`,
+                                        }}
+                                      >
+                                        <div>{templateSpec.declarationLine1}</div>
+                                        <div style={{ fontStyle: 'italic' }}>
+                                          {templateSpec.declarationLine2}
+                                        </div>
+                                      </td>
+                                      <td className="border border-[#e2e8f0]"></td>
+                                      <td colSpan={6} className="border border-[#e2e8f0]"></td>
+                                    </tr>
+
+                                    {/* Row 44: Spacer */}
+                                    <tr style={{ height: '14px' }}>
+                                      <td className="bg-[#f8f9fa] border border-[#dadce0] text-center text-[10px] text-[#5f6368]">
+                                        44
+                                      </td>
+                                      <td colSpan={14} className="border border-[#e2e8f0]"></td>
+                                    </tr>
+
+                                    {/* Rows 45-55: Last SI through Last DR */}
+                                    {cutoffRows.map((cRow, dIdx) => {
+                                      const rowNum = 45 + dIdx;
+                                      return (
+                                        <tr key={rowNum} style={{ height: `${rh.cutoffRow}px` }}>
+                                          <td className="bg-[#f8f9fa] border border-[#dadce0] text-center text-[10px] text-[#5f6368]">
+                                            {rowNum}
+                                          </td>
+                                          <td
+                                            colSpan={3}
+                                            className="border border-[#e2e8f0] px-1 whitespace-nowrap"
+                                            style={{
+                                              fontFamily: fs.cutoffRow.fontFamily,
+                                              fontSize: `${fs.cutoffRow.fontSizePt}pt`,
+                                              fontWeight: fs.cutoffRow.bold ? 700 : 400,
+                                            }}
+                                          >
+                                            {cRow.docLabel}
+                                          </td>
+                                          <td
+                                            colSpan={3}
+                                            className="border border-[#e2e8f0] px-1 whitespace-nowrap"
+                                            style={{
+                                              fontFamily: fs.cutoffRow.fontFamily,
+                                              fontSize: `${fs.cutoffRow.fontSizePt}pt`,
+                                              fontWeight: fs.cutoffRow.bold ? 700 : 400,
+                                            }}
+                                          >
+                                            {cRow.dateLabel}
+                                          </td>
+                                          <td
+                                            className="border border-[#e2e8f0] px-1 whitespace-nowrap"
+                                            style={{
+                                              fontFamily: fs.cutoffRow.fontFamily,
+                                              fontSize: `${fs.cutoffRow.fontSizePt}pt`,
+                                              fontWeight: fs.cutoffRow.bold ? 700 : 400,
+                                            }}
+                                          >
+                                            {cRow.amountLabel}
+                                          </td>
+                                          <td className="border border-[#e2e8f0]"></td>
+                                          <td colSpan={6} className="border border-[#e2e8f0]"></td>
+                                        </tr>
+                                      );
+                                    })}
+
+                                    {/* Row 56: Spacer */}
+                                    <tr style={{ height: '16px' }}>
+                                      <td className="bg-[#f8f9fa] border border-[#dadce0] text-center text-[10px] text-[#5f6368]">
+                                        56
+                                      </td>
+                                      <td colSpan={14} className="border border-[#e2e8f0]"></td>
+                                    </tr>
+
+                                    {/* Row 57: Signatory Headers */}
+                                    <tr style={{ height: `${rh.signatoryRow}px` }}>
+                                      <td className="bg-[#f8f9fa] border border-[#dadce0] text-center text-[10px] text-[#5f6368]">
+                                        57
+                                      </td>
+                                      <td
+                                        colSpan={2}
+                                        className="border border-[#e2e8f0] px-1"
+                                        style={{
+                                          fontFamily: fs.signatoryHeader.fontFamily,
+                                          fontSize: `${fs.signatoryHeader.fontSizePt}pt`,
+                                          fontWeight: fs.signatoryHeader.bold ? 700 : 400,
+                                        }}
+                                      >
+                                        {templateSpec.signatoryHeaders.preparedBy}
+                                      </td>
+                                      <td
+                                        colSpan={4}
+                                        className="border border-[#e2e8f0] px-1"
+                                        style={{
+                                          fontFamily: fs.signatoryHeader.fontFamily,
+                                          fontSize: `${fs.signatoryHeader.fontSizePt}pt`,
+                                          fontWeight: fs.signatoryHeader.bold ? 700 : 400,
+                                        }}
+                                      >
+                                        {templateSpec.signatoryHeaders.conformedBy}
+                                      </td>
+                                      <td
+                                        className="border border-[#e2e8f0] px-1"
+                                        style={{
+                                          fontFamily: fs.signatoryHeader.fontFamily,
+                                          fontSize: `${fs.signatoryHeader.fontSizePt}pt`,
+                                          fontWeight: fs.signatoryHeader.bold ? 700 : 400,
+                                        }}
+                                      >
+                                        {templateSpec.signatoryHeaders.notedBy}
+                                      </td>
+                                      <td className="border border-[#e2e8f0]"></td>
+                                      <td colSpan={6} className="border border-[#e2e8f0]"></td>
+                                    </tr>
+
+                                    {/* Row 58: Signature Lines */}
+                                    <tr style={{ height: `${rh.signatoryRow}px` }}>
+                                      <td className="bg-[#f8f9fa] border border-[#dadce0] text-center text-[10px] text-[#5f6368]">
+                                        58
+                                      </td>
+                                      <td
+                                        colSpan={2}
+                                        className="border border-[#e2e8f0] px-1 align-bottom"
+                                        style={{
+                                          fontFamily: fs.signatoryTitle.fontFamily,
+                                          fontSize: `${fs.signatoryTitle.fontSizePt}pt`,
+                                        }}
+                                      >
+                                        {templateSpec.signatoryLines.preparedBy}
+                                      </td>
+                                      <td
+                                        colSpan={3}
+                                        className="border border-[#e2e8f0]"
+                                        style={{ borderBottom: '1px solid #000' }}
+                                      >
+                                        {templateSpec.signatoryLines.conformedBy}
+                                      </td>
+                                      <td className="border border-[#e2e8f0]"></td>
+                                      <td
+                                        className="border border-[#e2e8f0]"
+                                        style={{ borderBottom: '1px solid #000' }}
+                                      >
+                                        {templateSpec.signatoryLines.notedBy}
+                                      </td>
+                                      <td className="border border-[#e2e8f0]"></td>
+                                      <td colSpan={6} className="border border-[#e2e8f0]"></td>
+                                    </tr>
+
+                                    {/* Row 59: Signatory Titles */}
+                                    <tr style={{ height: `${rh.signatoryRow}px` }}>
+                                      <td className="bg-[#f8f9fa] border border-[#dadce0] text-center text-[10px] text-[#5f6368]">
+                                        59
+                                      </td>
+                                      <td
+                                        colSpan={2}
+                                        className="border border-[#e2e8f0] px-1"
+                                        style={{
+                                          fontFamily: fs.signatoryTitle.fontFamily,
+                                          fontSize: `${fs.signatoryTitle.fontSizePt}pt`,
+                                        }}
+                                      >
+                                        {templateSpec.signatoryTitles.preparedBy}
+                                      </td>
+                                      <td
+                                        colSpan={3}
+                                        className="border border-[#e2e8f0] px-1 text-center"
+                                        style={{
+                                          fontFamily: fs.signatoryTitle.fontFamily,
+                                          fontSize: `${fs.signatoryTitle.fontSizePt}pt`,
+                                        }}
+                                      >
+                                        {templateSpec.signatoryTitles.conformedBy}
+                                      </td>
+                                      <td className="border border-[#e2e8f0]"></td>
+                                      <td
+                                        className="border border-[#e2e8f0] px-1 text-center"
+                                        style={{
+                                          fontFamily: fs.signatoryTitle.fontFamily,
+                                          fontSize: `${fs.signatoryTitle.fontSizePt}pt`,
+                                        }}
+                                      >
+                                        {templateSpec.signatoryTitles.notedBy}
+                                      </td>
+                                      <td className="border border-[#e2e8f0]"></td>
+                                      <td colSpan={6} className="border border-[#e2e8f0]"></td>
+                                    </tr>
                                   </tbody>
                                 </table>
                               </div>
@@ -5577,6 +6435,7 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
                   </div>
                 );
               })()}
+              </div>
 
               {/* Bottom Google Sheets Tab Bar & Close Action */}
               <div className="px-4 py-2 bg-[#202124] border-t border-zinc-700/80 flex items-center justify-between gap-3">
@@ -5610,7 +6469,10 @@ export const CreateRandomCountsheetModal: React.FC<CreateRandomCountsheetModalPr
         {/* IMPORT GENERATED COUNTSHEET MODAL (PLOTTED TEMPLATE RECOVERY) */}
         {showImportPlottedModal && (
           <div className="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-200">
-            <div className="relative w-full max-w-xl bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div
+              data-scroll-lock-panel
+              className="relative w-full max-w-xl bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+            >
               {/* Header */}
               <div className="p-4 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between gap-2 bg-slate-50/80 dark:bg-zinc-800/50">
                 <div className="flex items-center gap-2.5">

@@ -199,11 +199,6 @@ export function normalizeRoleDefinitions(rawList?: any[]): AdminRoleDefinition[]
   const validPermSet = new Set<RolePermissionKey>(ROLE_PERMISSION_CATALOG.map((p) => p.key));
   const byId = new Map<string, AdminRoleDefinition>();
 
-  // Seed the 7 core system roles first in their canonical order
-  for (const sysRole of DEFAULT_ROLE_DEFINITIONS) {
-    byId.set(sysRole.id, { ...sysRole, permissions: [...sysRole.permissions] });
-  }
-
   for (const item of rawList) {
     if (!item || typeof item !== 'object') continue;
     const rawId = String(item.id || '')
@@ -233,6 +228,10 @@ export function normalizeRoleDefinitions(rawList?: any[]): AdminRoleDefinition[]
       isSystem: Boolean(defMatch || item.isSystem),
       updatedAt: item.updatedAt,
     });
+  }
+
+  if (byId.size === 0) {
+    return DEFAULT_ROLE_DEFINITIONS;
   }
 
   return Array.from(byId.values());
@@ -349,6 +348,7 @@ export function getRoleDefinitionById(
   return (
     list.find((r) => r.id.toLowerCase() === mappedId || r.name.toLowerCase() === rawId) ||
     list.find((r) => r.id === 'senior_auditor') ||
+    list[0] ||
     DEFAULT_ROLE_DEFINITIONS[4]
   );
 }
@@ -359,8 +359,12 @@ export function doesRoleHavePermission(
   roles?: AdminRoleDefinition[]
 ): boolean {
   if (!roleId) return false;
+  // All roles can access all features except the admin feature/admin console
+  if (permission !== 'admin_console') {
+    return true;
+  }
   const def = getRoleDefinitionById(roleId, roles);
-  return def.permissions.includes(permission);
+  return def.permissions.includes('admin_console');
 }
 
 export function getRoleBadgeClasses(color: RoleBadgeColor): string {
@@ -549,4 +553,90 @@ export function subscribeToDirectoryUpdates(
   return () => {
     window.removeEventListener(ADMIN_DIRECTORY_EVENT, handler);
   };
+}
+
+export interface MasterdataSheetInfo {
+  name: string;
+  count: number;
+  isDefault?: boolean;
+}
+
+export interface MasterdataSheetsResponse {
+  spreadsheetId: string;
+  spreadsheetUrl: string;
+  sheets: MasterdataSheetInfo[];
+  availableSheets?: string[];
+  totalItems: number;
+}
+
+export async function fetchMasterdataSheetsInfo(
+  spreadsheetUrl?: string,
+  accessToken?: string | null
+): Promise<MasterdataSheetsResponse> {
+  const params = new URLSearchParams({ _ts: String(Date.now()) });
+  if (spreadsheetUrl && spreadsheetUrl.trim()) {
+    params.set('spreadsheetUrl', spreadsheetUrl.trim());
+  }
+  const headers: Record<string, string> = {};
+  if (accessToken && accessToken.trim()) {
+    headers.Authorization = `Bearer ${accessToken.trim()}`;
+  }
+  const res = await fetch(`/api/admin/masterdata/sheets?${params.toString()}`, { headers });
+  if (!res.ok) {
+    throw new Error('Failed to load masterdata sheets');
+  }
+  return res.json();
+}
+
+export async function addMasterdataSheet(
+  sheetName: string,
+  spreadsheetUrl?: string,
+  accessToken?: string | null
+): Promise<{ success: boolean; sheetName: string; addedCount: number; totalItems: number; sheets: MasterdataSheetInfo[] }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken && accessToken.trim()) {
+    headers.Authorization = `Bearer ${accessToken.trim()}`;
+  }
+  const res = await fetch('/api/admin/masterdata/sheets', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ sheetName, spreadsheetUrl }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to add sheet');
+  }
+  return data;
+}
+
+export async function removeMasterdataSheet(
+  sheetName: string
+): Promise<{ success: boolean; sheetName: string; totalItems: number; sheets: MasterdataSheetInfo[] }> {
+  const isRemoveAll = sheetName === '__ALL__';
+  const res = await fetch('/api/admin/masterdata/sheets', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sheetName, removeAll: isRemoveAll }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to remove sheet');
+  }
+  return data;
+}
+
+export async function syncMasterdataSheet(
+  sheetName?: string,
+  spreadsheetUrl?: string
+): Promise<{ success: boolean; totalItems: number; sheets: MasterdataSheetInfo[] }> {
+  const res = await fetch('/api/admin/masterdata/sheets/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sheetName, spreadsheetUrl }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to sync sheets');
+  }
+  return data;
 }

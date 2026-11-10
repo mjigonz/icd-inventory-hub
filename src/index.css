@@ -1326,6 +1326,23 @@ textarea {
     transform var(--duration-panel) var(--ease-enter);
 }
 
+/* Global Panel Scroll Lock & Overscroll Containment */
+html.panel-scroll-locked,
+body.panel-scroll-locked {
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+}
+
+.ui-modal-backdrop,
+.ui-modal-panel,
+.ui-modal-slide-bottom,
+.ui-dropdown-panel,
+.drawer-backdrop,
+.drawer-panel-right,
+[data-scroll-lock-panel] {
+  overscroll-behavior: contain;
+}
+
 /* Modal Backdrop & Panel Enter/Exit Transitions */
 .ui-modal-backdrop {
   opacity: 0;
@@ -1470,6 +1487,69 @@ button, input, select {
 .animate-slide-up-fade-in-4,
 .animate-fade-in-up-delay-4 {
   animation: slideUpFadeIn var(--duration-page) var(--ease-enter) 100ms backwards;
+}
+
+/* Quick fast-to-slow modal slide transitions between Countsheet and Encoding */
+@keyframes slideOutToLeft {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-105vw, 0, 0);
+  }
+}
+
+@keyframes slideInFromRight {
+  0% {
+    transform: translate3d(105vw, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes slideOutToRight {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(105vw, 0, 0);
+  }
+}
+
+@keyframes slideInFromLeft {
+  0% {
+    transform: translate3d(-105vw, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.animate-slide-out-left {
+  animation: slideOutToLeft 420ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+  will-change: transform;
+  backface-visibility: hidden;
+  pointer-events: none;
+}
+
+.animate-slide-in-right {
+  animation: slideInFromRight 420ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+.animate-slide-out-right {
+  animation: slideOutToRight 420ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+  will-change: transform;
+  backface-visibility: hidden;
+  pointer-events: none;
+}
+
+.animate-slide-in-left {
+  animation: slideInFromLeft 420ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

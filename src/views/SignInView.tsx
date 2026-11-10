@@ -21,6 +21,7 @@ import { PanelDecoration } from '../components/PanelDecoration';
 import { getRememberedUser, clearRememberedUser, SignInOptions } from '../services/auth';
 import { RememberedUser } from '../types';
 import { ThemeMode } from '../hooks/useTheme';
+import { useScrollLock } from '../hooks/useScrollLock';
 
 interface SignInViewProps {
   onSignIn: (options?: SignInOptions) => void;
@@ -49,6 +50,7 @@ export const SignInView: React.FC<SignInViewProps> = ({
 }) => {
   const [rememberedUser, setRememberedUser] = useState<RememberedUser | null>(() => getRememberedUser());
   const [isNicknameModalOpen, setIsNicknameModalOpen] = useState(false);
+  useScrollLock(isNicknameModalOpen);
   const [guestNickname, setGuestNickname] = useState('');
   const [nicknameError, setNicknameError] = useState<string | null>(null);
   const nicknameInputRef = useRef<HTMLInputElement | null>(null);

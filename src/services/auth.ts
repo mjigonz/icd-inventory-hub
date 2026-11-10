@@ -39,22 +39,48 @@ const tokensMissingGmailScope = new Set<string>();
 const REMEMBERED_USER_KEY = 'countsheet_last_user';
 const CUSTOM_PHOTO_KEY = 'countsheet_custom_user_photo';
 
-export const getCustomPhotoURL = (): string | null => {
+function getScopedPhotoKey(email?: string | null): string {
+  const clean = (email || '').trim().toLowerCase();
+  return clean ? `${CUSTOM_PHOTO_KEY}_${clean}` : CUSTOM_PHOTO_KEY;
+}
+
+export const getCustomPhotoURL = (email?: string | null): string | null => {
   try {
+    if (email) {
+      const scoped = localStorage.getItem(getScopedPhotoKey(email));
+      if (scoped) return scoped;
+    }
     return localStorage.getItem(CUSTOM_PHOTO_KEY) || null;
   } catch {
     return null;
   }
 };
 
-export const setCustomPhotoURL = (photoUrl: string | null) => {
-  try {
-    if (photoUrl) {
-      localStorage.setItem(CUSTOM_PHOTO_KEY, photoUrl);
+export const setCustomPhotoURL = (photoUrl: string | null, email?: string | null) => {
+  const writeValue = (key: string, val: string | null) => {
+    if (val) {
+      localStorage.setItem(key, val);
     } else {
-      localStorage.removeItem(CUSTOM_PHOTO_KEY);
+      localStorage.removeItem(key);
     }
-  } catch {}
+  };
+
+  const scopedKey = getScopedPhotoKey(email);
+  try {
+    writeValue(CUSTOM_PHOTO_KEY, photoUrl);
+    if (scopedKey !== CUSTOM_PHOTO_KEY) {
+      writeValue(scopedKey, photoUrl);
+    }
+  } catch {
+    // Free up non-essential cache if localStorage is near quota, then retry
+    try {
+      localStorage.removeItem('countsheet_cached_drive_files');
+      writeValue(CUSTOM_PHOTO_KEY, photoUrl);
+      if (scopedKey !== CUSTOM_PHOTO_KEY) {
+        writeValue(scopedKey, photoUrl);
+      }
+    } catch {}
+  }
 };
 
 export const getRememberedUser = (): RememberedUser | null => {
@@ -67,7 +93,14 @@ export const getRememberedUser = (): RememberedUser | null => {
       typeof parsed.email === 'string' &&
       !parsed.email.endsWith('@sidc.local')
     ) {
-      return parsed as RememberedUser;
+      const customPhoto = getCustomPhotoURL(parsed.email);
+      return {
+        ...(parsed as RememberedUser),
+        photoURL:
+          customPhoto === 'NONE'
+            ? null
+            : customPhoto || parsed.photoURL || null,
+      };
     }
     return null;
   } catch {

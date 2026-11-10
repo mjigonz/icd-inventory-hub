@@ -41,6 +41,7 @@ import {
 } from '../services/db';
 import { SelectedBranch, BranchRoleInfo } from '../types';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { useScrollLock } from '../hooks/useScrollLock';
 import { getStoredOAuthToken, isGoogleOAuthAccessToken, refreshGoogleAccessToken } from '../services/auth';
 import { useLanguage } from '../services/i18n';
 
@@ -108,6 +109,7 @@ export const BranchView: React.FC<BranchViewProps> = ({
   const [isClaimingRole, setIsClaimingRole] = useState(false);
   const [branchToRemove, setBranchToRemove] = useState<SelectedBranch | null>(null);
   const [isDeletingBranch, setIsDeletingBranch] = useState(false);
+  useScrollLock(Boolean(branchToRemove || claimRoleModalBranch));
   const [driveApiError, setDriveApiError] = useState<{
     title: string;
     message: string;
@@ -846,7 +848,7 @@ export const BranchView: React.FC<BranchViewProps> = ({
       {/* Remove Cached Branch Confirmation Modal */}
       {branchToRemove && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-4">
+          <div data-scroll-lock-panel className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-4">
             <div className="text-center">
               <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900/60 flex items-center justify-center mx-auto mb-2">
                 <Trash2 className="w-6 h-6" />
@@ -892,7 +894,7 @@ export const BranchView: React.FC<BranchViewProps> = ({
       {/* Role Claim Modal */}
       {claimRoleModalBranch && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-4">
+          <div data-scroll-lock-panel className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in-95 space-y-4">
             <div className="text-center">
               <div className="w-12 h-12 rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto mb-2">
                 <UserCheck className="w-6 h-6" />

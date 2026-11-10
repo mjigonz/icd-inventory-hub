@@ -143,8 +143,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   const [notifSentToast, setNotifSentToast] = useState(false);
   const notifMenuRef = React.useRef<HTMLDivElement | null>(null);
 
-  // Admin-only Google Sheets–style online presence avatars (including Guest Mode avatar-only users)
-  const canViewAdminPresence = Boolean(isUserAdmin || isAdminMode);
+  // Google Sheets–style online presence avatars (visible to Admin and all Guest Mode users)
+  const canViewAdminPresence = Boolean(isUserAdmin || isAdminMode || !isGoogleConnected);
   const [onlineUsers, setOnlineUsers] = useState<PresenceUser[]>([]);
   const [failedAvatarIds, setFailedAvatarIds] = useState<Record<string, boolean>>({});
   const [showPresenceMenu, setShowPresenceMenu] = useState(false);
@@ -281,16 +281,26 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
       <div className="w-full max-w-[1560px] mx-auto px-4 sm:px-8 lg:px-12 xl:px-16 py-2 flex items-center justify-between gap-4">
         {/* App Title & Branding */}
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-8 h-8 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 flex items-center justify-center p-1 shrink-0 shadow-xs">
+          <button
+            type="button"
+            onClick={() => onSelectTab?.('inventory')}
+            title="Go to Inventory Masterdata"
+            className="w-8 h-8 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 flex items-center justify-center p-1 shrink-0 shadow-xs cursor-pointer hover:border-emerald-400 transition-colors"
+          >
             <img src="/icd-logo.svg" alt="ICD Logo" width="24" height="24" className="w-full h-full object-contain aspect-square shrink-0" />
-          </div>
+          </button>
           <div className="min-w-0">
-            <h1 className="text-xs sm:text-sm font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-1.5 leading-none">
+            <button
+              type="button"
+              onClick={() => onSelectTab?.('inventory')}
+              title="Go to Inventory Masterdata"
+              className="text-xs sm:text-sm font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-1.5 leading-none cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+            >
               <span className="truncate">Inventory Hub</span>
               <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 shrink-0">
                 HUB
               </span>
-            </h1>
+            </button>
             {/* Branch pill */}
             <button
               onClick={onOpenBranchModal}
@@ -519,7 +529,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                     })}
                   </div>
 
-                  {onSelectTab && (
+                  {onSelectTab && isAdminMode && isUserAdmin && (
                     <div className="p-2 bg-slate-50/90 dark:bg-slate-800/60 border-t border-slate-200/80 dark:border-slate-800">
                       <button
                         type="button"
@@ -780,6 +790,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             isUserAdmin={isUserAdmin}
             onToggleAdminMode={onToggleAdminMode}
             onOpenAdminPanel={() => onSelectTab?.('admin')}
+            currentTab={currentTab}
+            onSelectTab={onSelectTab}
+            countItemTotal={countItemTotal}
           />
         </div>
       </div>

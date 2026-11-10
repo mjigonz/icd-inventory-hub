@@ -41,12 +41,9 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     setMounted(true);
   }, []);
 
-  // Handle body scroll lock & Escape key
+  // Handle Escape key (scroll lock is managed via useAnimatedPresence -> useScrollLock)
   useEffect(() => {
     if (!isOpen) return;
-
-    const originalOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -56,7 +53,6 @@ export const ShareModal: React.FC<ShareModalProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => {
-      document.body.style.overflow = originalOverflow;
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen, onClose]);

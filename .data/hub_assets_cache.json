@@ -1,6 +1,6 @@
 {
   "ownerEmail": "icdhubsystems@gmail.com",
-  "updatedAt": "2026-10-31T14:45:07.416Z",
+  "updatedAt": "2026-11-04T06:52:35.967Z",
   "templateFolder": {
     "id": "hub_folder_template",
     "name": "TEMPLATE"
@@ -20,13 +20,231 @@
   },
   "countsheetTemplates": [
     {
-      "id": "19eb2315c82841b7f2920f8e1a272f52095f1e72c",
+      "id": "1vaA4Tv8Be_R7LLsYMGiUrHQg1M3qtftejYCGIudSA5w",
       "name": "RANDOM INVENTORY COUNTSHEET TEMPLATE",
       "gid": "1328306184",
       "folderPath": "TEMPLATE/COUNTSHEET",
       "ownerEmail": "icdhubsystems@gmail.com",
-      "webViewLink": "https://docs.google.com/spreadsheets/d/19eb2315c82841b7f2920f8e1a272f52095f1e72c/edit#gid=1328306184",
-      "modifiedTime": "2026-10-31T14:45:04.872Z"
+      "webViewLink": "https://docs.google.com/spreadsheets/d/1vaA4Tv8Be_R7LLsYMGiUrHQg1M3qtftejYCGIudSA5w/edit#gid=1328306184",
+      "modifiedTime": "2026-10-31T14:45:04.872Z",
+      "spec": {
+        "spreadsheetId": "1vaA4Tv8Be_R7LLsYMGiUrHQg1M3qtftejYCGIudSA5w",
+        "spreadsheetTitle": "RANDOM INVENTORY COUNTSHEET TEMPLATE",
+        "sheetId": 1328306184,
+        "sheetTitle": "Template",
+        "formTitle": "Random Inventory Count Sheet",
+        "docCode": "SIDC-SS-F-ICD-005",
+        "revisionLine1": "REVISION 01",
+        "revisionLine2": "(Effectivity Date: January 2, 2026)",
+        "privacyNotice": "Privacy Notice: Pursuant to R.A. 10173 or Data Privacy Act of 2012, all information gathered will remain confidential and will be used for specified and intended purposes only. Data will be disposed after 1 year of retention through shredding",
+        "row5Left": "Branch/Project:__________________________________",
+        "row5Right": "Name of Sales Clerk: ___________________________",
+        "row6Left": "As of:___________________________________________",
+        "row6Right": "Stockman/Warehouseman: _____________________",
+        "printHeaders": {
+          "stockDescription": "Stock Description",
+          "unit": "Pc/Box",
+          "actualCount": "Actual Count",
+          "perPos": "Per POS",
+          "variance": "Variance",
+          "remarks": "Remarks"
+        },
+        "dataHeaders": {
+          "itemCode": "Item Code",
+          "itemDescription": "Item Description",
+          "cost": "Cost",
+          "selling": "Selling",
+          "balance": "Balance",
+          "unit": "Unit"
+        },
+        "colWidths": {
+          "B": 80,
+          "C": 400,
+          "D": 54,
+          "E": 128,
+          "F": 76,
+          "G": 84,
+          "H": 217,
+          "I": 28,
+          "J": 95,
+          "K": 380,
+          "L": 68,
+          "M": 68,
+          "N": 68,
+          "O": 52
+        },
+        "rowHeights": {
+          "headerRow2": 32,
+          "headerRow3": 32,
+          "privacyRow4": 22,
+          "branchRow5": 20,
+          "branchRow6": 20,
+          "spacerRow7": 14,
+          "tableHeaderRow8": 21,
+          "itemRow": 19,
+          "declarationRow43": 28,
+          "cutoffRow": 19,
+          "signatoryRow": 20
+        },
+        "fontStyles": {
+          "baseFontFamily": "Calibri, Arial, sans-serif",
+          "formTitle": {
+            "fontFamily": "Arial, sans-serif",
+            "fontSizePt": 12,
+            "bold": true
+          },
+          "docCode": {
+            "fontFamily": "Arial, sans-serif",
+            "fontSizePt": 11.5,
+            "bold": false
+          },
+          "revisionLine1": {
+            "fontFamily": "Arial, sans-serif",
+            "fontSizePt": 10.5,
+            "bold": false
+          },
+          "revisionLine2": {
+            "fontFamily": "Arial, sans-serif",
+            "fontSizePt": 8.5,
+            "italic": true
+          },
+          "privacyNotice": {
+            "fontFamily": "Calibri, Arial, sans-serif",
+            "fontSizePt": 8,
+            "italic": true
+          },
+          "branchInfo": {
+            "fontFamily": "Calibri, Arial, sans-serif",
+            "fontSizePt": 10,
+            "bold": true
+          },
+          "printTableHeader": {
+            "fontFamily": "Arial, sans-serif",
+            "fontSizePt": 10,
+            "bold": true
+          },
+          "dataTableHeader": {
+            "fontFamily": "Calibri, Arial, sans-serif",
+            "fontSizePt": 10.5,
+            "bold": true
+          },
+          "itemCodeCell": {
+            "fontFamily": "Arial, sans-serif",
+            "fontSizePt": 9,
+            "bold": false
+          },
+          "itemDescCell": {
+            "fontFamily": "Arial, sans-serif",
+            "fontSizePt": 9,
+            "bold": false
+          },
+          "itemUnitCell": {
+            "fontFamily": "Arial, sans-serif",
+            "fontSizePt": 9,
+            "bold": false
+          },
+          "dataSourceCell": {
+            "fontFamily": "Calibri, Arial, sans-serif",
+            "fontSizePt": 9.5,
+            "bold": false
+          },
+          "declaration": {
+            "fontFamily": "Calibri, Arial, sans-serif",
+            "fontSizePt": 8,
+            "bold": false
+          },
+          "cutoffRow": {
+            "fontFamily": "Calibri, Arial, sans-serif",
+            "fontSizePt": 10,
+            "bold": false
+          },
+          "signatoryHeader": {
+            "fontFamily": "Calibri, Arial, sans-serif",
+            "fontSizePt": 10,
+            "bold": true
+          },
+          "signatoryTitle": {
+            "fontFamily": "Calibri, Arial, sans-serif",
+            "fontSizePt": 10,
+            "bold": false
+          }
+        },
+        "declarationLine1": "I Hearby declare that all the information provided is final, complete, and accurate to the best of my knowledge.",
+        "declarationLine2": "(Ako ay taos-pusong nagpapahayag na ang lahat ng impormasyong nakasaad sa itaas ay pinal, kumpleto at totoo ayon sa aking nalalaman.)",
+        "cutoffRows": [
+          {
+            "docLabel": "Last SI: ______________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last SB: _____________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last COLA: ___________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last CI: ______________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last RG: _____________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last RV: _____________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last RR: _____________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last SO: _____________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last ST: _____________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last SP: _____________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          },
+          {
+            "docLabel": "Last DR: _____________________________",
+            "dateLabel": "Date: __________________",
+            "amountLabel": "Amount: ____________________"
+          }
+        ],
+        "signatoryHeaders": {
+          "preparedBy": "Prepared by:",
+          "conformedBy": "Conformed by:",
+          "notedBy": "Noted by:"
+        },
+        "signatoryLines": {
+          "preparedBy": "__________________",
+          "conformedBy": "",
+          "notedBy": ""
+        },
+        "signatoryTitles": {
+          "preparedBy": "Auditor/Operation",
+          "conformedBy": "Warehouseman/ Clerk",
+          "notedBy": "Store Officer"
+        },
+        "fetchedAt": "2026-11-04T01:52:00.000Z"
+      }
     },
     {
       "id": "hub-countsheet-periodic-template",

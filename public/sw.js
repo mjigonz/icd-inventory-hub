@@ -1,5 +1,5 @@
 // CountSheet PWA Service Worker
-const CACHE_NAME = 'countsheet-v14';
+const CACHE_NAME = 'countsheet-v15';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -56,17 +56,26 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  // Bypass Google APIs, auth, Vite dev modules, and backend /api/ endpoints
+  // Bypass Google APIs, auth, and backend /api/ endpoints
   if (
     url.hostname.includes('googleapis.com') ||
     url.hostname.includes('firebaseapp.com') ||
     url.hostname.includes('google.com') ||
     url.hostname.includes('gstatic.com') ||
     url.pathname.startsWith('/api/') ||
-    url.pathname.startsWith('/src/') ||
-    url.pathname.startsWith('/node_modules/') ||
-    url.pathname.startsWith('/@')
+    url.pathname.startsWith('/node_modules/')
   ) {
+    return;
+  }
+
+  // Always force fresh network fetch (no-store) for Vite source modules so ais-pre and ais-dev never serve stale code
+  if (url.pathname.startsWith('/src/') || url.pathname.startsWith('/@')) {
+    event.respondWith(
+      fetch(event.request, { cache: 'no-store' }).catch(async () => {
+        const cached = await caches.match(event.request);
+        return cached || Response.error();
+      })
+    );
     return;
   }
 
@@ -79,7 +88,7 @@ self.addEventListener('fetch', (event) => {
     url.pathname.endsWith('.css')
   ) {
     event.respondWith(
-      fetch(event.request, { cache: 'no-cache' })
+      fetch(event.request, { cache: 'no-store' })
         .then((response) => {
           if (response && response.status === 200) {
             const clone = response.clone();

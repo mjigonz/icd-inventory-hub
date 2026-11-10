@@ -311,8 +311,17 @@ export function usePresenceHeartbeat(params: {
   selectedBranch: SelectedBranch | null;
   currentTab: string;
   isUserAdmin: boolean;
+  customPhotoURL?: string | null;
 }) {
-  const { user, accessToken, isGoogleConnected, selectedBranch, currentTab, isUserAdmin } = params;
+  const {
+    user,
+    accessToken,
+    isGoogleConnected,
+    selectedBranch,
+    currentTab,
+    isUserAdmin,
+    customPhotoURL,
+  } = params;
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -332,10 +341,7 @@ export function usePresenceHeartbeat(params: {
 
     const loginType: 'google' | 'guest' = isExplicitGuest ? 'guest' : 'google';
 
-    const displayName = (user.displayName || '').trim();
-    if (isExplicitGuest && (!displayName || displayName.toLowerCase() === 'guest')) {
-      return;
-    }
+    const displayName = (user.displayName || '').trim() || 'Guest Auditor';
 
     let email = user.email || '';
     if (!email || isExplicitGuest) {
@@ -351,12 +357,16 @@ export function usePresenceHeartbeat(params: {
     }
 
     const sessionId = buildPresenceSessionId(loginType, email, displayName);
+    const resolvedPhoto =
+      customPhotoURL === 'NONE'
+        ? null
+        : customPhotoURL || (isExplicitGuest ? null : user.photoURL || null);
 
     const payload = {
       sessionId,
       displayName,
       email,
-      photoURL: isExplicitGuest ? null : user.photoURL || null,
+      photoURL: resolvedPhoto,
       loginType,
       role,
       branchName:
@@ -399,6 +409,7 @@ export function usePresenceHeartbeat(params: {
     selectedBranch?.name,
     currentTab,
     isUserAdmin,
+    customPhotoURL,
   ]);
 }
 

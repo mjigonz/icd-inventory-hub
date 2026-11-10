@@ -35,9 +35,12 @@ import {
   ChevronDown,
   Globe,
   FileText,
+  PackageSearch,
 } from 'lucide-react';
 import { ThemeMode, AppearanceMode } from '../hooks/useTheme';
+import { useScrollLock } from '../hooks/useScrollLock';
 import { SelectedBranch } from '../types';
+import { NavTab } from './BottomNav';
 import { ChangePhotoModal } from './ChangePhotoModal';
 import {
   BACKGROUND_ICON_THEMES,
@@ -87,6 +90,9 @@ interface HeaderMenuProps {
   isUserAdmin?: boolean;
   onToggleAdminMode?: (enabled: boolean) => void;
   onOpenAdminPanel?: () => void;
+  currentTab?: NavTab;
+  onSelectTab?: (tab: NavTab) => void;
+  countItemTotal?: number | null;
 }
 
 const DEFAULT_ADMIN_CODES = ['ICD2026', 'SIDC2026', 'ADMIN', '1234'];
@@ -119,6 +125,9 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
   isUserAdmin = false,
   onToggleAdminMode,
   onOpenAdminPanel,
+  currentTab = 'inventory',
+  onSelectTab,
+  countItemTotal = null,
 }) => {
   const {
     activeTheme,
@@ -139,7 +148,14 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
   const [isThemeBoxOpen, setIsThemeBoxOpen] = useState(false);
   const [isLanguageBoxOpen, setIsLanguageBoxOpen] = useState(false);
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
+  const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setIsProfileDropdownOpen(false);
+    }
+  }, [isOpen]);
 
   // Trash state (30-day retention for deleted recents)
   const [trashItems, setTrashItems] = useState<TrashItem[]>(() => getTrashItems());
@@ -244,10 +260,13 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
     setMounted(true);
   }, []);
 
-  // Close on Escape key & lock body scroll smoothly
+  // Lock background page scroll while sidebar drawer is open
+  useScrollLock(isOpen);
+
+  // Close on Escape key & reset internal drawer view after exit animation
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && isOpen) {
+      if (event.key === 'Escape' && isOpen && !isPhotoModalOpen) {
         setIsOpen(false);
       }
     };
@@ -255,11 +274,9 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
     let resetViewTimer: number | null = null;
     if (isOpen) {
       document.addEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'hidden';
     } else {
-      // Wait for sidebar exit animation (420ms) before releasing scroll lock & resetting internal drawer view
+      // Wait for sidebar exit animation (420ms) before resetting internal drawer view
       resetViewTimer = window.setTimeout(() => {
-        document.body.style.overflow = '';
         setCurrentView('menu');
         setIsThemeBoxOpen(false);
         setIsLanguageBoxOpen(false);
@@ -272,7 +289,7 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
         window.clearTimeout(resetViewTimer);
       }
     };
-  }, [isOpen]);
+  }, [isOpen, isPhotoModalOpen]);
 
   // Touch swipe-right-to-close handlers
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -352,80 +369,238 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
 
         {/* Top Header Section */}
         {currentView === 'menu' ? (
-          <div className="drawer-stagger-item drawer-stagger-1 p-4 bg-slate-50/90 dark:bg-zinc-800/70 border-b border-slate-200/90 dark:border-zinc-800 flex items-start justify-between gap-2.5 shrink-0">
-            <div className="flex items-center gap-3 min-w-0">
-              {/* Profile Avatar */}
-              <div className="relative shrink-0">
-                {userPhoto ? (
-                  <img
-                    src={userPhoto}
-                    alt={displayName}
-                    className="w-10 h-10 rounded-full object-cover border-2 border-zinc-400 dark:border-zinc-600 shadow-xs transition-transform duration-200 hover:scale-105"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="w-10 h-10 rounded-xl bg-zinc-800 dark:bg-zinc-700 text-white flex items-center justify-center font-bold text-base shrink-0 shadow-xs">
-                    {displayName.charAt(0).toUpperCase()}
-                  </div>
-                )}
-              </div>
-
-              <div className="min-w-0">
-                <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
-                  <span className="truncate">{displayName}</span>
-                  {isAdminMode && (
-                    <span className="inline-flex items-center gap-0.5 text-[9px] uppercase font-extrabold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0">
-                      <ShieldCheck className="w-2.5 h-2.5" />
-                      <span>Admin</span>
-                    </span>
+          <div className="drawer-stagger-item drawer-stagger-1 p-3.5 sm:p-4 bg-slate-50/95 dark:bg-zinc-800/80 border-b border-slate-200/90 dark:border-zinc-800 shrink-0 space-y-3">
+            <div className="flex items-start justify-between gap-2.5">
+              <div className="flex items-center gap-3 min-w-0">
+                {/* Profile Avatar with Google Badge (Click to Change Photo) */}
+                <button
+                  type="button"
+                  onClick={() => setIsPhotoModalOpen(true)}
+                  title={t.changeProfilePhoto || 'Change Profile Photo'}
+                  className="relative shrink-0 group cursor-pointer rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {userPhoto ? (
+                    <img
+                      src={userPhoto}
+                      alt={displayName}
+                      className="w-11 h-11 rounded-full object-cover border-2 border-zinc-400 dark:border-zinc-600 shadow-xs transition-transform duration-200 group-hover:scale-105"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-xl bg-zinc-800 dark:bg-zinc-700 text-white flex items-center justify-center font-bold text-base shrink-0 shadow-xs transition-transform duration-200 group-hover:scale-105">
+                      {displayName.charAt(0).toUpperCase()}
+                    </div>
                   )}
-                </div>
-                <div className="text-[10.5px] sm:text-xs text-slate-500 dark:text-slate-400 truncate font-mono">
-                  {userEmail || 'Local session'}
-                </div>
-                {!isGoogleConnected && (
-                  <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                    <span className="inline-flex items-center gap-1 text-[9.5px] font-bold px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/30">
-                      <Lock className="w-2.5 h-2.5" />
-                      <span>Guest Mode (Google Not Linked)</span>
-                    </span>
-                    {onConnectGoogle && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsOpen(false);
-                          onConnectGoogle();
-                        }}
-                        className="text-[9.5px] font-bold px-2 py-0.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white transition cursor-pointer shadow-2xs"
-                      >
-                        Link Google
-                      </button>
-                    )}
+                  <div className="absolute inset-0 rounded-full bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                    <Camera className="w-4 h-4" />
                   </div>
-                )}
-                {branch && (
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <span className="text-[10px] font-semibold text-zinc-700 dark:text-zinc-300 truncate max-w-[130px] sm:max-w-[160px]">
-                      {branch.name}
-                    </span>
-                    {(userRole !== 'unassigned' || isAdminMode) && (
-                      <span className="text-[8.5px] uppercase font-bold px-1.5 py-0.2 rounded bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300 shrink-0">
-                        {isAdminMode ? 'admin' : userRole}
+                  {isGoogleConnected && (
+                    <div
+                      className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-center shadow-2xs"
+                      title="Google Account Connected"
+                    >
+                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24">
+                        <path
+                          fill="#4285F4"
+                          d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.65v3.03h3.88c2.27-2.09 3.66-5.17 3.66-9.12z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.03c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.13C3.27 21.44 7.33 24 12 24z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.28 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.57H1.25C.45 8.15 0 9.97 0 12s.45 3.85 1.25 5.43l4.03-3.14z"
+                        />
+                        <path
+                          fill="#EA4335"
+                          d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.27 2.56 1.25 6.57l4.03 3.14c.95-2.83 3.6-4.96 6.72-4.96z"
+                        />
+                      </svg>
+                    </div>
+                  )}
+                </button>
+
+                <div className="min-w-0">
+                  <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
+                    <span className="truncate">{displayName}</span>
+                    {isAdminMode && (
+                      <span className="inline-flex items-center gap-0.5 text-[9px] uppercase font-extrabold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0">
+                        <ShieldCheck className="w-2.5 h-2.5" />
+                        <span>Admin</span>
                       </span>
                     )}
                   </div>
-                )}
+                  <div className="text-[10.5px] sm:text-xs text-slate-500 dark:text-slate-400 truncate font-mono">
+                    {userEmail || 'Local session'}
+                  </div>
+                  {!isGoogleConnected && (
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      <span className="inline-flex items-center gap-1 text-[9.5px] font-bold px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/30">
+                        <Lock className="w-2.5 h-2.5" />
+                        <span>Guest Mode (Google Not Linked)</span>
+                      </span>
+                    </div>
+                  )}
+                  {branch && (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-[10px] font-semibold text-zinc-700 dark:text-zinc-300 truncate max-w-[130px] sm:max-w-[160px]">
+                        {branch.name}
+                      </span>
+                      {(userRole !== 'unassigned' || isAdminMode) && (
+                        <span className="text-[8.5px] uppercase font-bold px-1.5 py-0.2 rounded bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300 shrink-0">
+                          {isAdminMode ? 'admin' : userRole}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 shrink-0">
+                {/* Downward pointing chevron on the left of the X button to switch Google profile */}
+                <button
+                  type="button"
+                  onClick={() => setIsProfileDropdownOpen((prev) => !prev)}
+                  className={`p-1.5 rounded-xl transition-all duration-200 cursor-pointer active:scale-90 flex items-center justify-center ${
+                    isProfileDropdownOpen
+                      ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-300'
+                      : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-zinc-700/70'
+                  }`}
+                  title="Switch Google profile"
+                  aria-label="Switch Google profile"
+                  aria-expanded={isProfileDropdownOpen}
+                >
+                  <ChevronDown
+                    className={`w-4 h-4 sm:w-5 sm:h-5 transition-transform duration-200 ${
+                      isProfileDropdownOpen ? 'rotate-180 text-blue-600 dark:text-blue-400' : ''
+                    }`}
+                  />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsOpen(false)}
+                  className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-zinc-700/70 transition-all duration-200 cursor-pointer active:scale-90 hover:rotate-90"
+                  title="Close menu"
+                >
+                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
+                </button>
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setIsOpen(false)}
-              className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-zinc-700/70 transition-all duration-200 cursor-pointer active:scale-90 hover:rotate-90 shrink-0"
-              title="Close menu"
-            >
-              <X className="w-4 h-4 sm:w-5 sm:h-5" />
-            </button>
+            {/* Google Profile Dropdown (expanded when clicking downward chevron) */}
+            {isProfileDropdownOpen && (
+              <div className="pt-2 border-t border-slate-200/80 dark:border-zinc-700/60 animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="p-2.5 rounded-xl bg-white dark:bg-zinc-900/90 border border-slate-200 dark:border-zinc-700 shadow-sm space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 dark:text-zinc-400 px-1">
+                    <span>Google Account</span>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      {isGoogleConnected ? 'Connected' : 'Not linked'}
+                    </span>
+                  </div>
+
+                  {isGoogleConnected ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsProfileDropdownOpen(false);
+                        setIsOpen(false);
+                        if (onSwitchEmail) {
+                          onSwitchEmail();
+                        }
+                      }}
+                      className="w-full text-left p-2 rounded-lg bg-blue-50/90 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/60 border border-blue-200/80 dark:border-blue-800/60 transition-all duration-150 flex items-center justify-between gap-2 group cursor-pointer active:scale-98"
+                      title="Switch to another Google profile or account"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 flex items-center justify-center shrink-0 shadow-2xs group-hover:scale-105 transition-transform duration-200">
+                          <svg className="w-4 h-4" viewBox="0 0 24 24">
+                            <path
+                              fill="#4285F4"
+                              d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.65v3.03h3.88c2.27-2.09 3.66-5.17 3.66-9.12z"
+                            />
+                            <path
+                              fill="#34A853"
+                              d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.03c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.13C3.27 21.44 7.33 24 12 24z"
+                            />
+                            <path
+                              fill="#FBBC05"
+                              d="M5.28 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.57H1.25C.45 8.15 0 9.97 0 12s.45 3.85 1.25 5.43l4.03-3.14z"
+                            />
+                            <path
+                              fill="#EA4335"
+                              d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.27 2.56 1.25 6.57l4.03 3.14c.95-2.83 3.6-4.96 6.72-4.96z"
+                            />
+                          </svg>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-blue-900 dark:text-blue-100 truncate flex items-center gap-1.5">
+                            <span>{t.switchGoogleAccount}</span>
+                          </div>
+                          <div className="text-[10px] text-blue-600 dark:text-blue-300 truncate">
+                            Switch profile or choose account
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className="w-5 h-5 rounded-full bg-blue-600/10 dark:bg-blue-400/20 text-blue-600 dark:text-blue-300 flex items-center justify-center group-hover:rotate-180 transition-transform duration-300">
+                          <RefreshCw className="w-3 h-3" />
+                        </span>
+                      </div>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsProfileDropdownOpen(false);
+                        setIsOpen(false);
+                        if (onConnectGoogle) {
+                          onConnectGoogle();
+                        } else if (onSwitchEmail) {
+                          onSwitchEmail();
+                        }
+                      }}
+                      className="w-full text-left p-2 rounded-lg bg-blue-50/90 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/60 border border-blue-200/80 dark:border-blue-800/60 transition-all duration-150 flex items-center justify-between gap-2 group cursor-pointer active:scale-98"
+                      title="Connect Google Account"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 flex items-center justify-center shrink-0 shadow-2xs">
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+                            <path
+                              fill="#4285F4"
+                              d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.65v3.03h3.88c2.27-2.09 3.66-5.17 3.66-9.12z"
+                            />
+                            <path
+                              fill="#34A853"
+                              d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.03c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.13C3.27 21.44 7.33 24 12 24z"
+                            />
+                            <path
+                              fill="#FBBC05"
+                              d="M5.28 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.57H1.25C.45 8.15 0 9.97 0 12s.45 3.85 1.25 5.43l4.03-3.14z"
+                            />
+                            <path
+                              fill="#EA4335"
+                              d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.27 2.56 1.25 6.57l4.03 3.14c.95-2.83 3.6-4.96 6.72-4.96z"
+                            />
+                          </svg>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-blue-900 dark:text-blue-100 truncate">
+                            Connect Google Account
+                          </div>
+                          <div className="text-[10px] text-blue-600 dark:text-blue-300 truncate">
+                            Sign in to switch profiles
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-xs text-blue-600 dark:text-blue-400 font-bold group-hover:translate-x-0.5 transition-transform shrink-0">&rarr;</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         ) : currentView === 'trash' ? (
           <div className="drawer-stagger-item drawer-stagger-1 p-3.5 sm:p-4 bg-slate-50/90 dark:bg-zinc-800/70 border-b border-slate-200/90 dark:border-zinc-800 flex items-center justify-between gap-2 shrink-0">
@@ -482,6 +657,79 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
         {/* Scrollable Middle Content */}
         {currentView === 'menu' ? (
           <div className="flex-1 min-h-0 overflow-y-auto p-3.5 sm:p-4 space-y-4 scrollbar-thin">
+            {/* Section: Inventory Count (Moved from Main Window into Hamburger Menu) */}
+            {onSelectTab && (
+              <div className="drawer-stagger-item drawer-stagger-1">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-1 mb-1.5 flex items-center justify-between">
+                  <span>Inventory Count</span>
+                  {(currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring') && (
+                    <span className="text-[9.5px] font-extrabold px-1.5 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300">
+                      Active
+                    </span>
+                  )}
+                </div>
+
+                <div
+                  className={`rounded-2xl p-3 border transition-all duration-200 ${
+                    currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring'
+                      ? 'bg-gradient-to-br from-sky-50/95 via-white to-indigo-50/80 dark:from-sky-950/40 dark:via-zinc-900 dark:to-indigo-950/30 border-sky-400/80 dark:border-sky-500/60 shadow-xs'
+                      : 'bg-slate-50/80 dark:bg-slate-800/50 border-slate-200/80 dark:border-slate-700/80 hover:border-sky-300 dark:hover:border-sky-700/70'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsOpen(false);
+                      onSelectTab(
+                        currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring'
+                          ? currentTab
+                          : 'branch'
+                      );
+                    }}
+                    className="w-full text-left flex items-center justify-between gap-2.5 cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div
+                        className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+                          currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring'
+                            ? 'bg-sky-600 text-white shadow-xs'
+                            : 'bg-sky-500/10 text-sky-600 dark:text-sky-400 group-hover:bg-sky-600 group-hover:text-white'
+                        }`}
+                      >
+                        <ClipboardList className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                          Inventory Count
+                        </div>
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                          Branch, Count &amp; Monitoring
+                        </div>
+                      </div>
+                    </div>
+                    <span className="text-xs text-sky-600 dark:text-sky-400 font-bold shrink-0 group-hover:translate-x-0.5 transition-transform">
+                      &rarr;
+                    </span>
+                  </button>
+
+                  {/* Quick return to Full-Window Masterdata when currently viewing Inventory Count */}
+                  {currentTab !== 'inventory' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsOpen(false);
+                        onSelectTab('inventory');
+                      }}
+                      className="mt-2 w-full px-2.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition cursor-pointer shadow-2xs"
+                    >
+                      <PackageSearch className="w-3.5 h-3.5 shrink-0" />
+                      <span>Return to Inventory Masterdata Window</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Section: Reports */}
             {(onOpenCreateAuditReport || onOpenCreateCountsheets) && (
               <div className="drawer-stagger-item drawer-stagger-2">
@@ -1395,7 +1643,6 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setIsOpen(false);
                     setIsPhotoModalOpen(true);
                   }}
                   className="w-full text-left px-3 py-2 rounded-xl bg-slate-50 dark:bg-zinc-800/60 hover:bg-slate-100 dark:hover:bg-zinc-800 border border-slate-200/80 dark:border-zinc-700/60 transition-all duration-200 flex items-center justify-between gap-2 cursor-pointer group active:scale-98"
@@ -1466,7 +1713,7 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                 {/* Admin Mode Access Panel (Only for signed-in Google accounts, hidden in Guest Mode) */}
                 {isGoogleConnected && (
                   !isUserAdmin ? (
-                    <div className="p-3 rounded-2xl border bg-slate-50 dark:bg-zinc-800/60 border-slate-200/90 dark:border-zinc-700/80 space-y-2">
+                    <div className="px-3 py-2.5 rounded-2xl border bg-slate-50 dark:bg-zinc-800/60 border-slate-200/90 dark:border-zinc-700/80">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
                           <div className="w-7 h-7 rounded-lg bg-slate-200 dark:bg-zinc-700 text-slate-500 dark:text-zinc-400 flex items-center justify-center shrink-0">
@@ -1476,19 +1723,12 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                             <div className="text-xs font-bold text-slate-800 dark:text-zinc-200 truncate">
                               Admin Console
                             </div>
-                            <div className="text-[10px] text-slate-500 dark:text-zinc-400 truncate">
-                              Role-Based Access
-                            </div>
                           </div>
                         </div>
                         <span className="text-[9.5px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-200/80 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 shrink-0">
                           Restricted
                         </span>
                       </div>
-
-                      <p className="text-[11px] text-slate-600 dark:text-zinc-400 leading-relaxed bg-white/70 dark:bg-zinc-900/60 p-2.5 rounded-xl border border-slate-200/70 dark:border-zinc-800">
-                        Admin Console is not accessible for this account. All roles have full operational access, while the Admin Console is strictly accessible only for <strong className="font-mono text-slate-800 dark:text-zinc-200">icdhubsystems@gmail.com</strong>.
-                      </p>
                     </div>
                   ) : (
                     <div

@@ -166,20 +166,27 @@ export async function createSqlJsD1Database(): Promise<D1Database> {
     );
   `);
 
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
   const saveToDisk = () => {
-    try {
-      if (!fs.existsSync(DB_FILE_DIR)) {
-        fs.mkdirSync(DB_FILE_DIR, { recursive: true });
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      saveTimer = null;
+      try {
+        if (!fs.existsSync(DB_FILE_DIR)) {
+          await fs.promises.mkdir(DB_FILE_DIR, { recursive: true });
+        }
+        const data = db.export();
+        await fs.promises.writeFile(DB_FILE_PATH, Buffer.from(data));
+      } catch (err) {
+        console.warn('Error saving sqlite database to disk:', err);
       }
-      const data = db.export();
-      fs.writeFileSync(DB_FILE_PATH, Buffer.from(data));
-    } catch (err) {
-      console.warn('Error saving sqlite database to disk:', err);
-    }
+    }, 150);
   };
 
-  // Persist initial schema creation (including active_presence) immediately
-  saveToDisk();
+  // Only persist on startup if the database file does not exist yet
+  if (!fs.existsSync(DB_FILE_PATH)) {
+    saveToDisk();
+  }
 
   const createStatement = (query: string): D1PreparedStatement => {
     let boundValues: any[] = [];

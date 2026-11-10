@@ -207,6 +207,9 @@ export async function fetchWithRetry(
       if (res.status === 401 && url.includes('googleapis.com') && !didAttemptAuthRefresh) {
         didAttemptAuthRefresh = true;
         const usedToken = extractBearerToken(currentOptions?.headers);
+        if (usedToken) {
+          clearCachedAccessToken(usedToken);
+        }
         const recoveredToken = await resolveValidOAuthToken(null, {
           forceRefresh: true,
           failedToken: usedToken,

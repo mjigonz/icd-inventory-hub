@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User } from 'firebase/auth';
 import {
   initAuth,
@@ -45,7 +45,7 @@ import {
   getAutoSeasonalTheme,
 } from './components/TelegramDoodleBackground';
 import { DecorationProvider, MotionPreference } from './components/PanelDecoration';
-import { setActiveAuditUserEmail } from './services/auditReportService';
+import { setActiveAuditUserEmail, RecentCountsheetSession } from './services/auditReportService';
 import { SignInView } from './views/SignInView';
 import { BranchView } from './views/BranchView';
 import { CountView } from './views/CountView';
@@ -264,21 +264,18 @@ function AppContent() {
   });
 
   // Active navigation tab & visited tabs (keeps views mounted to prevent blank flashes & preserve state)
-  const [currentTab, setCurrentTab] = useState<NavTab>('branch');
-  const [lastOverallCountTab, setLastOverallCountTab] = useState<'branch' | 'count' | 'monitoring'>('branch');
+  // Default to 'inventory' so the whole window contains only the Masterdata by default
+  const [currentTab, setCurrentTab] = useState<NavTab>('inventory');
   const [visitedTabs, setVisitedTabs] = useState<Record<NavTab, boolean>>({
-    branch: true,
+    branch: false,
     count: false,
-    inventory: false,
+    inventory: true,
     monitoring: false,
     admin: false,
   });
 
   useEffect(() => {
     setVisitedTabs((prev) => (prev[currentTab] ? prev : { ...prev, [currentTab]: true }));
-    if (currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring') {
-      setLastOverallCountTab(currentTab);
-    }
   }, [currentTab]);
 
   // Keep active user email strictly synced with auditReportService so Recents & Trash are isolated per account
@@ -296,7 +293,7 @@ function AppContent() {
     }
     setIsAdminMode(enabled);
     if (!enabled && currentTab === 'admin') {
-      setCurrentTab('branch');
+      setCurrentTab('inventory');
     }
     try {
       localStorage.setItem('countsheet_admin_mode', String(enabled));
@@ -316,7 +313,7 @@ function AppContent() {
         localStorage.setItem('countsheet_admin_mode', 'false');
       } catch {}
       if (currentTab === 'admin') {
-        setCurrentTab('branch');
+        setCurrentTab('inventory');
       }
     }
 
@@ -329,7 +326,7 @@ function AppContent() {
             localStorage.setItem('countsheet_admin_mode', 'false');
           } catch {}
           if (currentTab === 'admin') {
-            setCurrentTab('branch');
+            setCurrentTab('inventory');
           }
         }
       });
@@ -363,7 +360,7 @@ function AppContent() {
           localStorage.setItem('countsheet_admin_mode', 'false');
         } catch {}
         if (currentTab === 'admin') {
-          setCurrentTab('branch');
+          setCurrentTab('inventory');
         }
       }
     };
@@ -379,24 +376,54 @@ function AppContent() {
     };
   }, [user?.email, isGoogleConnected, isAdminMode, currentTab]);
 
-  const [customPhotoURL, setCustomPhotoURLState] = useState<string | null>(() => getCustomPhotoURL());
+  const [customPhotoURL, setCustomPhotoURLState] = useState<string | null>(() =>
+    getCustomPhotoURL(getRememberedUser()?.email)
+  );
+  const lastLocalPhotoUpdateRef = React.useRef<number>(0);
   const [isAuthInitializing, setIsAuthInitializing] = useState(true);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (user?.email) {
+      const savedForEmail = getCustomPhotoURL(user.email);
+      if (savedForEmail !== null) {
+        setCustomPhotoURLState(savedForEmail);
+      }
+    }
+  }, [user?.email]);
+
   const handleUpdatePhoto = (newPhotoURL: string | null) => {
-    setCustomPhotoURL(newPhotoURL);
-    setCustomPhotoURLState(newPhotoURL);
-    syncWorkspaceStateToCloud({ customPhotoURL: newPhotoURL }).catch(() => {});
+    const storedValue = newPhotoURL === null ? 'NONE' : newPhotoURL;
+    lastLocalPhotoUpdateRef.current = Date.now();
+    setCustomPhotoURL(storedValue, user?.email);
+    setCustomPhotoURLState(storedValue);
+    if (user?.email && !user.email.endsWith('@sidc.local')) {
+      saveRememberedUser({
+        displayName: user.displayName,
+        email: user.email,
+        photoURL: newPhotoURL,
+      });
+    }
+    syncWorkspaceStateToCloud({ customPhotoURL: storedValue }).catch(() => {});
   };
 
   const [isCreateAuditReportOpen, setIsCreateAuditReportOpen] = useState(false);
   const [isCreateCountsheetOpen, setIsCreateCountsheetOpen] = useState(false);
   const [isFormsOpen, setIsFormsOpen] = useState(false);
   const [auditReportCountsheetType, setAuditReportCountsheetType] = useState<'random' | null>(null);
+  const [auditReportCountsheetSession, setAuditReportCountsheetSession] = useState<RecentCountsheetSession | null>(null);
+  const [editingCountsheetSession, setEditingCountsheetSession] = useState<RecentCountsheetSession | null>(null);
+  const [isExportedFromCountsheets, setIsExportedFromCountsheets] = useState<boolean>(false);
+  const [isCountsheetStandby, setIsCountsheetStandby] = useState<boolean>(false);
+  const [countsheetTransitionAnim, setCountsheetTransitionAnim] = useState<'none' | 'slide-out-left' | 'slide-in-left'>('none');
+  const [auditReportTransitionAnim, setAuditReportTransitionAnim] = useState<'none' | 'slide-in-right' | 'slide-out-right'>('none');
+  const modalTransitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleOpenCreateAuditReport = (type?: 'random') => {
     if (type === 'random') {
+      setEditingCountsheetSession(null);
+      setIsCountsheetStandby(false);
       setIsCreateCountsheetOpen(true);
       return;
     }
@@ -405,6 +432,8 @@ function AppContent() {
   };
 
   const handleOpenCreateCountsheets = () => {
+    setEditingCountsheetSession(null);
+    setIsCountsheetStandby(false);
     setIsCreateCountsheetOpen(true);
   };
 
@@ -424,6 +453,7 @@ function AppContent() {
     selectedBranch,
     currentTab,
     isUserAdmin,
+    customPhotoURL,
   });
 
   // Unsent items count for badge
@@ -556,10 +586,13 @@ function AppContent() {
 
   // 2b. Real-Time Cross-Device Workspace Sync (Active Branch, Role, Saved Branches, Custom Photo, OAuth Token)
   useEffect(() => {
-    if (!user || !isGoogleConnected) return;
+    if (!user) return;
     const unsubscribeWorkspace = subscribeToWorkspaceState(async (remoteState) => {
-      if (remoteState.customPhotoURL !== undefined) {
-        setCustomPhotoURL(remoteState.customPhotoURL);
+      if (
+        remoteState.customPhotoURL !== undefined &&
+        Date.now() - lastLocalPhotoUpdateRef.current > 15000
+      ) {
+        setCustomPhotoURL(remoteState.customPhotoURL, user?.email);
         setCustomPhotoURLState(remoteState.customPhotoURL);
       }
 
@@ -576,8 +609,8 @@ function AppContent() {
       if (remoteState.selectedBranch && remoteState.selectedBranch.id) {
         const incomingBranch = remoteState.selectedBranch;
         const incomingRole = remoteState.userRole || 'unassigned';
-        const activeBranchKey = getActiveBranchStorageKey(user.email);
-        const activeRoleKey = getActiveRoleStorageKey(user.email);
+        const activeBranchKey = getActiveBranchStorageKey(user?.email);
+        const activeRoleKey = getActiveRoleStorageKey(user?.email);
 
         await saveBranchMetadataLocalOnly(incomingBranch);
 
@@ -892,10 +925,14 @@ function AppContent() {
           branch={selectedBranch}
           userRole={userRole}
           onOpenBranchModal={() => setCurrentTab('branch')}
-          userEmail={user.email}
-          userName={user.displayName}
-          userPhoto={isGoogleConnected ? (customPhotoURL || user.photoURL || null) : null}
-          googlePhoto={isGoogleConnected ? (user.photoURL || null) : null}
+          userEmail={user?.email}
+          userName={user?.displayName}
+          userPhoto={
+            customPhotoURL === 'NONE'
+              ? null
+              : customPhotoURL || user?.photoURL || null
+          }
+          googlePhoto={user?.photoURL || null}
           onUpdatePhoto={handleUpdatePhoto}
           onSignOut={handleSignOut}
           onSwitchEmail={handleSwitchEmail}
@@ -922,7 +959,39 @@ function AppContent() {
       {isCreateCountsheetOpen && (
         <CreateRandomCountsheetModal
           isOpen={isCreateCountsheetOpen}
-          onClose={() => setIsCreateCountsheetOpen(false)}
+          initialSession={editingCountsheetSession}
+          transitionAnim={countsheetTransitionAnim}
+          isStandby={isCountsheetStandby}
+          onClose={() => {
+            if (modalTransitionTimerRef.current) {
+              clearTimeout(modalTransitionTimerRef.current);
+              modalTransitionTimerRef.current = null;
+            }
+            setIsCreateCountsheetOpen(false);
+            setIsCountsheetStandby(false);
+            setEditingCountsheetSession(null);
+            setCountsheetTransitionAnim('none');
+          }}
+          onExportToEncoding={(session) => {
+            if (modalTransitionTimerRef.current) {
+              clearTimeout(modalTransitionTimerRef.current);
+            }
+            setAuditReportCountsheetSession(session);
+            setIsExportedFromCountsheets(true);
+            setIsCountsheetStandby(false);
+
+            // Animate Editing Countsheet out to the left and Export to Encoding in from the right
+            setCountsheetTransitionAnim('slide-out-left');
+            setAuditReportTransitionAnim('slide-in-right');
+            setIsCreateAuditReportOpen(true);
+
+            modalTransitionTimerRef.current = setTimeout(() => {
+              setIsCountsheetStandby(true);
+              setCountsheetTransitionAnim('none');
+              setAuditReportTransitionAnim('none');
+              modalTransitionTimerRef.current = null;
+            }, 420);
+          }}
           accessToken={effectiveAccessToken}
           isGoogleConnected={isGoogleConnected}
           onConnectGoogle={() => handleSignIn({ forceSelectAccount: true })}
@@ -945,15 +1014,57 @@ function AppContent() {
       {/* Create Audit Report Modal (IATD -> ENCODING Mapper) */}
       <CreateAuditReportModal
         isOpen={isCreateAuditReportOpen}
+        transitionAnim={auditReportTransitionAnim}
+        isTransparentBackdrop={auditReportTransitionAnim !== 'none'}
         onClose={() => {
+          if (modalTransitionTimerRef.current) {
+            clearTimeout(modalTransitionTimerRef.current);
+            modalTransitionTimerRef.current = null;
+          }
           setIsCreateAuditReportOpen(false);
+          setIsCreateCountsheetOpen(false);
+          setIsCountsheetStandby(false);
           setAuditReportCountsheetType(null);
+          setAuditReportCountsheetSession(null);
+          setIsExportedFromCountsheets(false);
+          setEditingCountsheetSession(null);
+          setAuditReportTransitionAnim('none');
+          setCountsheetTransitionAnim('none');
         }}
+        onBackToCountsheet={(updatedSession) => {
+          if (modalTransitionTimerRef.current) {
+            clearTimeout(modalTransitionTimerRef.current);
+          }
+          if (updatedSession) {
+            setEditingCountsheetSession(updatedSession);
+            setAuditReportCountsheetSession(updatedSession);
+          }
+          // Unhide Editing Countsheet (already mounted on FILTER_ITEMS) and animate back in from the left
+          setIsCountsheetStandby(false);
+          setIsCreateCountsheetOpen(true);
+          setCountsheetTransitionAnim('slide-in-left');
+          setAuditReportTransitionAnim('slide-out-right');
+
+          modalTransitionTimerRef.current = setTimeout(() => {
+            setIsCreateAuditReportOpen(false);
+            setAuditReportCountsheetSession(null);
+            setIsExportedFromCountsheets(false);
+            setCountsheetTransitionAnim('none');
+            setAuditReportTransitionAnim('none');
+            modalTransitionTimerRef.current = null;
+          }, 420);
+        }}
+        onSaveCountsheetSession={(updatedSession) => {
+          setEditingCountsheetSession(updatedSession);
+          setAuditReportCountsheetSession(updatedSession);
+        }}
+        isFromCountsheetExport={isExportedFromCountsheets}
         accessToken={effectiveAccessToken}
         isGoogleConnected={isGoogleConnected}
         onConnectGoogle={() => handleSignIn({ forceSelectAccount: true })}
         activeBranch={selectedBranch}
         initialCountsheetType={auditReportCountsheetType}
+        initialCountsheetSession={auditReportCountsheetSession}
         onTokenRefreshed={(newToken) => setAccessToken(newToken)}
         userEmail={user?.email}
         userName={user?.displayName}
@@ -979,168 +1090,92 @@ function AppContent() {
         </div>
       )}
 
-      {/* Main Content Area (Branch, Count, Inventory, Monitoring, and Admin)
-          Keeps visited tabs mounted to prevent blank screens, table remounts, and state loss */}
+      {/* Main Content Area (Inventory Masterdatafills the whole window by default;
+          Inventory Count [Branch, Count, Monitoring] is opened from the Hamburger menu) */}
       <main id="app-main-content" className="relative z-10 flex-1 w-full max-w-[1560px] mx-auto px-4 sm:px-8 lg:px-12 xl:px-16 py-4 sm:py-6 pb-[calc(7.5rem+env(safe-area-inset-bottom,16px))] md:pb-8">
-        {currentTab !== 'admin' && (
-          <div className="mb-5 grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4">
-            {/* Large Clickable Button 1: Inventory Count (Branch, Count & Monitoring inside) */}
-            <div
-              role="button"
-              tabIndex={0}
-              onClick={() => {
-                if (currentTab !== 'branch' && currentTab !== 'count' && currentTab !== 'monitoring') {
-                  setCurrentTab(lastOverallCountTab);
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  if (currentTab !== 'branch' && currentTab !== 'count' && currentTab !== 'monitoring') {
-                    setCurrentTab(lastOverallCountTab);
-                  }
-                }
-              }}
-              className={`lg:col-span-8 group relative rounded-2xl p-3.5 sm:p-4 border transition-all duration-200 cursor-pointer select-none ${
-                currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring'
-                  ? 'bg-gradient-to-br from-sky-50/95 via-white to-indigo-50/80 dark:from-sky-950/40 dark:via-zinc-900 dark:to-indigo-950/30 border-sky-400/80 dark:border-sky-500/60 shadow-md ring-2 ring-sky-500/15'
-                  : 'bg-white/90 dark:bg-zinc-900/85 border-slate-200/90 dark:border-zinc-800 hover:border-sky-300 dark:hover:border-sky-700/70 hover:shadow-sm'
-              }`}
-            >
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
-                      currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring'
-                        ? 'bg-sky-600 text-white shadow-sm shadow-sky-500/30'
-                        : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 group-hover:bg-sky-100 dark:group-hover:bg-sky-950/60 group-hover:text-sky-600 dark:group-hover:text-sky-400'
-                    }`}
-                  >
-                    <ClipboardList className="w-5 h-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-base sm:text-lg font-extrabold tracking-tight text-slate-900 dark:text-zinc-100">
-                        Inventory Count
-                      </span>
-                      {(currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring') && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300 border border-sky-200/80 dark:border-sky-700/60">
-                          Active
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-500 dark:text-zinc-400 truncate">
-                      Branch selection, Countsheet workspace &amp; live Monitoring
-                    </p>
-                  </div>
+        {(currentTab === 'branch' || currentTab === 'count' || currentTab === 'monitoring') && (
+          <div className="mb-4 rounded-2xl p-3 sm:p-3.5 border bg-white/95 dark:bg-zinc-900/90 border-sky-300/80 dark:border-sky-700/60 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-sky-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <ClipboardList className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm sm:text-base font-extrabold tracking-tight text-slate-900 dark:text-zinc-100">
+                    Inventory Count
+                  </span>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300 border border-sky-200/80 dark:border-sky-700/60">
+                    {currentTab === 'branch' ? t.navBranch : currentTab === 'count' ? t.navCount : t.navMonitoring}
+                  </span>
                 </div>
-
-                {/* Inside Inventory Count: Branch, Count, and Monitoring buttons */}
-                <div
-                  className="grid grid-cols-3 gap-1.5 sm:flex sm:items-center sm:gap-2 bg-slate-100/90 dark:bg-zinc-950/80 p-1.5 rounded-xl border border-slate-200/80 dark:border-zinc-800"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setCurrentTab('branch')}
-                    className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                      currentTab === 'branch'
-                        ? 'bg-sky-600 text-white shadow-xs'
-                        : 'text-slate-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800/90 hover:text-sky-600 dark:hover:text-sky-400'
-                    }`}
-                  >
-                    <Store className="w-4 h-4 shrink-0" />
-                    <span>{t.navBranch}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setCurrentTab('count')}
-                    className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                      currentTab === 'count'
-                        ? 'bg-sky-600 text-white shadow-xs'
-                        : 'text-slate-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800/90 hover:text-sky-600 dark:hover:text-sky-400'
-                    }`}
-                  >
-                    <ClipboardList className="w-4 h-4 shrink-0" />
-                    <span>{t.navCount}</span>
-                    {countItemTotal !== null && countItemTotal > 0 && (
-                      <span
-                        className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
-                          currentTab === 'count'
-                            ? 'bg-white/25 text-white'
-                            : 'bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300'
-                        }`}
-                      >
-                        {countItemTotal > 999 ? '999+' : countItemTotal}
-                      </span>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setCurrentTab('monitoring')}
-                    className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                      currentTab === 'monitoring'
-                        ? 'bg-sky-600 text-white shadow-xs'
-                        : 'text-slate-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800/90 hover:text-sky-600 dark:hover:text-sky-400'
-                    }`}
-                  >
-                    <Activity className="w-4 h-4 shrink-0" />
-                    <span>{t.navMonitoring}</span>
-                  </button>
-                </div>
+                <p className="text-[11px] text-slate-500 dark:text-zinc-400 truncate">
+                  Branch selection, Countsheet workspace &amp; live Monitoring
+                </p>
               </div>
             </div>
 
-            {/* Large Clickable Button 2: Inventory Masterdata (Local and Masterdata Access) */}
-            <button
-              type="button"
-              onClick={() => setCurrentTab('inventory')}
-              className={`lg:col-span-4 group relative rounded-2xl p-3.5 sm:p-4 border text-left transition-all duration-200 cursor-pointer select-none flex items-center justify-between gap-3 ${
-                currentTab === 'inventory'
-                  ? 'bg-gradient-to-br from-emerald-50/95 via-white to-teal-50/80 dark:from-emerald-950/40 dark:via-zinc-900 dark:to-teal-950/30 border-emerald-400/80 dark:border-emerald-500/60 shadow-md ring-2 ring-emerald-500/15'
-                  : 'bg-white/90 dark:bg-zinc-900/85 border-slate-200/90 dark:border-zinc-800 hover:border-emerald-300 dark:hover:border-emerald-700/70 hover:shadow-sm'
-              }`}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div
-                  className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
-                    currentTab === 'inventory'
-                      ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/30'
-                      : 'bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 group-hover:bg-emerald-100 dark:group-hover:bg-emerald-950/60 group-hover:text-emerald-600 dark:group-hover:text-emerald-400'
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="grid grid-cols-3 gap-1.5 sm:flex sm:items-center sm:gap-1.5 bg-slate-100/90 dark:bg-zinc-950/80 p-1 rounded-xl border border-slate-200/80 dark:border-zinc-800 flex-1 sm:flex-initial">
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab('branch')}
+                  className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    currentTab === 'branch'
+                      ? 'bg-sky-600 text-white shadow-2xs'
+                      : 'text-slate-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800/90 hover:text-sky-600 dark:hover:text-sky-400'
                   }`}
                 >
-                  <PackageSearch className="w-5 h-5" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-base sm:text-lg font-extrabold tracking-tight text-slate-900 dark:text-zinc-100">
-                      {t.navInventory}
+                  <Store className="w-3.5 h-3.5 shrink-0" />
+                  <span>{t.navBranch}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab('count')}
+                  className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    currentTab === 'count'
+                      ? 'bg-sky-600 text-white shadow-2xs'
+                      : 'text-slate-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800/90 hover:text-sky-600 dark:hover:text-sky-400'
+                  }`}
+                >
+                  <ClipboardList className="w-3.5 h-3.5 shrink-0" />
+                  <span>{t.navCount}</span>
+                  {countItemTotal !== null && countItemTotal > 0 && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+                        currentTab === 'count'
+                          ? 'bg-white/25 text-white'
+                          : 'bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300'
+                      }`}
+                    >
+                      {countItemTotal > 999 ? '999+' : countItemTotal}
                     </span>
-                    {currentTab === 'inventory' && (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-700/60">
-                        Active
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-500 dark:text-zinc-400 truncate">
-                    Local IATD and Masterdata catalog access
-                  </p>
-                </div>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab('monitoring')}
+                  className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    currentTab === 'monitoring'
+                      ? 'bg-sky-600 text-white shadow-2xs'
+                      : 'text-slate-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800/90 hover:text-sky-600 dark:hover:text-sky-400'
+                  }`}
+                >
+                  <Activity className="w-3.5 h-3.5 shrink-0" />
+                  <span>{t.navMonitoring}</span>
+                </button>
               </div>
 
-              <div
-                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold shrink-0 border transition-all ${
-                  currentTab === 'inventory'
-                    ? 'bg-emerald-600 text-white border-emerald-500 shadow-xs'
-                    : 'bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200/80 dark:border-emerald-800/60 group-hover:bg-emerald-600 group-hover:text-white group-hover:border-emerald-500'
-                }`}
+              <button
+                type="button"
+                onClick={() => setCurrentTab('inventory')}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-xs transition cursor-pointer shrink-0"
               >
-                <Database className="w-3.5 h-3.5 shrink-0" />
-                <span>Masterdata Access</span>
-              </div>
-            </button>
+                <PackageSearch className="w-3.5 h-3.5 shrink-0" />
+                <span>Back to Masterdata</span>
+              </button>
+            </div>
           </div>
         )}
 
@@ -1150,8 +1185,8 @@ function AppContent() {
             aria-hidden={currentTab !== 'branch'}
           >
             <BranchView
-              userEmail={user.email}
-              userName={user.displayName}
+              userEmail={user?.email}
+              userName={user?.displayName}
               accessToken={effectiveAccessToken}
               isGoogleConnected={isGoogleConnected}
               onConnectGoogle={() => handleSignIn({ forceSelectAccount: true })}
@@ -1180,8 +1215,8 @@ function AppContent() {
             <CountView
               branch={selectedBranch}
               userRole={userRole}
-              userName={user.displayName}
-              userEmail={user.email}
+              userName={user?.displayName}
+              userEmail={user?.email}
               accessToken={effectiveAccessToken}
               isGoogleConnected={isGoogleConnected}
               onConnectGoogle={() => handleSignIn({ forceSelectAccount: true })}
@@ -1199,8 +1234,8 @@ function AppContent() {
           >
             <InventoryView
               branch={selectedBranch}
-              userName={user.displayName}
-              userEmail={user.email}
+              userName={user?.displayName}
+              userEmail={user?.email}
               accessToken={effectiveAccessToken}
               isGoogleConnected={isGoogleConnected}
               onConnectGoogle={() => handleSignIn({ forceSelectAccount: true })}
@@ -1220,8 +1255,8 @@ function AppContent() {
           >
             <MonitoringView
               branch={selectedBranch}
-              userName={user.displayName}
-              userEmail={user.email}
+              userName={user?.displayName}
+              userEmail={user?.email}
               accessToken={effectiveAccessToken}
               isGoogleConnected={isGoogleConnected}
               onConnectGoogle={() => handleSignIn({ forceSelectAccount: true })}
@@ -1237,8 +1272,8 @@ function AppContent() {
           >
             <AdminView
               branch={selectedBranch}
-              userName={user.displayName}
-              userEmail={user.email}
+              userName={user?.displayName}
+              userEmail={user?.email}
               accessToken={effectiveAccessToken}
               isUserAdmin={isUserAdmin}
               onOpenBranchTab={() => setCurrentTab('branch')}
@@ -1249,14 +1284,16 @@ function AppContent() {
         )}
       </main>
 
-      {/* Mobile Bottom Navigation */}
-      <BottomNav
-        currentTab={currentTab}
-        onSelectTab={setCurrentTab}
-        countItemTotal={countItemTotal}
-        isAdminMode={isAdminMode}
-        isUserAdmin={isUserAdmin}
-      />
+      {/* Mobile Bottom Navigation (only shown when inside Inventory Count or Admin views so Masterdata owns the whole window) */}
+      {currentTab !== 'inventory' && (
+        <BottomNav
+          currentTab={currentTab}
+          onSelectTab={setCurrentTab}
+          countItemTotal={countItemTotal}
+          isAdminMode={isAdminMode}
+          isUserAdmin={isUserAdmin}
+        />
+      )}
       </div>
     </DecorationProvider>
   );

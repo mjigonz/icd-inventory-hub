@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { X, Flashlight, FlashlightOff, Camera, AlertCircle, RefreshCw } from 'lucide-react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { useScrollLock } from '../hooks/useScrollLock';
 
 interface BarcodeScannerModalProps {
   isOpen: boolean;
@@ -13,6 +14,8 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   onClose,
   onScan,
 }) => {
+  useScrollLock(isOpen);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [torchAvailable, setTorchAvailable] = useState<boolean>(false);
@@ -196,7 +199,10 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-between p-4 animate-in fade-in duration-200">
+    <div
+      data-scroll-lock-panel
+      className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-between p-4 animate-in fade-in duration-200"
+    >
       {/* Top Header Bar */}
       <div className="w-full max-w-md flex items-center justify-between text-white py-2 z-10">
         <div className="flex items-center gap-2">
