@@ -4,19 +4,15 @@ import { useScrollLock } from './useScrollLock';
 function getEffectiveDuration(durationMs: number): number {
   if (typeof window === 'undefined' || typeof document === 'undefined') return 0;
   try {
-    const motionAttr = document.documentElement.getAttribute('data-motion');
-    if (motionAttr === 'off') return 0;
     if (
       window.matchMedia &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
     ) {
       return 0;
     }
-    if (motionAttr === 'subtle') {
-      return Math.round(durationMs * 0.75);
-    }
+    return Math.round(durationMs * 0.375);
   } catch {}
-  return durationMs;
+  return Math.round(durationMs * 0.375);
 }
 
 /**

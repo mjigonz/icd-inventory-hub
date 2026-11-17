@@ -30,8 +30,6 @@ import {
   Search,
   Clock,
   Monitor,
-  Calendar,
-  Play,
   ChevronDown,
   Globe,
   FileText,
@@ -45,8 +43,6 @@ import { ChangePhotoModal } from './ChangePhotoModal';
 import {
   BACKGROUND_ICON_THEMES,
   BackgroundIconTheme,
-  CharacterDensity,
-  getAutoSeasonalTheme,
 } from './TelegramDoodleBackground';
 import {
   PanelDecoration,
@@ -93,6 +89,8 @@ interface HeaderMenuProps {
   currentTab?: NavTab;
   onSelectTab?: (tab: NavTab) => void;
   countItemTotal?: number | null;
+  themeAnimationEnabled?: boolean;
+  onSetThemeAnimationEnabled?: (enabled: boolean) => void;
 }
 
 const DEFAULT_ADMIN_CODES = ['ICD2026', 'SIDC2026', 'ADMIN', '1234'];
@@ -128,19 +126,13 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
   currentTab = 'inventory',
   onSelectTab,
   countItemTotal = null,
+  themeAnimationEnabled = true,
+  onSetThemeAnimationEnabled,
 }) => {
   const {
     activeTheme,
     seasonalDecorations,
-    characterDensity,
-    characterAnimation,
-    autoSeasonalTheme,
-    motionPreference = 'smooth',
     onSetSeasonalDecorations,
-    onSetCharacterDensity,
-    onSetCharacterAnimation,
-    onSetAutoSeasonalTheme,
-    onSetMotionPreference,
   } = useDecorationSettings();
   const { language, setLanguage, t, currentLanguageMeta } = useLanguage();
   const [isOpen, setIsOpen] = useState(false);
@@ -1177,15 +1169,15 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                             <Sun
                               className={`w-3.5 h-3.5 text-amber-500 absolute theme-toggle-icon ${
                                 theme === 'dark'
-                                  ? 'opacity-0 -rotate-90 scale-50'
-                                  : 'opacity-100 rotate-0 scale-100'
+                                  ? 'opacity-0 pointer-events-none'
+                                  : 'opacity-100'
                               }`}
                             />
                             <Moon
                               className={`w-3.5 h-3.5 text-sky-400 absolute theme-toggle-icon ${
                                 theme === 'dark'
-                                  ? 'opacity-100 rotate-0 scale-100'
-                                  : 'opacity-0 rotate-90 scale-50'
+                                  ? 'opacity-100'
+                                  : 'opacity-0 pointer-events-none'
                               }`}
                             />
                           </span>
@@ -1202,11 +1194,11 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                     {/* Expandable Theme & Appearance Content */}
                     {isThemeBoxOpen && (
                       <div className="p-3 border-t border-slate-200/80 dark:border-zinc-700/60 bg-slate-100/90 dark:bg-zinc-800/80 space-y-2.5 animate-in fade-in">
-                        {/* Control 1: Light / Dark / System Appearance with Smooth Sliding Pill */}
+                         {/* Control 1: Light / Dark Appearance with Smooth Sliding Pill */}
                         <div
                           role="radiogroup"
                           aria-label="Appearance Mode"
-                          className="relative grid grid-cols-3 p-1 rounded-xl bg-white/85 dark:bg-zinc-900/75 border border-slate-200/80 dark:border-zinc-700/70 overflow-hidden"
+                          className="relative grid grid-cols-2 p-1 rounded-xl bg-white/85 dark:bg-zinc-900/75 border border-slate-200/80 dark:border-zinc-700/70 overflow-hidden"
                         >
                           {/* GPU-composited sliding active indicator pill */}
                           <span
@@ -1215,17 +1207,14 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                               transform:
                                 appearanceMode === 'dark'
                                   ? 'translate3d(100%, 0, 0)'
-                                  : appearanceMode === 'system'
-                                  ? 'translate3d(200%, 0, 0)'
                                   : 'translate3d(0%, 0, 0)',
                             }}
-                            className="theme-pill-indicator pointer-events-none absolute top-1 bottom-1 left-1 w-[calc((100%-0.5rem)/3)] rounded-lg bg-blue-600 shadow-2xs"
+                            className="theme-pill-indicator pointer-events-none absolute top-1 bottom-1 left-1 w-[calc((100%-0.5rem)/2)] rounded-lg bg-blue-600 shadow-2xs"
                           />
                           {(
                             [
                               { id: 'light' as AppearanceMode, label: t.lightMode, Icon: Sun },
                               { id: 'dark' as AppearanceMode, label: t.darkMode, Icon: Moon },
-                              { id: 'system' as AppearanceMode, label: t.systemMode, Icon: Monitor },
                             ] as const
                           ).map(({ id, label, Icon }) => {
                             const isActive = appearanceMode === id;
@@ -1250,13 +1239,7 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                               >
                                 <Icon
                                   className={`w-3.5 h-3.5 theme-toggle-icon ${
-                                    isActive
-                                      ? id === 'light'
-                                        ? 'rotate-0 scale-105'
-                                        : id === 'dark'
-                                        ? '-rotate-12 scale-105'
-                                        : 'scale-105'
-                                      : 'scale-95 opacity-85'
+                                    isActive ? 'opacity-100' : 'opacity-80'
                                   }`}
                                 />
                                 <span>{label}</span>
@@ -1264,33 +1247,6 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                             );
                           })}
                         </div>
-
-                        {/* Control 2: Automatic Seasonal Theme */}
-                        {onSetAutoSeasonalTheme && (
-                          <div className="pt-2 border-t border-slate-200/80 dark:border-zinc-700/60 flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <Calendar className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                              <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">
-                                {t.autoSeasonalTheme}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={autoSeasonalTheme}
-                              onClick={() => onSetAutoSeasonalTheme(!autoSeasonalTheme)}
-                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-                                autoSeasonalTheme ? 'bg-blue-600' : 'bg-slate-300 dark:bg-zinc-700'
-                              }`}
-                            >
-                              <span
-                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs transition duration-200 ${
-                                  autoSeasonalTheme ? 'translate-x-4' : 'translate-x-0'
-                                }`}
-                              />
-                            </button>
-                          </div>
-                        )}
 
                         {/* Control 3: Seasonal Decorations */}
                         {onSetSeasonalDecorations && (
@@ -1319,115 +1275,36 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                           </div>
                         )}
 
-                        {/* Control 4: Decorative Characters Density */}
-                        {onSetCharacterDensity && (
-                          <div className="pt-2 border-t border-slate-200/80 dark:border-zinc-700/60 space-y-1.5">
-                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 block">
-                              {t.decorativeCharacters}
-                            </span>
-                            <div
-                              role="radiogroup"
-                              aria-label="Decorative Characters Density"
-                              className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-white/80 dark:bg-zinc-900/70 border border-slate-200/80 dark:border-zinc-700/70"
-                            >
-                              {(
-                                [
-                                  { id: 'off' as CharacterDensity, label: t.densityOff },
-                                  { id: 'minimal' as CharacterDensity, label: t.densityMinimal },
-                                  { id: 'balanced' as CharacterDensity, label: t.densityBalanced },
-                                  { id: 'playful' as CharacterDensity, label: t.densityPlayful },
-                                ] as const
-                              ).map((opt) => {
-                                const isSelected = characterDensity === opt.id;
-                                return (
-                                  <button
-                                    key={opt.id}
-                                    type="button"
-                                    role="radio"
-                                    aria-checked={isSelected}
-                                    onClick={() => onSetCharacterDensity(opt.id)}
-                                    className={`py-1 px-1.5 rounded-lg text-[10.5px] font-bold transition cursor-pointer truncate ${
-                                      isSelected
-                                        ? 'bg-blue-600 text-white shadow-2xs'
-                                        : 'text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800'
-                                    }`}
-                                  >
-                                    {opt.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Control 5: Motion Preference (Off / Subtle / Smooth) */}
-                        {onSetMotionPreference && (
-                          <div className="pt-2 border-t border-slate-200/80 dark:border-zinc-700/60 space-y-1.5">
-                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 block">
-                              Motion Preference
-                            </span>
-                            <div
-                              role="radiogroup"
-                              aria-label="Motion Preference"
-                              className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-white/80 dark:bg-zinc-900/70 border border-slate-200/80 dark:border-zinc-700/70"
-                            >
-                              {(
-                                [
-                                  { id: 'off' as const, label: 'Off' },
-                                  { id: 'subtle' as const, label: 'Subtle' },
-                                  { id: 'smooth' as const, label: 'Smooth' },
-                                ] as const
-                              ).map((opt) => {
-                                const isSelected = motionPreference === opt.id;
-                                return (
-                                  <button
-                                    key={opt.id}
-                                    type="button"
-                                    role="radio"
-                                    aria-checked={isSelected}
-                                    onClick={() => onSetMotionPreference(opt.id)}
-                                    className={`py-1 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer truncate ${
-                                      isSelected
-                                        ? 'bg-blue-600 text-white shadow-2xs'
-                                        : 'text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800'
-                                    }`}
-                                  >
-                                    {opt.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Control 6: Character Animation */}
-                        {onSetCharacterAnimation && (
+                        {/* Control 4: Theme Animation */}
+                        {onSetThemeAnimationEnabled && (
                           <div className="pt-2 border-t border-slate-200/80 dark:border-zinc-700/60 flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2 min-w-0">
-                              <Play className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                              <Sparkles className="w-3.5 h-3.5 text-blue-500 shrink-0" />
                               <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">
-                                {t.characterAnimation}
+                                {t.themeAnimation}
                               </span>
                             </div>
                             <button
                               type="button"
                               role="switch"
-                              aria-checked={characterAnimation}
-                              onClick={() => onSetCharacterAnimation(!characterAnimation)}
+                              aria-checked={themeAnimationEnabled}
+                              onClick={() => onSetThemeAnimationEnabled(!themeAnimationEnabled)}
                               className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-                                characterAnimation ? 'bg-blue-600' : 'bg-slate-300 dark:bg-zinc-700'
+                                themeAnimationEnabled ? 'bg-blue-600' : 'bg-slate-300 dark:bg-zinc-700'
                               }`}
                             >
                               <span
                                 className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs transition duration-200 ${
-                                  characterAnimation ? 'translate-x-4' : 'translate-x-0'
+                                  themeAnimationEnabled ? 'translate-x-4' : 'translate-x-0'
                                 }`}
                               />
                             </button>
                           </div>
                         )}
 
-                        {/* Control 7: Theme Selection */}
+
+
+                        {/* Theme Selection */}
                         {onSelectBackgroundTheme && (
                           <div className="pt-2.5 border-t border-slate-200/80 dark:border-zinc-700/60 space-y-2">
                             <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
@@ -1445,12 +1322,7 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                                     type="button"
                                     role="radio"
                                     aria-checked={isSelected}
-                                    onClick={() => {
-                                      if (autoSeasonalTheme && onSetAutoSeasonalTheme) {
-                                        onSetAutoSeasonalTheme(false);
-                                      }
-                                      onSelectBackgroundTheme(option.id);
-                                    }}
+                                    onClick={() => onSelectBackgroundTheme(option.id)}
                                     className={`w-full text-left px-2.5 py-1.5 rounded-xl border transition-all duration-200 flex items-center justify-between gap-2 cursor-pointer ${
                                       isSelected
                                         ? 'bg-white dark:bg-zinc-900 border-blue-500 dark:border-blue-400 shadow-2xs'
@@ -1503,12 +1375,7 @@ export const HeaderMenu: React.FC<HeaderMenuProps> = ({
                                     type="button"
                                     role="radio"
                                     aria-checked={isSelected}
-                                    onClick={() => {
-                                      if (autoSeasonalTheme && onSetAutoSeasonalTheme) {
-                                        onSetAutoSeasonalTheme(false);
-                                      }
-                                      onSelectBackgroundTheme(option.id);
-                                    }}
+                                    onClick={() => onSelectBackgroundTheme(option.id)}
                                     className={`w-full text-left px-2.5 py-1.5 rounded-xl border transition-all duration-200 flex items-center justify-between gap-2 cursor-pointer ${
                                       isSelected
                                         ? 'bg-white dark:bg-zinc-900 border-blue-500 dark:border-blue-400 shadow-2xs'

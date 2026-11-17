@@ -80,8 +80,8 @@ import { useAnimatedPresence } from '../hooks/useAnimatedPresence';
 export function getItemMasterdataSheet(it: InventoryItem): string {
   const explicit = String(it.masterdataSheet || '').trim().toUpperCase();
   if (explicit) {
-    if (explicit === 'OTHER' || explicit.includes('OTHER') || explicit === 'NONGRO') return 'OTHERS';
-    if (explicit.startsWith('GRO')) return 'GRO';
+    if (explicit === 'OTHER' || explicit === 'OTHERS' || explicit === 'NONGRO') return 'OTHERS';
+    if (explicit === 'GRO') return 'GRO';
     return explicit;
   }
   const code = String(it.itemCode || '').trim().toUpperCase();
@@ -349,6 +349,28 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [hydrationTick, setHydrationTick] = useState(0);
   const [isResyncingMasterdata, setIsResyncingMasterdata] = useState(false);
   const [resyncError, setResyncError] = useState<string | null>(null);
+  const [activeConfiguredSheets, setActiveConfiguredSheets] = useState<string[] | null>(() => {
+    try {
+      const raw = localStorage.getItem('countsheet_active_masterdata_sheets_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed.map((s: any) => String(s || '').trim().toUpperCase()).filter(Boolean);
+        }
+      }
+    } catch {}
+    return null;
+  });
+  const [activeMasterdataSpreadsheetId, setActiveMasterdataSpreadsheetId] = useState<string>(() => {
+    try {
+      return (
+        localStorage.getItem('countsheet_active_masterdata_spreadsheet_id_v1') ||
+        FIXED_MASTERDATA_SPREADSHEET_ID
+      );
+    } catch {
+      return FIXED_MASTERDATA_SPREADSHEET_ID;
+    }
+  });
   const [localEncodingCount, setLocalEncodingCount] = useState<number>(
     branch?.encodingCount || 0
   );
@@ -850,10 +872,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [masterdataModalMode, setMasterdataModalMode] = useState<'EDIT' | 'ADD' | null>(null);
   const [editingOriginalItem, setEditingOriginalItem] = useState<InventoryItem | null>(null);
   const [masterdataForm, setMasterdataForm] = useState<{
-    targetSheet: 'GRO' | 'OTHERS';
+    targetSheet: string;
     itemCode: string;
     barcode: string;
     itemDescription: string;
+    unit: string;
     category: string;
     subCategory: string;
     subsubCategory: string;
@@ -862,6 +885,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     itemCode: '',
     barcode: '',
     itemDescription: '',
+    unit: 'PCS',
     category: '',
     subCategory: '',
     subsubCategory: '',
@@ -942,16 +966,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   };
 
   const openEditMasterdataModal = (item: InventoryItem) => {
-    const detectedSheet: 'GRO' | 'OTHERS' =
-      (item.masterdataSheet || (item.itemCode?.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS')) === 'OTHERS'
-        ? 'OTHERS'
-        : 'GRO';
+    const detectedSheet = getItemMasterdataSheet(item);
     setEditingOriginalItem(item);
     setMasterdataForm({
       targetSheet: detectedSheet,
       itemCode: item.itemCode || '',
       barcode: item.barcode || '',
       itemDescription: item.itemDescription || '',
+      unit: item.unit || 'PCS',
       category: item.category || '',
       subCategory: item.subCategory || '',
       subsubCategory: item.subsubCategory || '',
@@ -964,14 +986,21 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   };
 
   const openAddMasterdataModal = () => {
-    const defaultSheet: 'GRO' | 'OTHERS' =
-      masterdataSheetFilter === 'OTHERS' ? 'OTHERS' : 'GRO';
+    const loadedSheetKeys =
+      activeConfiguredSheets && activeConfiguredSheets.length > 0
+        ? activeConfiguredSheets
+        : Object.keys(masterdataSheetCounts);
+    const defaultSheet =
+      masterdataSheetFilter !== 'ALL'
+        ? masterdataSheetFilter
+        : loadedSheetKeys[0] || 'GRO';
     setEditingOriginalItem(null);
     setMasterdataForm({
       targetSheet: defaultSheet,
       itemCode: '',
       barcode: '',
       itemDescription: '',
+      unit: 'PCS',
       category: '',
       subCategory: '',
       subsubCategory: '',
@@ -1001,11 +1030,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     try {
       let tokenToUse = accessToken || '';
       if (masterdataModalMode === 'EDIT' && editingOriginalItem) {
-        const originalSheet =
-          (editingOriginalItem.masterdataSheet ||
-            (editingOriginalItem.itemCode?.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS')) === 'OTHERS'
-            ? 'OTHERS'
-            : 'GRO';
+        const originalSheet = getItemMasterdataSheet(editingOriginalItem);
 
         let resp = await saveMasterdataItemAdmin(tokenToUse, {
           originalItemCode: editingOriginalItem.itemCode,
@@ -1014,6 +1039,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           originalSheet,
           itemCode: masterdataForm.itemCode.trim(),
           itemDescription: masterdataForm.itemDescription.trim(),
+          unit: masterdataForm.unit.trim() || 'PCS',
           category: masterdataForm.category.trim(),
           subCategory: masterdataForm.subCategory.trim(),
           subsubCategory: masterdataForm.subsubCategory.trim(),
@@ -1035,6 +1061,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 originalSheet,
                 itemCode: masterdataForm.itemCode.trim(),
                 itemDescription: masterdataForm.itemDescription.trim(),
+                unit: masterdataForm.unit.trim() || 'PCS',
                 category: masterdataForm.category.trim(),
                 subCategory: masterdataForm.subCategory.trim(),
                 subsubCategory: masterdataForm.subsubCategory.trim(),
@@ -1050,6 +1077,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           itemCode: masterdataForm.itemCode.trim(),
           barcode: masterdataForm.barcode.trim(),
           itemDescription: masterdataForm.itemDescription.trim(),
+          unit: masterdataForm.unit.trim() || 'PCS',
           category: masterdataForm.category.trim(),
           subCategory: masterdataForm.subCategory.trim(),
           subsubCategory: masterdataForm.subsubCategory.trim(),
@@ -1079,6 +1107,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         let resp = await addMasterdataItemAdmin(tokenToUse, {
           itemCode: masterdataForm.itemCode.trim(),
           itemDescription: masterdataForm.itemDescription.trim(),
+          unit: masterdataForm.unit.trim() || 'PCS',
           category: masterdataForm.category.trim(),
           subCategory: masterdataForm.subCategory.trim(),
           subsubCategory: masterdataForm.subsubCategory.trim(),
@@ -1095,6 +1124,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               resp = await addMasterdataItemAdmin(freshToken, {
                 itemCode: masterdataForm.itemCode.trim(),
                 itemDescription: masterdataForm.itemDescription.trim(),
+                unit: masterdataForm.unit.trim() || 'PCS',
                 category: masterdataForm.category.trim(),
                 subCategory: masterdataForm.subCategory.trim(),
                 subsubCategory: masterdataForm.subsubCategory.trim(),
@@ -1114,7 +1144,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           subsubCategory: masterdataForm.subsubCategory.trim(),
           cost: 0,
           selling: 0,
-          unit: 'PCS',
+          unit: masterdataForm.unit.trim() || 'PCS',
           begQty: 0,
           in: 0,
           out: 0,
@@ -1265,8 +1295,28 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         strict: false,
       });
 
-      // If 0 items returned and Google is connected, refresh Google token and retry once
-      if (masterItems.length === 0 && useStrictOAuth) {
+      let parsedConfiguredSheets: string[] | null = null;
+      let isExplicitlyEmptySheets = false;
+      try {
+        const savedSheetsRaw = localStorage.getItem('countsheet_active_masterdata_sheets_v1');
+        if (savedSheetsRaw) {
+          const parsedSheets = JSON.parse(savedSheetsRaw);
+          if (Array.isArray(parsedSheets)) {
+            parsedConfiguredSheets = parsedSheets
+              .map((s: any) => String(s || '').trim().toUpperCase())
+              .filter(Boolean);
+            isExplicitlyEmptySheets = parsedConfiguredSheets.length === 0;
+          }
+        }
+      } catch {}
+
+      let savedSpreadsheetId: string | null = null;
+      try {
+        savedSpreadsheetId = localStorage.getItem('countsheet_active_masterdata_spreadsheet_id_v1');
+      } catch {}
+
+      // If 0 items returned and Google is connected (and sheets weren't explicitly cleared by Admin), refresh Google token and retry once
+      if (masterItems.length === 0 && !isExplicitlyEmptySheets && useStrictOAuth) {
         const freshToken = await refreshGoogleAccessToken(userEmail || undefined);
         if (freshToken) {
           onTokenRefreshed?.(freshToken);
@@ -1274,35 +1324,71 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             forceRefresh: true,
             strict: true,
           });
+          try {
+            const rawAfter = localStorage.getItem('countsheet_active_masterdata_sheets_v1');
+            if (rawAfter) {
+              const parsedAfter = JSON.parse(rawAfter);
+              if (Array.isArray(parsedAfter)) {
+                parsedConfiguredSheets = parsedAfter
+                  .map((s: any) => String(s || '').trim().toUpperCase())
+                  .filter(Boolean);
+                isExplicitlyEmptySheets = parsedConfiguredSheets.length === 0;
+              }
+            }
+            savedSpreadsheetId =
+              localStorage.getItem('countsheet_active_masterdata_spreadsheet_id_v1') ||
+              savedSpreadsheetId;
+          } catch {}
         }
       }
 
-      if (masterItems.length > 0) {
-        const updatedBranch = await saveBranchMasterdata(branch, masterItems);
+      if (masterItems.length > 0 || isExplicitlyEmptySheets) {
+        const updatedBranch = await saveBranchMasterdata(
+          branch,
+          masterItems,
+          undefined,
+          savedSpreadsheetId,
+          parsedConfiguredSheets
+        );
         if (updatedBranch) {
           onUpdateBranch?.(updatedBranch);
+        }
+        if (parsedConfiguredSheets !== null) {
+          setActiveConfiguredSheets(parsedConfiguredSheets);
+        }
+        if (savedSpreadsheetId) {
+          setActiveMasterdataSpreadsheetId(savedSpreadsheetId);
         }
         setLocalMasterdataCount(masterItems.length);
         setHydrationTick((t) => t + 1);
         if (typeof window !== 'undefined') {
           window.dispatchEvent(
             new CustomEvent('masterdata-updated', {
-              detail: { count: masterItems.length, updatedAt: new Date().toISOString() },
+              detail: {
+                count: masterItems.length,
+                updatedAt: new Date().toISOString(),
+                sheets: parsedConfiguredSheets || undefined,
+                spreadsheetId: savedSpreadsheetId || undefined,
+              },
             })
           );
         }
         if (!options?.silent) {
-          const sheetSummaryMap = new Map<string, number>();
-          for (let i = 0; i < masterItems.length; i++) {
-            const s = getItemMasterdataSheet(masterItems[i]);
-            sheetSummaryMap.set(s, (sheetSummaryMap.get(s) || 0) + 1);
+          if (masterItems.length > 0) {
+            const sheetSummaryMap = new Map<string, number>();
+            for (let i = 0; i < masterItems.length; i++) {
+              const s = getItemMasterdataSheet(masterItems[i]);
+              sheetSummaryMap.set(s, (sheetSummaryMap.get(s) || 0) + 1);
+            }
+            const summaryStr = Array.from(sheetSummaryMap.entries())
+              .map(([name, cnt]) => `${name}: ${cnt.toLocaleString()}`)
+              .join(' • ');
+            setSuccessToast(
+              `Resynced ${masterItems.length.toLocaleString()} Masterdata items (${summaryStr}).`
+            );
+          } else {
+            setSuccessToast('Masterdata synced (no active sheets configured).');
           }
-          const summaryStr = Array.from(sheetSummaryMap.entries())
-            .map(([name, cnt]) => `${name}: ${cnt.toLocaleString()}`)
-            .join(' • ');
-          setSuccessToast(
-            `Resynced ${masterItems.length.toLocaleString()} Masterdata items (${summaryStr}).`
-          );
           setTimeout(() => setSuccessToast(null), 4000);
         }
       } else if (!options?.silent) {
@@ -1363,17 +1449,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       countBranchInventoryBySource(GUEST_LOCAL_BRANCH_ID, 'ENCODING').then((guestEncCount) => {
         setLocalEncodingCount(guestEncCount);
       });
-      countBranchInventoryBySource('global_masterdata', 'MASTERDATA').then((currentMastCount) => {
-        if (currentMastCount > 0) {
-          setLocalMasterdataCount(currentMastCount);
-          void syncMasterdataFromServerIfUpdated(null).then((res) => {
-            if (res.updated && res.count > 0) {
-              setLocalMasterdataCount(res.count);
-              setHydrationTick((t) => t + 1);
+      countBranchInventoryBySource('global_masterdata', 'MASTERDATA').then(async (currentMastCount) => {
+        setLocalMasterdataCount(currentMastCount);
+        const res = await syncMasterdataFromServerIfUpdated(null);
+        if (res.updated && typeof res.count === 'number') {
+          setLocalMasterdataCount(res.count);
+          setHydrationTick((t) => t + 1);
+        } else if (currentMastCount === 0) {
+          let isExplicitEmpty = false;
+          try {
+            const raw = localStorage.getItem('countsheet_active_masterdata_sheets_v1');
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed) && parsed.length === 0) isExplicitEmpty = true;
             }
-          });
-        } else {
-          handleResyncMasterdata({ silent: true });
+          } catch {}
+          if (!isExplicitEmpty) {
+            handleResyncMasterdata({ silent: true });
+          }
         }
       });
       return;
@@ -1386,19 +1479,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         countBranchInventoryBySource(branch.id, 'MASTERDATA'),
       ]);
       setLocalEncodingCount(currentEncCount);
-      if (currentMastCount > 0) {
-        setLocalMasterdataCount(currentMastCount);
-        const syncRes = await syncMasterdataFromServerIfUpdated(branch);
-        if (syncRes.updated && syncRes.count > 0) {
-          setLocalMasterdataCount(syncRes.count);
-          if (syncRes.updatedBranch) {
-            onUpdateBranch?.(syncRes.updatedBranch);
-          }
-          setHydrationTick((t) => t + 1);
+      setLocalMasterdataCount(currentMastCount);
+      const syncRes = await syncMasterdataFromServerIfUpdated(branch);
+      if (syncRes.updated && typeof syncRes.count === 'number') {
+        setLocalMasterdataCount(syncRes.count);
+        if (syncRes.updatedBranch) {
+          onUpdateBranch?.(syncRes.updatedBranch);
         }
-      } else {
-        // Automatically resync Masterdata when opening Inventory if Masterdata is empty
-        handleResyncMasterdata({ silent: true });
+        setHydrationTick((t) => t + 1);
+      } else if (currentMastCount === 0) {
+        let isExplicitEmpty = false;
+        try {
+          const raw = localStorage.getItem('countsheet_active_masterdata_sheets_v1');
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length === 0) isExplicitEmpty = true;
+          }
+        } catch {}
+        if (!isExplicitEmpty) {
+          handleResyncMasterdata({ silent: true });
+        }
       }
     });
 
@@ -1417,15 +1517,36 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   // Periodically check if Masterdata item count or snapshot was updated on the server so all users stay in sync
   useEffect(() => {
     let cancelled = false;
+    const syncSheetMetaFromStorage = () => {
+      try {
+        const rawSheets = localStorage.getItem('countsheet_active_masterdata_sheets_v1');
+        if (rawSheets) {
+          const parsed = JSON.parse(rawSheets);
+          if (Array.isArray(parsed)) {
+            setActiveConfiguredSheets(
+              parsed.map((s: any) => String(s || '').trim().toUpperCase()).filter(Boolean)
+            );
+          }
+        }
+        const savedId = localStorage.getItem('countsheet_active_masterdata_spreadsheet_id_v1');
+        if (savedId) {
+          setActiveMasterdataSpreadsheetId(savedId);
+        }
+      } catch {}
+    };
+
     const checkServerMasterdataUpdate = async () => {
       if (cancelled || isResyncingMasterdata) return;
       const res = await syncMasterdataFromServerIfUpdated(branch);
-      if (!cancelled && res.updated && res.count > 0) {
-        setLocalMasterdataCount(res.count);
-        if (res.updatedBranch) {
-          onUpdateBranch?.(res.updatedBranch);
+      if (!cancelled) {
+        syncSheetMetaFromStorage();
+        if (res.updated && typeof res.count === 'number') {
+          setLocalMasterdataCount(res.count);
+          if (res.updatedBranch) {
+            onUpdateBranch?.(res.updatedBranch);
+          }
+          setHydrationTick((t) => t + 1);
         }
-        setHydrationTick((t) => t + 1);
       }
     };
 
@@ -1436,9 +1557,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     window.addEventListener('focus', onFocus);
 
     const onMasterdataUpdated = (e: Event) => {
-      const customEvent = e as CustomEvent<{ count?: number }>;
-      if (customEvent.detail?.count && typeof customEvent.detail.count === 'number') {
+      const customEvent = e as CustomEvent<{
+        count?: number;
+        sheets?: string[];
+        spreadsheetId?: string;
+      }>;
+      if (typeof customEvent.detail?.count === 'number') {
         setLocalMasterdataCount(customEvent.detail.count);
+      }
+      if (Array.isArray(customEvent.detail?.sheets)) {
+        setActiveConfiguredSheets(
+          customEvent.detail.sheets.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean)
+        );
+      }
+      if (customEvent.detail?.spreadsheetId) {
+        setActiveMasterdataSpreadsheetId(customEvent.detail.spreadsheetId);
+      }
+      if (!Array.isArray(customEvent.detail?.sheets) || !customEvent.detail?.spreadsheetId) {
+        syncSheetMetaFromStorage();
       }
       setHydrationTick((t) => t + 1);
     };
@@ -1503,14 +1639,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       .then((fullList) => {
         if (!isMounted) return;
         setAllTabItems(fullList);
-        if (activeTab === 'MASTERDATA' && fullList.length > 0) {
+        if (activeTab === 'MASTERDATA') {
           setLocalMasterdataCount(fullList.length);
           if (branch && branch.masterdataCount !== fullList.length) {
-            saveBranchMasterdata(branch, fullList)
-              .then((updated) => {
-                if (updated) onUpdateBranch?.(updated);
-              })
-              .catch(() => {});
+            onUpdateBranch?.({ ...branch, masterdataCount: fullList.length });
           }
         } else if (activeTab === 'ENCODING') {
           setLocalEncodingCount(fullList.length);
@@ -1536,6 +1668,32 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
     return counts;
   }, [allTabItems, activeTab]);
+
+  const orderedMasterdataSheets = React.useMemo(() => {
+    if (activeTab !== 'MASTERDATA') return [] as string[];
+    if (activeConfiguredSheets !== null) {
+      const list = [...activeConfiguredSheets];
+      for (const k of Object.keys(masterdataSheetCounts)) {
+        if (!list.includes(k) && activeConfiguredSheets.length > 0) {
+          // Only display sheets present in activeConfiguredSheets when config is known
+        }
+      }
+      return list;
+    }
+    return Object.keys(masterdataSheetCounts);
+  }, [activeTab, activeConfiguredSheets, masterdataSheetCounts]);
+
+  // Reset masterdataSheetFilter to ALL if the selected sheet was removed by the Admin
+  useEffect(() => {
+    if (
+      activeTab === 'MASTERDATA' &&
+      masterdataSheetFilter !== 'ALL' &&
+      !orderedMasterdataSheets.includes(masterdataSheetFilter) &&
+      !masterdataSheetCounts[masterdataSheetFilter]
+    ) {
+      setMasterdataSheetFilter('ALL');
+    }
+  }, [activeTab, masterdataSheetFilter, orderedMasterdataSheets, masterdataSheetCounts]);
 
   // Compute distinct options for Category, Subcategory, or SubSubCategory
   const filterValueOptions = React.useMemo(() => {
@@ -1782,7 +1940,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             </button>
           </div>
 
-          {/* Direct GRO / OTHERS sheet switcher when inside Masterdata tab */}
+          {/* Direct sheet switcher when inside Masterdata tab */}
           {activeTab === 'MASTERDATA' && (
             <div className="flex p-1 bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/60 rounded-xl shrink-0 flex-wrap gap-1">
               {[
@@ -1790,7 +1948,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   id: 'ALL',
                   label: `${t.filterAll} (${allTabItems.length.toLocaleString()})`,
                 },
-                ...Object.keys(masterdataSheetCounts).map((sheetName) => ({
+                ...orderedMasterdataSheets.map((sheetName) => ({
                   id: sheetName,
                   label: `${sheetName} (${(masterdataSheetCounts[sheetName] || 0).toLocaleString()})`,
                 })),
@@ -1921,11 +2079,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </button>
 
                   <a
-                    href={`https://docs.google.com/spreadsheets/d/${FIXED_MASTERDATA_SPREADSHEET_ID}/edit`}
+                    href={`https://docs.google.com/spreadsheets/d/${activeMasterdataSpreadsheetId || FIXED_MASTERDATA_SPREADSHEET_ID}/edit`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="px-2.5 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/80 text-xs font-bold flex items-center gap-1 transition shrink-0"
-                    title="Open Masterdata Google Sheet (GRO & OTHERS)"
+                    title="Open Masterdata Google Sheet"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                     <span className="hidden sm:inline">Sheet</span>
@@ -2157,7 +2315,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 <strong className="text-slate-700 dark:text-slate-200 font-bold font-mono">
                   {filteredItems.length.toLocaleString()}
                 </strong>{' '}
-                {activeTab === 'ENCODING' ? 'Local' : 'Masterdata (GRO & OTHERS)'} inventory item
+                {activeTab === 'ENCODING'
+                  ? 'Local'
+                  : orderedMasterdataSheets.length > 0
+                  ? `Masterdata (${orderedMasterdataSheets.join(' & ')})`
+                  : 'Masterdata'}{' '}
+                inventory item
                 {filteredItems.length === 1 ? '' : 's'}
               </span>
             )}
@@ -2400,7 +2563,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   <tr>
                     <th className="py-2.5 px-3 font-bold">Item Code</th>
                     <th className="py-2.5 px-3 font-bold">Item Description</th>
-                    <th className="py-2.5 px-3 font-bold text-center">Unit/UOM</th>
+                    <th className="py-2.5 px-3 font-bold text-center">Unit</th>
                     <th className="py-2.5 px-3 font-bold">Barcode</th>
                     <th className="py-2.5 px-3 font-bold">Category Hierarchy</th>
                     {activeTab !== 'MASTERDATA' && (
@@ -3450,13 +3613,21 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </div>
               )}
 
-              {/* Target Sheet Selector: GRO vs OTHERS */}
+              {/* Target Sheet Selector */}
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
                   Target Masterdata Sheet
                 </label>
                 <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-slate-100/80 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/60">
-                  {(['GRO', 'OTHERS'] as const).map((sheetTab) => {
+                  {(Object.keys(masterdataSheetCounts).length > 0
+                    ? Array.from(
+                        new Set([
+                          ...Object.keys(masterdataSheetCounts),
+                          ...(masterdataForm.targetSheet ? [masterdataForm.targetSheet] : []),
+                        ])
+                      )
+                    : ['GRO', 'OTHERS']
+                  ).map((sheetTab) => {
                     const isSelected = masterdataForm.targetSheet === sheetTab;
                     return (
                       <button
@@ -3533,21 +3704,38 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </div>
               </div>
 
-              {/* Item Description */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">
-                  Item Description
-                </label>
-                <div className="relative">
-                  <Package className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              {/* Item Description & Unit */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">
+                    Item Description
+                  </label>
+                  <div className="relative">
+                    <Package className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={masterdataForm.itemDescription}
+                      onChange={(e) =>
+                        setMasterdataForm((prev) => ({ ...prev, itemDescription: e.target.value }))
+                      }
+                      placeholder="Enter full item description"
+                      className="w-full pl-8 pr-3 py-2.5 text-xs font-semibold bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white dark:focus:bg-slate-800 transition"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">
+                    Unit
+                  </label>
                   <input
                     type="text"
-                    value={masterdataForm.itemDescription}
+                    value={masterdataForm.unit}
                     onChange={(e) =>
-                      setMasterdataForm((prev) => ({ ...prev, itemDescription: e.target.value }))
+                      setMasterdataForm((prev) => ({ ...prev, unit: e.target.value }))
                     }
-                    placeholder="Enter full item description"
-                    className="w-full pl-8 pr-3 py-2.5 text-xs font-semibold bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white dark:focus:bg-slate-800 transition"
+                    placeholder="e.g. PCS, BOX"
+                    className="w-full px-3 py-2.5 text-xs font-mono font-bold uppercase bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white dark:focus:bg-slate-800 transition"
                   />
                 </div>
               </div>

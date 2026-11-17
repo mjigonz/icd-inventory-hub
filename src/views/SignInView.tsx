@@ -122,8 +122,8 @@ export const SignInView: React.FC<SignInViewProps> = ({
   return (
     <div
       data-window-theme={backgroundTheme}
-      className={`min-h-screen relative flex flex-col justify-between p-4 sm:p-6 transition-colors duration-350 ease-in-out ${
-        theme === 'dark' ? 'bg-slate-950 text-white dark' : 'bg-slate-50 text-slate-900'
+      className={`min-h-screen relative flex flex-col justify-between p-4 sm:p-6 bg-[var(--theme-bg)] text-[var(--theme-text)] transition-colors duration-[var(--duration-theme)] ease-in-out ${
+        theme === 'dark' ? 'dark' : ''
       }`}
     >
       {/* Background icons pattern */}
@@ -136,21 +136,21 @@ export const SignInView: React.FC<SignInViewProps> = ({
             type="button"
             onClick={onToggleTheme}
             aria-label={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} mode`}
-            className="relative w-9 h-9 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200/90 dark:border-zinc-700/80 shadow-xs flex items-center justify-center text-slate-700 dark:text-zinc-200 hover:scale-105 active:scale-95 transition-transform duration-200 ease-out cursor-pointer overflow-hidden"
+            className="relative w-9 h-9 rounded-xl bg-white dark:bg-zinc-800 border border-slate-200/90 dark:border-zinc-700/80 shadow-xs flex items-center justify-center text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-zinc-700/80 transition-colors duration-[var(--duration-theme)] ease-in-out cursor-pointer overflow-hidden"
             title="Toggle Light / Dark mode"
           >
             <Sun
               className={`w-4 h-4 text-sky-500 absolute theme-toggle-icon ${
                 theme === 'dark'
-                  ? 'opacity-0 -rotate-90 scale-50'
-                  : 'opacity-100 rotate-0 scale-100'
+                  ? 'opacity-0 pointer-events-none'
+                  : 'opacity-100'
               }`}
             />
             <Moon
               className={`w-4 h-4 text-zinc-200 absolute theme-toggle-icon ${
                 theme === 'dark'
-                  ? 'opacity-100 rotate-0 scale-100'
-                  : 'opacity-0 rotate-90 scale-50'
+                  ? 'opacity-100'
+                  : 'opacity-0 pointer-events-none'
               }`}
             />
           </button>

@@ -31,18 +31,17 @@
 @layer base {
   /* ============================================================================
      GLOBAL THEME SYSTEM — ICD INVENTORY HUB
-     4 Core Enterprise Themes + 12 Seasonal & Nature Themes,
+     Default + 2 Core Enterprise Themes + 4 Holiday Themes,
      each with dedicated Light Mode and Dark Mode:
      ============================================================================ */
 
   /* ----------------------------------------------------------------------------
-     DEFAULT & THEME 1: MODERN ENTERPRISE
+     DEFAULT THEME
      Light: Bg #F8FAFC | Sidebar #FFFFFF | Cards #FFFFFF | Primary #2563EB | Text #0F172A | Borders #E2E8F0
      Dark:  Bg #0B1220 | Sidebar #111827 | Cards #1E293B | Primary #60A5FA | Text #F1F5F9 | Borders #334155
      ---------------------------------------------------------------------------- */
   :root,
-  :root[data-window-theme="default"]:not(.dark),
-  :root[data-window-theme="modern_enterprise"]:not(.dark) {
+  :root[data-window-theme="default"]:not(.dark) {
     --theme-bg: #F8FAFC;
     --theme-sidebar: #FFFFFF;
     --theme-card: #FFFFFF;
@@ -82,8 +81,7 @@
   }
 
   .dark,
-  .dark[data-window-theme="default"],
-  .dark[data-window-theme="modern_enterprise"] {
+  .dark[data-window-theme="default"] {
     --theme-bg: #0B1220;
     --theme-sidebar: #111827;
     --theme-card: #1E293B;
@@ -119,87 +117,7 @@
   }
 
   /* ----------------------------------------------------------------------------
-     THEME 2: MINIMAL MONOCHROME
-     Light: Bg #FAFAFA | Sidebar #FFFFFF | Cards #FFFFFF | Primary #18181B | Text #18181B | Borders #E4E4E7
-     Dark:  Bg #09090B | Sidebar #18181B | Cards #18181B | Primary #FAFAFA | Text #FAFAFA | Borders #3F3F46
-     ---------------------------------------------------------------------------- */
-  :root[data-window-theme="minimal_monochrome"]:not(.dark) {
-    --theme-bg: #FAFAFA;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #18181B;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #18181B;
-    --theme-border: #E4E4E7;
-
-    --color-white: #FFFFFF;
-    --color-slate-50: #FAFAFA;
-    --color-slate-100: #F4F4F5;
-    --color-slate-200: #E4E4E7;
-    --color-slate-300: #D4D4D8;
-    --color-slate-400: #A1A1AA;
-    --color-slate-500: #71717A;
-    --color-slate-600: #52525B;
-    --color-slate-700: #3F3F46;
-    --color-slate-800: #27272A;
-    --color-slate-900: #18181B;
-    --color-slate-950: #09090B;
-
-    --color-zinc-50: #FAFAFA;
-    --color-zinc-100: #F4F4F5;
-    --color-zinc-200: #E4E4E7;
-    --color-zinc-300: #D4D4D8;
-    --color-zinc-700: #3F3F46;
-    --color-zinc-800: #27272A;
-    --color-zinc-900: #18181B;
-
-    --color-blue-50: #F4F4F5;
-    --color-blue-100: #E4E4E7;
-    --color-blue-200: #D4D4D8;
-    --color-blue-400: #52525B;
-    --color-blue-500: #27272A;
-    --color-blue-600: #18181B;
-    --color-blue-700: #09090B;
-  }
-
-  .dark[data-window-theme="minimal_monochrome"] {
-    --theme-bg: #09090B;
-    --theme-sidebar: #18181B;
-    --theme-card: #18181B;
-    --theme-primary: #FAFAFA;
-    --theme-primary-fg: #09090B;
-    --theme-text: #FAFAFA;
-    --theme-border: #3F3F46;
-
-    --color-slate-950: #09090B;
-    --color-slate-900: #18181B;
-    --color-slate-800: #27272A;
-    --color-slate-700: #3F3F46;
-    --color-slate-600: #52525B;
-    --color-slate-500: #71717A;
-    --color-slate-400: #A1A1AA;
-    --color-slate-300: #D4D4D8;
-    --color-slate-200: #E4E4E7;
-    --color-slate-100: #FAFAFA;
-    --color-slate-50: #FFFFFF;
-
-    --color-zinc-950: #09090B;
-    --color-zinc-900: #18181B;
-    --color-zinc-800: #27272A;
-    --color-zinc-700: #3F3F46;
-
-    --color-blue-300: #FAFAFA;
-    --color-blue-400: #FAFAFA;
-    --color-blue-500: #E4E4E7;
-    --color-blue-600: #FAFAFA;
-    --color-blue-700: #D4D4D8;
-    --color-blue-800: #3F3F46;
-    --color-blue-900: #27272A;
-    --color-blue-950: #18181B;
-  }
-
-  /* ----------------------------------------------------------------------------
-     THEME 3: MIDNIGHT PROFESSIONAL
+     THEME 2: MIDNIGHT PROFESSIONAL
      Light: Bg #F1F5F9 | Sidebar #E2E8F0 | Cards #FFFFFF | Primary #334155 | Text #0F172A | Borders #CBD5E1
      Dark:  Bg #020617 | Sidebar #0F172A | Cards #1E293B | Primary #38BDF8 | Text #F8FAFC | Borders #334155
      ---------------------------------------------------------------------------- */
@@ -538,358 +456,6 @@
     --color-blue-700: #B45309;
   }
 
-  /* 9. SPRING BLOSSOM */
-  :root[data-window-theme="spring_blossom"]:not(.dark) {
-    --theme-bg: #FDF7FA;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #DB2777;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #1E1B18;
-    --theme-border: #FBCFE8;
-
-    --color-slate-50: #FDF7FA;
-    --color-slate-100: #FCE7F3;
-    --color-slate-200: #FBCFE8;
-    --color-blue-50: #FDF2F8;
-    --color-blue-100: #FCE7F3;
-    --color-blue-200: #FBCFE8;
-    --color-blue-400: #F472B6;
-    --color-blue-500: #EC4899;
-    --color-blue-600: #DB2777;
-    --color-blue-700: #BE185D;
-  }
-  .dark[data-window-theme="spring_blossom"] {
-    --theme-bg: #131C18;
-    --theme-sidebar: #192621;
-    --theme-card: #22332C;
-    --theme-primary: #F472B6;
-    --theme-primary-fg: #131C18;
-    --theme-text: #FDF2F8;
-    --theme-border: #344E43;
-
-    --color-slate-950: #131C18;
-    --color-slate-900: #22332C;
-    --color-slate-800: #2B4037;
-    --color-slate-700: #344E43;
-    --color-zinc-950: #131C18;
-    --color-zinc-900: #22332C;
-    --color-zinc-800: #2B4037;
-    --color-zinc-700: #344E43;
-    --color-blue-400: #F472B6;
-    --color-blue-500: #EC4899;
-    --color-blue-600: #DB2777;
-    --color-blue-700: #BE185D;
-  }
-
-  /* 10. SUMMER BREEZE */
-  :root[data-window-theme="summer_breeze"]:not(.dark) {
-    --theme-bg: #F0FDFA;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #0891B2;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #0F172A;
-    --theme-border: #A5F3FC;
-
-    --color-slate-50: #F0FDFA;
-    --color-slate-100: #ECFEFF;
-    --color-slate-200: #A5F3FC;
-    --color-blue-50: #ECFEFF;
-    --color-blue-100: #CFFAFE;
-    --color-blue-200: #A5F3FC;
-    --color-blue-400: #22D3EE;
-    --color-blue-500: #06B6D4;
-    --color-blue-600: #0891B2;
-    --color-blue-700: #0E7490;
-  }
-  .dark[data-window-theme="summer_breeze"] {
-    --theme-bg: #081C24;
-    --theme-sidebar: #0D2833;
-    --theme-card: #133544;
-    --theme-primary: #22D3EE;
-    --theme-primary-fg: #081C24;
-    --theme-text: #ECFEFF;
-    --theme-border: #1E4E63;
-
-    --color-slate-950: #081C24;
-    --color-slate-900: #133544;
-    --color-slate-800: #184254;
-    --color-slate-700: #1E4E63;
-    --color-zinc-950: #081C24;
-    --color-zinc-900: #133544;
-    --color-zinc-800: #184254;
-    --color-zinc-700: #1E4E63;
-    --color-blue-400: #22D3EE;
-    --color-blue-500: #06B6D4;
-    --color-blue-600: #0891B2;
-    --color-blue-700: #0E7490;
-  }
-
-  /* 11. AUTUMN HARVEST */
-  :root[data-window-theme="autumn_harvest"]:not(.dark) {
-    --theme-bg: #FFFBEB;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #B45309;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #271C15;
-    --theme-border: #FDE68A;
-
-    --color-slate-50: #FFFBEB;
-    --color-slate-100: #FEF3C7;
-    --color-slate-200: #FDE68A;
-    --color-blue-50: #FFFBEB;
-    --color-blue-100: #FEF3C7;
-    --color-blue-200: #FDE68A;
-    --color-blue-400: #F59E0B;
-    --color-blue-500: #D97706;
-    --color-blue-600: #B45309;
-    --color-blue-700: #92400E;
-  }
-  .dark[data-window-theme="autumn_harvest"] {
-    --theme-bg: #1C140D;
-    --theme-sidebar: #261C12;
-    --theme-card: #332519;
-    --theme-primary: #F59E0B;
-    --theme-primary-fg: #1C140D;
-    --theme-text: #FEF3C7;
-    --theme-border: #4D3826;
-
-    --color-slate-950: #1C140D;
-    --color-slate-900: #332519;
-    --color-slate-800: #402F20;
-    --color-slate-700: #4D3826;
-    --color-zinc-950: #1C140D;
-    --color-zinc-900: #332519;
-    --color-zinc-800: #402F20;
-    --color-zinc-700: #4D3826;
-    --color-blue-400: #FBBF24;
-    --color-blue-500: #F59E0B;
-    --color-blue-600: #D97706;
-    --color-blue-700: #B45309;
-  }
-
-  /* 12. WINTER FROST */
-  :root[data-window-theme="winter_frost"]:not(.dark) {
-    --theme-bg: #F0F9FF;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #0284C7;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #0C1928;
-    --theme-border: #BAE6FD;
-
-    --color-slate-50: #F0F9FF;
-    --color-slate-100: #E0F2FE;
-    --color-slate-200: #BAE6FD;
-    --color-blue-50: #F0F9FF;
-    --color-blue-100: #E0F2FE;
-    --color-blue-200: #BAE6FD;
-    --color-blue-400: #38BDF8;
-    --color-blue-500: #0EA5E9;
-    --color-blue-600: #0284C7;
-    --color-blue-700: #0369A1;
-  }
-  .dark[data-window-theme="winter_frost"] {
-    --theme-bg: #081420;
-    --theme-sidebar: #0E1F30;
-    --theme-card: #152C44;
-    --theme-primary: #38BDF8;
-    --theme-primary-fg: #081420;
-    --theme-text: #F0F9FF;
-    --theme-border: #214366;
-
-    --color-slate-950: #081420;
-    --color-slate-900: #152C44;
-    --color-slate-800: #1B3755;
-    --color-slate-700: #214366;
-    --color-zinc-950: #081420;
-    --color-zinc-900: #152C44;
-    --color-zinc-800: #1B3755;
-    --color-zinc-700: #214366;
-    --color-blue-400: #38BDF8;
-    --color-blue-500: #0EA5E9;
-    --color-blue-600: #0284C7;
-    --color-blue-700: #0369A1;
-  }
-
-  /* 13. EASTER */
-  :root[data-window-theme="easter"]:not(.dark) {
-    --theme-bg: #FAF5FF;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #7C3AED;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #1E1433;
-    --theme-border: #E9D5FF;
-
-    --color-slate-50: #FAF5FF;
-    --color-slate-100: #F3E8FF;
-    --color-slate-200: #E9D5FF;
-    --color-blue-50: #FAF5FF;
-    --color-blue-100: #F3E8FF;
-    --color-blue-200: #E9D5FF;
-    --color-blue-400: #A78BFA;
-    --color-blue-500: #8B5CF6;
-    --color-blue-600: #7C3AED;
-    --color-blue-700: #6D28D9;
-  }
-  .dark[data-window-theme="easter"] {
-    --theme-bg: #161124;
-    --theme-sidebar: #1F1833;
-    --theme-card: #2A2144;
-    --theme-primary: #A78BFA;
-    --theme-primary-fg: #161124;
-    --theme-text: #F5F3FF;
-    --theme-border: #403266;
-
-    --color-slate-950: #161124;
-    --color-slate-900: #2A2144;
-    --color-slate-800: #352955;
-    --color-slate-700: #403266;
-    --color-zinc-950: #161124;
-    --color-zinc-900: #2A2144;
-    --color-zinc-800: #352955;
-    --color-zinc-700: #403266;
-    --color-blue-400: #A78BFA;
-    --color-blue-500: #8B5CF6;
-    --color-blue-600: #7C3AED;
-    --color-blue-700: #6D28D9;
-  }
-
-  /* 14. NATURE FOREST */
-  :root[data-window-theme="nature_forest"]:not(.dark) {
-    --theme-bg: #F2F9F4;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #15803D;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #111C15;
-    --theme-border: #BBF7D0;
-
-    --color-slate-50: #F2F9F4;
-    --color-slate-100: #DCFCE7;
-    --color-slate-200: #BBF7D0;
-    --color-blue-50: #F0FDF4;
-    --color-blue-100: #DCFCE7;
-    --color-blue-200: #BBF7D0;
-    --color-blue-400: #4ADE80;
-    --color-blue-500: #22C55E;
-    --color-blue-600: #15803D;
-    --color-blue-700: #166534;
-  }
-  .dark[data-window-theme="nature_forest"] {
-    --theme-bg: #0A1910;
-    --theme-sidebar: #102418;
-    --theme-card: #163222;
-    --theme-primary: #4ADE80;
-    --theme-primary-fg: #0A1910;
-    --theme-text: #F0FDF4;
-    --theme-border: #234D34;
-
-    --color-slate-950: #0A1910;
-    --color-slate-900: #163222;
-    --color-slate-800: #1C402B;
-    --color-slate-700: #234D34;
-    --color-zinc-950: #0A1910;
-    --color-zinc-900: #163222;
-    --color-zinc-800: #1C402B;
-    --color-zinc-700: #234D34;
-    --color-blue-400: #4ADE80;
-    --color-blue-500: #22C55E;
-    --color-blue-600: #16A34A;
-    --color-blue-700: #15803D;
-  }
-
-  /* 15. OCEAN BREEZE */
-  :root[data-window-theme="ocean_breeze"]:not(.dark) {
-    --theme-bg: #F0FDFA;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #0D9488;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #0F1E22;
-    --theme-border: #99F6E4;
-
-    --color-slate-50: #F0FDFA;
-    --color-slate-100: #CCFBF1;
-    --color-slate-200: #99F6E4;
-    --color-blue-50: #F0FDFA;
-    --color-blue-100: #CCFBF1;
-    --color-blue-200: #99F6E4;
-    --color-blue-400: #2DD4BF;
-    --color-blue-500: #14B8A6;
-    --color-blue-600: #0D9488;
-    --color-blue-700: #0F766E;
-  }
-  .dark[data-window-theme="ocean_breeze"] {
-    --theme-bg: #061A1E;
-    --theme-sidebar: #0B252B;
-    --theme-card: #11333B;
-    --theme-primary: #2DD4BF;
-    --theme-primary-fg: #061A1E;
-    --theme-text: #F0FDFA;
-    --theme-border: #1C4D59;
-
-    --color-slate-950: #061A1E;
-    --color-slate-900: #11333B;
-    --color-slate-800: #16404A;
-    --color-slate-700: #1C4D59;
-    --color-zinc-950: #061A1E;
-    --color-zinc-900: #11333B;
-    --color-zinc-800: #16404A;
-    --color-zinc-700: #1C4D59;
-    --color-blue-400: #2DD4BF;
-    --color-blue-500: #14B8A6;
-    --color-blue-600: #0D9488;
-    --color-blue-700: #0F766E;
-  }
-
-  /* 16. SAKURA DREAM */
-  :root[data-window-theme="sakura_dream"]:not(.dark) {
-    --theme-bg: #FFF7F9;
-    --theme-sidebar: #FFFFFF;
-    --theme-card: #FFFFFF;
-    --theme-primary: #DB2777;
-    --theme-primary-fg: #FFFFFF;
-    --theme-text: #24151E;
-    --theme-border: #FBCFE8;
-
-    --color-slate-50: #FFF7F9;
-    --color-slate-100: #FCE7F3;
-    --color-slate-200: #FBCFE8;
-    --color-blue-50: #FDF2F8;
-    --color-blue-100: #FCE7F3;
-    --color-blue-200: #FBCFE8;
-    --color-blue-400: #F472B6;
-    --color-blue-500: #EC4899;
-    --color-blue-600: #DB2777;
-    --color-blue-700: #BE185D;
-  }
-  .dark[data-window-theme="sakura_dream"] {
-    --theme-bg: #171118;
-    --theme-sidebar: #221924;
-    --theme-card: #2E2231;
-    --theme-primary: #F472B6;
-    --theme-primary-fg: #171118;
-    --theme-text: #FDF2F8;
-    --theme-border: #49354D;
-
-    --color-slate-950: #171118;
-    --color-slate-900: #2E2231;
-    --color-slate-800: #3B2B3F;
-    --color-slate-700: #49354D;
-    --color-zinc-950: #171118;
-    --color-zinc-900: #2E2231;
-    --color-zinc-800: #3B2B3F;
-    --color-zinc-700: #49354D;
-    --color-blue-400: #F472B6;
-    --color-blue-500: #EC4899;
-    --color-blue-600: #DB2777;
-    --color-blue-700: #BE185D;
-  }
-
   /* ============================================================================
      CENTRALIZED SURFACE, SIDEBAR, CARD, BORDER & PRIMARY ENFORCEMENT
      ============================================================================ */
@@ -915,10 +481,23 @@
     -webkit-tap-highlight-color: transparent;
     background-color: var(--theme-bg, #F8FAFC);
     color: var(--theme-text, #0F172A);
-    transition: background-color var(--duration-theme) var(--ease-interactive), color var(--duration-theme) var(--ease-interactive);
+    transition:
+      background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+      color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+      border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
   }
 
-  /* Right-edge sleek scrollbar styling without window layout shifting */
+  /* Right-edge sleek scrollbar styling with theme-aware custom properties */
+  :root {
+    --theme-scrollbar: rgba(148, 163, 184, 0.42);
+    --theme-scrollbar-hover: rgba(100, 116, 139, 0.75);
+  }
+
+  .dark {
+    --theme-scrollbar: rgba(100, 116, 139, 0.45);
+    --theme-scrollbar-hover: rgba(148, 163, 184, 0.78);
+  }
+
   ::-webkit-scrollbar {
     width: 7px;
     height: 7px;
@@ -926,27 +505,20 @@
 
   ::-webkit-scrollbar-track {
     background: transparent;
+    transition: background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgba(148, 163, 184, 0.4);
+    background-color: var(--theme-scrollbar);
     border-radius: 9999px;
     border: 1px solid transparent;
     background-clip: padding-box;
-    transition: background-color 0.2s ease, transform 0.2s ease;
+    transition: background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(100, 116, 139, 0.75);
+    background-color: var(--theme-scrollbar-hover);
     background-clip: padding-box;
-  }
-
-  .dark ::-webkit-scrollbar-thumb {
-    background: rgba(100, 116, 139, 0.4);
-  }
-
-  .dark ::-webkit-scrollbar-thumb:hover {
-    background: rgba(148, 163, 184, 0.75);
   }
 
   /* Table and Inventory custom scroll containers with stable gutter */
@@ -963,6 +535,10 @@
   #app-root-container {
     background-color: var(--theme-bg) !important;
     color: var(--theme-text);
+    transition:
+      background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+      color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+      border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
   }
 
   /* Sidebar, Top Header, Bottom Navigation, and Slide-Over Drawer use --theme-sidebar & --theme-border */
@@ -973,24 +549,17 @@
     border-color: var(--theme-border) !important;
   }
 
-  /* Minimal Monochrome Dark Mode primary button contrast (#FAFAFA button with #09090B text) */
-  .dark[data-window-theme="minimal_monochrome"] .bg-blue-600 {
-    background-color: #FAFAFA !important;
-    color: #09090B !important;
-  }
-  .dark[data-window-theme="minimal_monochrome"] .bg-blue-600:hover {
-    background-color: #E4E4E7 !important;
-    color: #09090B !important;
-  }
-
-  /* Minimal Monochrome minimal shadows & crisp 1px borders */
-  [data-window-theme="minimal_monochrome"] .shadow-sm,
-  [data-window-theme="minimal_monochrome"] .shadow-md,
-  [data-window-theme="minimal_monochrome"] .shadow-lg {
-    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.04) !important;
+  #app-top-header,
+  #app-bottom-nav {
+    transition:
+      background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+      border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+      color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+      box-shadow var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
   }
 
-  /* Prevent theme flashing during initial page load */
+  /* Prevent theme flashing (FOUC) during initial page load */
+  html.preload-no-transitions,
   html.preload-no-transitions *,
   html.preload-no-transitions *::before,
   html.preload-no-transitions *::after {
@@ -1007,153 +576,30 @@
 }
 
 /* ============================================================================
-   SUBTLE CHARACTER ANIMATIONS (Only active when Character Animation = On
-   AND prefers-reduced-motion: no-preference)
-   ============================================================================ */
-@keyframes charFloat {
-  0%, 100% { transform: translateY(0px); }
-  50% { transform: translateY(-3.5px); }
-}
-
-@keyframes charWing {
-  0%, 84%, 100% { transform: scaleY(1); }
-  90% { transform: scaleY(0.78); }
-  95% { transform: scaleY(1.06); }
-}
-
-@keyframes charBlink {
-  0%, 92%, 100% { transform: scaleY(1); }
-  96% { transform: scaleY(0.12); }
-}
-
-@keyframes charSwing {
-  0%, 100% { transform: rotate(-4deg); }
-  50% { transform: rotate(4deg); }
-}
-
-@keyframes charSway {
-  0%, 100% { transform: rotate(-2.5deg); }
-  50% { transform: rotate(2.5deg); }
-}
-
-@keyframes charFlutter {
-  0%, 80%, 100% { transform: scaleX(1) translateY(0px); }
-  88% { transform: scaleX(0.76) translateY(-2px); }
-  94% { transform: scaleX(1.04) translateY(-1px); }
-}
-
-@keyframes charBounce {
-  0%, 85%, 100% { transform: translateY(0px) scale(1); }
-  92% { transform: translateY(-2.5px) scale(1.04); }
-}
-
-@keyframes charTilt {
-  0%, 82%, 100% { transform: rotate(0deg); }
-  90% { transform: rotate(-4deg); }
-  95% { transform: rotate(3deg); }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  html[data-char-anim="on"] .char-anim-float {
-    animation: charFloat 5.5s ease-in-out infinite;
-  }
-  html[data-char-anim="on"] .char-anim-wing {
-    transform-origin: center;
-    animation: charWing 6.5s ease-in-out infinite;
-  }
-  html[data-char-anim="on"] .char-anim-blink {
-    transform-origin: center;
-    animation: charBlink 7s ease-in-out infinite;
-  }
-  html[data-char-anim="on"] .char-anim-swing {
-    transform-origin: top center;
-    animation: charSwing 4.8s ease-in-out infinite;
-  }
-  html[data-char-anim="on"] .char-anim-sway {
-    transform-origin: top center;
-    animation: charSway 5.2s ease-in-out infinite;
-  }
-  html[data-char-anim="on"] .char-anim-flutter {
-    transform-origin: center;
-    animation: charFlutter 6s ease-in-out infinite;
-  }
-  html[data-char-anim="on"] .char-anim-bounce {
-    transform-origin: center;
-    animation: charBounce 5.8s ease-in-out infinite;
-  }
-  html[data-char-anim="on"] .char-anim-tilt {
-    transform-origin: bottom center;
-    animation: charTilt 7.5s ease-in-out infinite;
-  }
-}
-
-/* ============================================================================
    CENTRALIZED MOTION & TRANSITION SYSTEM
    ============================================================================ */
 :root {
-  --duration-page: 220ms;
-  --duration-panel: 220ms;
-  --duration-modal: 200ms;
-  --duration-sidebar: 220ms;
-  --duration-dropdown: 150ms;
-  --duration-button: 130ms;
-  --duration-theme: 230ms;
+  --duration-page: 80ms;
+  --duration-panel: 80ms;
+  --duration-modal: 75ms;
+  --duration-sidebar: 83ms;
+  --duration-dropdown: 58ms;
+  --duration-button: 65ms;
+  --duration-theme: 240ms;
 
   --ease-enter: ease-out;
   --ease-exit: ease-in;
   --ease-interactive: ease-in-out;
+  --ease-theme: cubic-bezier(0.4, 0, 0.2, 1);
 
-  --motion-distance-y: 10px;
-  --motion-distance-sm: 6px;
-  --motion-scale-modal: 0.97;
-  --motion-scale-dropdown: 0.98;
-
-  --duration-spin-refresh: 2.4s;
-  --duration-active-ping: 3.2s;
-  --duration-active-pulse: 3.4s;
-}
-
-/* Motion Preference: Subtle */
-html[data-motion="subtle"] {
-  --duration-page: 160ms;
-  --duration-panel: 160ms;
-  --duration-modal: 150ms;
-  --duration-sidebar: 165ms;
-  --duration-dropdown: 115ms;
-  --duration-button: 100ms;
-  --duration-theme: 160ms;
-
-  --motion-distance-y: 5px;
-  --motion-distance-sm: 3px;
-  --motion-scale-modal: 0.99;
-  --motion-scale-dropdown: 0.99;
+  --motion-distance-y: 2.5px;
+  --motion-distance-sm: 1.5px;
+  --motion-scale-modal: 0.995;
+  --motion-scale-dropdown: 0.995;
 
   --duration-spin-refresh: 3s;
   --duration-active-ping: 4s;
   --duration-active-pulse: 4.2s;
-}
-
-/* Motion Preference: Off */
-html[data-motion="off"] {
-  --duration-page: 0ms;
-  --duration-panel: 0ms;
-  --duration-modal: 0ms;
-  --duration-sidebar: 0ms;
-  --duration-dropdown: 0ms;
-  --duration-button: 0ms;
-  --duration-theme: 0ms;
-
-  --motion-distance-y: 0px;
-  --motion-distance-sm: 0px;
-  --motion-scale-modal: 1;
-  --motion-scale-dropdown: 1;
-}
-
-html[data-motion="off"] *,
-html[data-motion="off"] *::before,
-html[data-motion="off"] *::after {
-  transition-duration: 0ms !important;
-  animation-duration: 0ms !important;
 }
 
 /* Calm, slower active status blink & circling refresh animations */
@@ -1198,99 +644,79 @@ html[data-motion="off"] *::after {
   animation: calmRefreshSpin var(--duration-spin-refresh, 2.4s) linear infinite !important;
 }
 
-/* Hardware-accelerated View Transitions API for silky, lag-free Light/Dark theme crossfade */
-@keyframes themeViewFadeOut {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
+/* ============================================================================
+   LIGHT / DARK MODE CSS TRANSITION ENGINE (200ms ease-in-out)
+   Only transitions paint properties (background-color, color, border-color,
+   outline-color, box-shadow, fill, stroke)—never layout dimensions.
+   ============================================================================ */
+header,
+nav,
+aside,
+main,
+section,
+article,
+footer,
+table,
+thead,
+tbody,
+tfoot,
+tr,
+th,
+td,
+hr,
+fieldset,
+[role="dialog"],
+[role="menu"],
+[role="listbox"],
+[role="tabpanel"] {
+  transition-property: background-color, border-color, color, box-shadow, fill, stroke;
+  transition-duration: var(--duration-theme, 200ms);
+  transition-timing-function: var(--ease-theme, ease-in-out);
 }
 
-@keyframes themeViewFadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+/* ============================================================================
+   LIGHT / DARK MODE TRANSITION (Lightweight & Lag-Free)
+   ============================================================================ */
+body,
+#app-root-container,
+header,
+nav,
+aside,
+main,
+section,
+footer,
+.bg-\\[var\\(--theme-bg\\)\\] {
+  transition: background-color 160ms ease-in-out, color 160ms ease-in-out, border-color 160ms ease-in-out;
 }
 
-::view-transition-group(root) {
-  animation-duration: var(--duration-theme);
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-::view-transition-old(root),
-::view-transition-new(root) {
-  mix-blend-mode: normal;
-  animation-duration: var(--duration-theme);
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-::view-transition-old(root) {
-  z-index: 1;
-  animation-name: themeViewFadeOut;
-}
-
-::view-transition-new(root) {
-  z-index: 2;
-  animation-name: themeViewFadeIn;
-}
-
-/* Suppress per-element CSS transitions while capturing the View Transition snapshot
-   so thousands of table/list nodes update in a single frame with zero layout/paint lag */
-html.theme-switching *,
-html.theme-switching *::before,
-html.theme-switching *::after {
-  transition-duration: 0ms !important;
-}
-
-/* Fallback transition when View Transitions API is not available:
-   only transition top-level shell containers, never deep table/list rows */
-html.theme-fallback-switching,
-html.theme-fallback-switching body,
-html.theme-fallback-switching #app-root-container,
-html.theme-fallback-switching #app-top-header,
-html.theme-fallback-switching #app-bottom-nav,
-html.theme-fallback-switching .drawer-panel-right {
-  transition-property: background-color, border-color, color !important;
-  transition-duration: var(--duration-theme) !important;
-  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1) !important;
-}
-
-html.theme-fallback-switching main *,
-html.theme-fallback-switching table * {
-  transition-duration: 0ms !important;
-}
-
-/* Crisp, lightweight micro-animation for Light/Dark Sun & Moon icons and segmented pill */
 .theme-toggle-icon {
-  transition:
-    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 180ms ease-out !important;
-  will-change: transform, opacity;
+  transition: opacity 160ms ease-in-out, transform 160ms ease-in-out;
 }
 
 .theme-pill-indicator {
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1) !important;
-  will-change: transform;
+  transition: transform 160ms ease-in-out, background-color 160ms ease-in-out;
 }
 
-/* Responsive interactive feedback for buttons, links, and form controls (130ms ease-in-out) */
+html.theme-fading,
+html.theme-fading #app-root-container {
+  opacity: 0.88;
+  transition: opacity 120ms cubic-bezier(0.4, 0, 0.2, 1), background-color 180ms cubic-bezier(0.4, 0, 0.2, 1), color 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Responsive interactive feedback for buttons, links, and form controls */
 button,
 a,
 [role="button"],
 [role="radio"],
 [role="switch"],
 [role="option"],
+[role="tab"],
 input,
 select,
 textarea {
-  transition-property: background-color, border-color, color, opacity, transform, box-shadow;
-  transition-duration: var(--duration-button);
-  transition-timing-function: var(--ease-interactive);
+  transition-property: background-color, border-color, color, opacity, box-shadow;
+  transition-duration: var(--duration-button, 160ms);
+  transition-timing-function: var(--ease-interactive, ease-in-out);
 }
 
 /* Page Navigation Transition (220ms ease-out, subtle 10px translate + fade) */
@@ -1359,7 +785,11 @@ body.panel-scroll-locked {
   transform: translate3d(0, var(--motion-distance-y), 0) scale(var(--motion-scale-modal));
   transition:
     opacity var(--duration-modal) cubic-bezier(0.16, 1, 0.3, 1),
-    transform var(--duration-modal) cubic-bezier(0.16, 1, 0.3, 1);
+    transform var(--duration-modal) cubic-bezier(0.16, 1, 0.3, 1),
+    background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    box-shadow var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
 }
 
 .ui-modal-panel.ui-modal-open {
@@ -1367,7 +797,11 @@ body.panel-scroll-locked {
   transform: translate3d(0, 0, 0) scale(1);
   transition:
     opacity var(--duration-modal) cubic-bezier(0.16, 1, 0.3, 1),
-    transform var(--duration-modal) cubic-bezier(0.16, 1, 0.3, 1);
+    transform var(--duration-modal) cubic-bezier(0.16, 1, 0.3, 1),
+    background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    box-shadow var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
 }
 
 /* Slide-from-bottom Modal Panel (launches fast from bottom, decelerates slowly into middle) */
@@ -1376,7 +810,11 @@ body.panel-scroll-locked {
   transform: translate3d(0, 95vh, 0) scale(0.95) !important;
   transition:
     transform 540ms cubic-bezier(0.12, 0.96, 0.22, 1),
-    opacity 240ms ease-in 140ms !important;
+    opacity 240ms ease-in 140ms,
+    background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    box-shadow var(--duration-theme, 200ms) var(--ease-theme, ease-in-out) !important;
   will-change: transform, opacity;
   backface-visibility: hidden;
 }
@@ -1386,7 +824,11 @@ body.panel-scroll-locked {
   transform: translate3d(0, 0, 0) scale(1) !important;
   transition:
     transform 540ms cubic-bezier(0.12, 0.96, 0.22, 1),
-    opacity 120ms ease-out 0ms !important;
+    opacity 120ms ease-out 0ms,
+    background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    box-shadow var(--duration-theme, 200ms) var(--ease-theme, ease-in-out) !important;
 }
 
 /* Dropdown Menu Enter/Exit Transition (150ms) */
@@ -1395,7 +837,11 @@ body.panel-scroll-locked {
   transform: translate3d(0, var(--motion-distance-sm), 0) scale(var(--motion-scale-dropdown));
   transition:
     opacity var(--duration-dropdown) var(--ease-exit),
-    transform var(--duration-dropdown) var(--ease-exit);
+    transform var(--duration-dropdown) var(--ease-exit),
+    background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    box-shadow var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
 }
 
 .ui-dropdown-panel.ui-dropdown-open {
@@ -1403,7 +849,11 @@ body.panel-scroll-locked {
   transform: translate3d(0, 0, 0) scale(1);
   transition:
     opacity var(--duration-dropdown) var(--ease-enter),
-    transform var(--duration-dropdown) var(--ease-enter);
+    transform var(--duration-dropdown) var(--ease-enter),
+    background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    box-shadow var(--duration-theme, 200ms) var(--ease-theme, ease-in-out);
 }
 
 /* Smooth GPU-accelerated Right Sidebar Drawer Transitions (identical speed & transition on open & close) */
@@ -1421,14 +871,22 @@ body.panel-scroll-locked {
 .drawer-panel-right {
   transform: translate3d(100%, 0, 0) !important;
   box-shadow: none !important;
-  transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  transition:
+    transform 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out) !important;
   will-change: transform;
   backface-visibility: hidden;
 }
 
 .drawer-panel-right.drawer-panel-right-open {
   transform: translate3d(0, 0, 0) !important;
-  transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  transition:
+    transform 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    border-color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out),
+    color var(--duration-theme, 200ms) var(--ease-theme, ease-in-out) !important;
 }
 
 /* Prevent double-tap zoom on buttons and inputs on iOS */

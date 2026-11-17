@@ -41,7 +41,7 @@ if ('caches' in window) {
     .keys()
     .then((keys) => {
       keys.forEach((key) => {
-        if (key !== 'countsheet-v16') {
+        if (key !== 'countsheet-v19') {
           caches.delete(key).catch(() => {});
         }
       });

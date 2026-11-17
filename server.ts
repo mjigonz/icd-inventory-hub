@@ -139,6 +139,17 @@ async function createServerInstance(externalDb?: D1Database) {
   // Parse JSON bodies (up to 50MB for inventory snapshots)
   app.use(express.json({ limit: '50mb' }));
 
+  // Allow cross-origin sync between AI Studio preview URLs and Cloudflare Workers deployment
+  app.use('/api', (req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-icd-sync-hop');
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+    next();
+  });
+
   // Initialize D1 Database (Cloudflare D1 binding in Worker, or SQLite adapter in Node.js)
   let db: D1Database;
   if (externalDb) {
@@ -713,6 +724,11 @@ async function createServerInstance(externalDb?: D1Database) {
   // 5b. Admin Directory (Emails & Auditors), Role Definitions & Access Control Endpoints
   const SUPER_ADMIN_WHITELIST = ['icdhubsystems@gmail.com'];
   const GLOBAL_ADMIN_ROLES_KEY = 'global_admin_roles_config_v2';
+  const GLOBAL_ADMIN_DIR_BACKUP_KEY = 'global_admin_directory_backup_v1';
+  const GLOBAL_ADMIN_DELETED_DIR_IDS_KEY = 'global_admin_deleted_directory_ids_v1';
+  const CLOUDFLARE_WORKER_ORIGIN = 'https://icd-inventory-hub.icdsystem.workers.dev';
+  const ADMIN_DRIVE_SYNC_FILENAME = 'icd_hub_admin_directory_v1.json';
+  const isNodeDevBridgeActive = !externalDb;
 
   async function getStoredAdminRoles(): Promise<any[] | null> {
     try {
@@ -732,24 +748,560 @@ async function createServerInstance(externalDb?: D1Database) {
 
   let lastAdminDataModifiedAt = Date.now();
 
-  async function saveStoredAdminRoles(roles: any[]): Promise<void> {
+  async function saveStoredAdminRoles(roles: any[], isSyncHop = false): Promise<void> {
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at)
       VALUES (?1, ?2, ?3)
     `);
     await stmt.bind(GLOBAL_ADMIN_ROLES_KEY, JSON.stringify(roles), new Date().toISOString()).run();
     lastAdminDataModifiedAt = Date.now();
+
+    if (isNodeDevBridgeActive && !isSyncHop) {
+      fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/roles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-icd-sync-hop': '1',
+        },
+        body: JSON.stringify({ roles }),
+      }).catch(() => {});
+    }
+  }
+
+  async function getDeletedDirectoryIds(): Promise<Set<string>> {
+    try {
+      const stmt = db.prepare('SELECT state_json FROM user_workspace_state WHERE user_key = ?1');
+      const row = await stmt.bind(GLOBAL_ADMIN_DELETED_DIR_IDS_KEY).first<{ state_json: string }>();
+      if (row?.state_json) {
+        const parsed = JSON.parse(row.state_json);
+        if (Array.isArray(parsed)) {
+          return new Set(parsed.map((x: any) => String(x || '').trim().toLowerCase()).filter(Boolean));
+        }
+      }
+    } catch {}
+    return new Set<string>();
+  }
+
+  async function saveDeletedDirectoryIds(ids: Set<string>): Promise<void> {
+    try {
+      const stmt = db.prepare(`
+        INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at)
+        VALUES (?1, ?2, ?3)
+      `);
+      await stmt
+        .bind(
+          GLOBAL_ADMIN_DELETED_DIR_IDS_KEY,
+          JSON.stringify(Array.from(ids)),
+          new Date().toISOString()
+        )
+        .run();
+    } catch {}
+  }
+
+  async function getLocalAdminDirectoryEntries(): Promise<any[]> {
+    const byKey = new Map<string, any>();
+    const deletedIds = await getDeletedDirectoryIds();
+    const isDeleted = (item: any) => {
+      if (!item) return true;
+      const idKey = String(item.id || '').trim().toLowerCase();
+      const emailKey = String(item.email || '').trim().toLowerCase();
+      if (emailKey === 'icdhubsystems@gmail.com') return false;
+      return (
+        (idKey && deletedIds.has(idKey)) ||
+        (emailKey && (deletedIds.has(emailKey) || deletedIds.has(`dir_${emailKey}`)))
+      );
+    };
+
+    try {
+      const backupStmt = db.prepare('SELECT state_json FROM user_workspace_state WHERE user_key = ?1');
+      const backupRow = await backupStmt.bind(GLOBAL_ADMIN_DIR_BACKUP_KEY).first<{ state_json: string }>();
+      if (backupRow?.state_json) {
+        const parsed = JSON.parse(backupRow.state_json);
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (!item || isDeleted(item)) continue;
+            const key = String(item.email || item.id || '').trim().toLowerCase();
+            if (key) byKey.set(key, item);
+          }
+        }
+      }
+    } catch {}
+
+    try {
+      const stmt = db.prepare('SELECT entry_json FROM admin_auditor_directory ORDER BY created_at DESC');
+      const result = await stmt.all<{ entry_json: string }>();
+      for (const r of result.results || []) {
+        try {
+          const item = JSON.parse(r.entry_json);
+          if (!item || isDeleted(item)) continue;
+          const key = String(item.email || item.id || '').trim().toLowerCase();
+          if (key) byKey.set(key, item);
+        } catch {}
+      }
+    } catch {}
+
+    return Array.from(byKey.values());
+  }
+
+  async function upsertLocalAdminDirectoryEntries(items: any[], removeFromDeleted = false): Promise<any[]> {
+    const deletedIds = await getDeletedDirectoryIds();
+    let deletedModified = false;
+    const saved: any[] = [];
+
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO admin_auditor_directory (id, email, name, role, branch_name, status, created_at, entry_json)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `);
+
+    for (const raw of items) {
+      if (!raw || (!raw.email && !raw.name)) continue;
+      const email = String(raw.email || '').trim().toLowerCase();
+      const id =
+        raw.id ||
+        (email ? `dir_${email}` : `dir_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+      const idLower = String(id).trim().toLowerCase();
+
+      if (removeFromDeleted) {
+        if (deletedIds.delete(idLower)) deletedModified = true;
+        if (email && deletedIds.delete(email)) deletedModified = true;
+        if (email && deletedIds.delete(`dir_${email}`)) deletedModified = true;
+      } else if (email !== 'icdhubsystems@gmail.com') {
+        if (
+          deletedIds.has(idLower) ||
+          (email && (deletedIds.has(email) || deletedIds.has(`dir_${email}`)))
+        ) {
+          continue;
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      const entry = {
+        id,
+        email,
+        name: String(raw.name || (email ? email.split('@')[0] : 'Auditor')).trim(),
+        role: raw.role || 'senior_auditor',
+        branchName: String(raw.branchName || '').trim(),
+        status: raw.status || 'active',
+        createdAt: raw.createdAt || nowIso,
+        updatedAt: raw.updatedAt || (removeFromDeleted ? nowIso : raw.createdAt || nowIso),
+      };
+
+      if (email) {
+        try {
+          await db
+            .prepare('DELETE FROM admin_auditor_directory WHERE lower(email) = lower(?1) AND id != ?2')
+            .bind(email, entry.id)
+            .run();
+        } catch {}
+      }
+
+      await stmt
+        .bind(
+          entry.id,
+          entry.email,
+          entry.name,
+          entry.role,
+          entry.branchName,
+          entry.status,
+          entry.createdAt,
+          JSON.stringify(entry)
+        )
+        .run();
+      saved.push(entry);
+    }
+
+    if (deletedModified) {
+      await saveDeletedDirectoryIds(deletedIds);
+    }
+
+    try {
+      const allEntries = await getLocalAdminDirectoryEntries();
+      const backupStmt = db.prepare(`
+        INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at)
+        VALUES (?1, ?2, ?3)
+      `);
+      await backupStmt
+        .bind(GLOBAL_ADMIN_DIR_BACKUP_KEY, JSON.stringify(allEntries), new Date().toISOString())
+        .run();
+    } catch {}
+
+    return saved;
+  }
+
+  let lastDriveAdminSyncMs = 0;
+  let cachedDriveAdminFileId: string | null = null;
+
+  async function resolveAdminDriveSyncToken(callerToken?: string): Promise<string | null> {
+    if (callerToken && callerToken.trim()) return callerToken.trim();
+    try {
+      const stmt = db.prepare('SELECT state_json FROM user_workspace_state WHERE user_key IN (?1, ?2)');
+      const rows = await stmt
+        .bind('icdhubsystems_icd_forms_v1', 'icdhubsystems@gmail.com')
+        .all<{ state_json: string }>();
+      for (const r of rows.results || []) {
+        try {
+          const parsed = JSON.parse(r.state_json);
+          if (parsed?.oauthAccessToken) return String(parsed.oauthAccessToken).trim();
+        } catch {}
+      }
+    } catch {}
+    return null;
+  }
+
+  async function saveAdminStateToGoogleDrive(callerToken?: string): Promise<void> {
+    const token = await resolveAdminDriveSyncToken(callerToken);
+    if (!token) return;
+    try {
+      const entries = await getLocalAdminDirectoryEntries();
+      const deletedIds = Array.from(await getDeletedDirectoryIds());
+      const roles = await getStoredAdminRoles();
+      const payload = {
+        updatedAt: new Date().toISOString(),
+        entries,
+        deletedIds,
+        roles: roles || undefined,
+      };
+
+      let fileId = cachedDriveAdminFileId;
+      if (!fileId) {
+        const q = encodeURIComponent(`name = '${ADMIN_DRIVE_SYNC_FILENAME}' and trashed = false`);
+        const searchRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (searchRes.ok) {
+          const searchData = (await searchRes.json()) as { files?: Array<{ id: string }> };
+          fileId = searchData.files?.[0]?.id || null;
+          if (fileId) cachedDriveAdminFileId = fileId;
+        }
+      }
+
+      if (fileId) {
+        await fetch(
+          `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
+            fileId
+          )}?uploadType=media&supportsAllDrives=true`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          }
+        );
+      } else {
+        const boundary = `icd_admin_sync_${Date.now()}`;
+        const metadata = {
+          name: ADMIN_DRIVE_SYNC_FILENAME,
+          mimeType: 'application/json',
+        };
+        const multipartBody =
+          `--${boundary}\r\n` +
+          `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+          `${JSON.stringify(metadata)}\r\n` +
+          `--${boundary}\r\n` +
+          `Content-Type: application/json\r\n\r\n` +
+          `${JSON.stringify(payload)}\r\n` +
+          `--${boundary}--`;
+        const createRes = await fetch(
+          `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id&supportsAllDrives=true`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': `multipart/related; boundary=${boundary}`,
+            },
+            body: multipartBody,
+          }
+        );
+        if (createRes.ok) {
+          const created = (await createRes.json()) as { id?: string };
+          if (created.id) cachedDriveAdminFileId = created.id;
+        }
+      }
+    } catch {}
+  }
+
+  async function syncAdminDirectoryWithCloud(options?: {
+    callerToken?: string;
+    isSyncHop?: boolean;
+    forceDriveCheck?: boolean;
+  }): Promise<any[]> {
+    const isSyncHop = Boolean(options?.isSyncHop);
+    let localEntries = await getLocalAdminDirectoryEntries();
+    const deletedIds = await getDeletedDirectoryIds();
+
+    // 1. If running in AI Studio (Node.js dev/preview), bi-directionally sync with Cloudflare Worker (workers.dev)
+    if (isNodeDevBridgeActive && !isSyncHop) {
+      try {
+        const remoteRes = await fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/directory`, {
+          headers: { 'x-icd-sync-hop': '1' },
+        });
+        if (remoteRes.ok) {
+          const remoteData = (await remoteRes.json()) as { entries?: any[] };
+          const remoteEntries = Array.isArray(remoteData?.entries) ? remoteData.entries : [];
+
+          const localMap = new Map<string, any>();
+          for (const e of localEntries) {
+            const k = String(e.email || e.id || '').trim().toLowerCase();
+            if (k) localMap.set(k, e);
+          }
+
+          const remoteMap = new Map<string, any>();
+          const missingOrNewerLocally: any[] = [];
+          for (const r of remoteEntries) {
+            if (!r) continue;
+            const k = String(r.email || r.id || '').trim().toLowerCase();
+            const idKey = String(r.id || '').trim().toLowerCase();
+            if (!k) continue;
+            if (
+              k !== 'icdhubsystems@gmail.com' &&
+              (deletedIds.has(k) || deletedIds.has(idKey) || deletedIds.has(`dir_${k}`))
+            ) {
+              continue;
+            }
+            remoteMap.set(k, r);
+            const loc = localMap.get(k);
+            if (!loc) {
+              missingOrNewerLocally.push(r);
+            } else {
+              const rTime = String(r.updatedAt || r.createdAt || '');
+              const lTime = String(loc.updatedAt || loc.createdAt || '');
+              if (rTime && (!lTime || rTime > lTime) && (r.role !== loc.role || r.name !== loc.name)) {
+                missingOrNewerLocally.push(r);
+              }
+            }
+          }
+
+          if (missingOrNewerLocally.length > 0) {
+            await upsertLocalAdminDirectoryEntries(missingOrNewerLocally, false);
+            localEntries = await getLocalAdminDirectoryEntries();
+          }
+
+          const missingOnRemote = localEntries.filter((e) => {
+            const k = String(e.email || e.id || '').trim().toLowerCase();
+            const r = remoteMap.get(k);
+            if (!r) return true;
+            const lTime = String(e.updatedAt || e.createdAt || '');
+            const rTime = String(r.updatedAt || r.createdAt || '');
+            if (r.role !== e.role || r.name !== e.name) {
+              return !rTime || (lTime && lTime >= rTime);
+            }
+            return false;
+          });
+
+          if (missingOnRemote.length > 0) {
+            await fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/directory`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-icd-sync-hop': '1',
+              },
+              body: JSON.stringify({ entries: missingOnRemote }),
+            }).catch(() => {});
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Sync with icdhubsystems@gmail.com Google Drive backup file (works on both workers.dev and ais-dev)
+    const now = Date.now();
+    if (options?.forceDriveCheck || localEntries.length <= 1 || now - lastDriveAdminSyncMs > 25000) {
+      lastDriveAdminSyncMs = now;
+      const token = await resolveAdminDriveSyncToken(options?.callerToken);
+      if (token) {
+        try {
+          let fileId = cachedDriveAdminFileId;
+          if (!fileId) {
+            const q = encodeURIComponent(`name = '${ADMIN_DRIVE_SYNC_FILENAME}' and trashed = false`);
+            const searchRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (searchRes.ok) {
+              const searchData = (await searchRes.json()) as { files?: Array<{ id: string }> };
+              fileId = searchData.files?.[0]?.id || null;
+              if (fileId) cachedDriveAdminFileId = fileId;
+            }
+          }
+
+          if (fileId) {
+            const mediaRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+                fileId
+              )}?alt=media&supportsAllDrives=true`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (mediaRes.ok) {
+              const drivePayload = (await mediaRes.json()) as {
+                entries?: any[];
+                deletedIds?: string[];
+                roles?: any[];
+              };
+              if (Array.isArray(drivePayload?.deletedIds) && drivePayload.deletedIds.length > 0) {
+                let delChanged = false;
+                for (const dId of drivePayload.deletedIds) {
+                  const cleanD = String(dId || '').trim().toLowerCase();
+                  if (cleanD && !deletedIds.has(cleanD)) {
+                    deletedIds.add(cleanD);
+                    delChanged = true;
+                  }
+                }
+                if (delChanged) {
+                  await saveDeletedDirectoryIds(deletedIds);
+                }
+              }
+
+              const driveEntries = Array.isArray(drivePayload?.entries) ? drivePayload.entries : [];
+              const localMap = new Map<string, any>();
+              for (const e of localEntries) {
+                const k = String(e.email || e.id || '').trim().toLowerCase();
+                if (k) localMap.set(k, e);
+              }
+              const fromDriveToSave = driveEntries.filter((d) => {
+                if (!d) return false;
+                const k = String(d.email || d.id || '').trim().toLowerCase();
+                if (!k) return false;
+                const loc = localMap.get(k);
+                if (!loc) return true;
+                const dTime = String(d.updatedAt || d.createdAt || '');
+                const lTime = String(loc.updatedAt || loc.createdAt || '');
+                return Boolean(dTime && (!lTime || dTime > lTime) && (d.role !== loc.role || d.name !== loc.name));
+              });
+
+              if (fromDriveToSave.length > 0) {
+                await upsertLocalAdminDirectoryEntries(fromDriveToSave, false);
+                localEntries = await getLocalAdminDirectoryEntries();
+              }
+
+              const driveMap = new Map<string, any>();
+              for (const d of driveEntries) {
+                const k = String(d?.email || d?.id || '').trim().toLowerCase();
+                if (k) driveMap.set(k, d);
+              }
+              const hasLocalNotInDrive = localEntries.some((e) => {
+                const k = String(e.email || e.id || '').trim().toLowerCase();
+                const d = driveMap.get(k);
+                if (!d) return true;
+                return d.role !== e.role || d.name !== e.name;
+              });
+              if (hasLocalNotInDrive) {
+                void saveAdminStateToGoogleDrive(token);
+              }
+
+              if (Array.isArray(drivePayload?.roles) && drivePayload.roles.length > 0) {
+                const currentRoles = await getStoredAdminRoles();
+                if (!currentRoles || currentRoles.length === 0) {
+                  await saveStoredAdminRoles(drivePayload.roles, true);
+                }
+              }
+            }
+          } else if (localEntries.length > 0) {
+            void saveAdminStateToGoogleDrive(token);
+          }
+        } catch {}
+      }
+    }
+
+    return localEntries;
   }
 
   async function isEmailAdminInDb(email: string): Promise<boolean> {
     if (!email) return false;
     const cleanEmail = email.trim().toLowerCase();
-    return SUPER_ADMIN_WHITELIST.some((a) => a.toLowerCase() === cleanEmail);
+    if (SUPER_ADMIN_WHITELIST.some((a) => a.toLowerCase() === cleanEmail)) {
+      return true;
+    }
+    try {
+      const row = await db
+        .prepare('SELECT role FROM admin_auditor_directory WHERE lower(email) = lower(?1)')
+        .bind(cleanEmail)
+        .first<{ role: string }>();
+      const assignedRole = String(row?.role || '').trim().toLowerCase();
+      if (assignedRole === 'admin' || assignedRole === 'internal_compliance_manager') {
+        return true;
+      }
+      if (assignedRole) {
+        const storedRoles = await getStoredAdminRoles();
+        if (Array.isArray(storedRoles)) {
+          const matchedRole = storedRoles.find(
+            (r: any) => String(r?.id || '').trim().toLowerCase() === assignedRole
+          );
+          if (
+            matchedRole &&
+            Array.isArray(matchedRole.permissions) &&
+            matchedRole.permissions.includes('admin_console')
+          ) {
+            return true;
+          }
+        }
+      }
+    } catch {}
+    return false;
   }
 
-  app.get('/api/admin/roles', async (_req: ExpressRequest, res: ExpressResponse) => {
+  async function syncAdminRolesWithCloud(isSyncHop = false): Promise<any[]> {
+    let localRoles = (await getStoredAdminRoles()) || [];
+    if (isNodeDevBridgeActive && !isSyncHop) {
+      try {
+        const rRes = await fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/roles`, {
+          headers: { 'x-icd-sync-hop': '1' },
+        });
+        if (rRes.ok) {
+          const rData = (await rRes.json()) as { roles?: any[] };
+          const remoteRoles = Array.isArray(rData?.roles) ? rData.roles : [];
+          if (remoteRoles.length > 0 || localRoles.length > 0) {
+            const byId = new Map<string, any>();
+            for (const r of remoteRoles) {
+              if (r && r.id) byId.set(String(r.id), r);
+            }
+            let localChanged = false;
+            let remoteChanged = false;
+            const localIds = new Set(localRoles.map((r: any) => String(r?.id || '')));
+            for (const r of remoteRoles) {
+              if (r && r.id && !localIds.has(String(r.id))) {
+                localChanged = true;
+              }
+            }
+            for (const l of localRoles) {
+              if (!l || !l.id) continue;
+              const id = String(l.id);
+              const rem = byId.get(id);
+              if (!rem) {
+                byId.set(id, l);
+                remoteChanged = true;
+              } else if (l.updatedAt && (!rem.updatedAt || l.updatedAt > rem.updatedAt)) {
+                byId.set(id, l);
+                remoteChanged = true;
+              }
+            }
+            const merged = Array.from(byId.values());
+            if (localChanged || localRoles.length === 0) {
+              localRoles = merged;
+              await saveStoredAdminRoles(merged, true);
+            }
+            if (remoteChanged) {
+              fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/roles`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-icd-sync-hop': '1',
+                },
+                body: JSON.stringify({ roles: merged }),
+              }).catch(() => {});
+            }
+          }
+        }
+      } catch {}
+    }
+    return localRoles;
+  }
+
+  app.get('/api/admin/roles', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
-      const roles = await getStoredAdminRoles();
+      const isSyncHop = req.headers['x-icd-sync-hop'] === '1';
+      const roles = await syncAdminRolesWithCloud(isSyncHop);
       return res.json({ roles: roles || [] });
     } catch (err: any) {
       console.error('Error fetching admin roles:', err);
@@ -759,11 +1311,15 @@ async function createServerInstance(externalDb?: D1Database) {
 
   app.post('/api/admin/roles', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
+      const isSyncHop = req.headers['x-icd-sync-hop'] === '1';
       const roles = Array.isArray(req.body?.roles) ? req.body.roles : [];
       if (roles.length === 0) {
         return res.status(400).json({ error: 'roles array is required' });
       }
-      await saveStoredAdminRoles(roles);
+      await saveStoredAdminRoles(roles, isSyncHop);
+      if (!isSyncHop) {
+        void saveAdminStateToGoogleDrive();
+      }
       return res.json({ status: 'ok', roles });
     } catch (err: any) {
       console.error('Error saving admin roles:', err);
@@ -776,9 +1332,10 @@ async function createServerInstance(externalDb?: D1Database) {
     try {
       let email = String(req.query.email || '').trim().toLowerCase();
       const authHeader = req.headers.authorization;
-      if (!email && authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.substring(7);
-        const userInfo = await verifyGoogleToken(token);
+      const bearerToken =
+        authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : '';
+      if (!email && bearerToken) {
+        const userInfo = await verifyGoogleToken(bearerToken);
         if (userInfo && userInfo.email) {
           email = userInfo.email.toLowerCase();
         }
@@ -789,6 +1346,29 @@ async function createServerInstance(externalDb?: D1Database) {
       }
 
       const isAdmin = await isEmailAdminInDb(email);
+      if (isAdmin && bearerToken) {
+        // Persist icdhubsystems token so Drive-backed Admin Directory sync works automatically on this instance
+        try {
+          const now = new Date().toISOString();
+          const stmt = db.prepare(`
+            INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at)
+            VALUES (?1, ?2, ?3)
+          `);
+          await stmt
+            .bind(
+              'icdhubsystems_icd_forms_v1',
+              JSON.stringify({
+                ownerEmail: email,
+                oauthAccessToken: bearerToken,
+                oauthTokenIssuedAt: Date.now(),
+                updatedAt: now,
+              }),
+              now
+            )
+            .run();
+        } catch {}
+      }
+
       let role = isAdmin ? 'internal_compliance_manager' : 'senior_auditor';
       try {
         const roleStmt = db.prepare('SELECT role FROM admin_auditor_directory WHERE lower(email) = lower(?1)');
@@ -810,43 +1390,83 @@ async function createServerInstance(externalDb?: D1Database) {
     }
   });
 
-  app.get('/api/admin/directory', async (_req: ExpressRequest, res: ExpressResponse) => {
+  app.get('/api/admin/directory', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
-      const stmt = db.prepare('SELECT entry_json FROM admin_auditor_directory ORDER BY created_at DESC');
-      const result = await stmt.all<{ entry_json: string }>();
-      let entries = (result.results || []).map((r) => JSON.parse(r.entry_json));
+      const isSyncHop = req.headers['x-icd-sync-hop'] === '1';
+      const authHeader = req.headers.authorization;
+      const callerToken =
+        authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
 
-      // Ensure icdhubsystems@gmail.com is seeded as Internal Compliance Manager if not found
-      const hasPrimaryAdmin = entries.some(
-        (e) => String(e.email || '').toLowerCase() === 'icdhubsystems@gmail.com'
-      );
-      if (!hasPrimaryAdmin) {
-        const primaryAdmin = {
-          id: 'dir_icdhubsystems@gmail.com',
-          email: 'icdhubsystems@gmail.com',
-          name: 'ICD Hub Systems',
-          role: 'internal_compliance_manager',
-          branchName: '',
-          status: 'active',
-          createdAt: new Date().toISOString(),
-        };
-        const insStmt = db.prepare(`
-          INSERT OR REPLACE INTO admin_auditor_directory (id, email, name, role, branch_name, status, created_at, entry_json)
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-        `);
-        await insStmt
-          .bind(
-            primaryAdmin.id,
-            primaryAdmin.email,
-            primaryAdmin.name,
-            primaryAdmin.role,
-            primaryAdmin.branchName,
-            primaryAdmin.status,
-            primaryAdmin.createdAt,
-            JSON.stringify(primaryAdmin)
-          )
-          .run();
-        entries.unshift(primaryAdmin);
+      let entries = await syncAdminDirectoryWithCloud({
+        callerToken,
+        isSyncHop,
+        forceDriveCheck: Boolean(callerToken),
+      });
+
+      // Ensure default ICD directory emails are seeded unless explicitly deleted by Admin
+      const DEFAULT_ICD_DIRECTORY_SEED = [
+        { id: 'dir_icdhubsystems@gmail.com', email: 'icdhubsystems@gmail.com', name: 'ICD Hub Systems', role: 'internal_compliance_manager', branchName: '', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_internalcompliance@sidc.coop', email: 'internalcompliance@sidc.coop', name: 'SIDC Internal Compliance', role: 'internal_compliance_manager', branchName: '', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_jccelis@sidc.coop', email: 'jccelis@sidc.coop', name: 'Jessica C. Celis', role: 'assistant_manager_reach', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_dlcollera@sidc.coop', email: 'dlcollera@sidc.coop', name: 'Desiree L. Collera', role: 'assistant_manager_return', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_zaasamonte@sidc.coop', email: 'zaasamonte@sidc.coop', name: 'Zandra Angelia A. Samonte', role: 'internal_compliance_supervisor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_voncedrickj.sidc@gmail.com', email: 'voncedrickj.sidc@gmail.com', name: 'Von Cedrick Jimenez', role: 'senior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_jjbelela.sidc@gmail.com', email: 'jjbelela.sidc@gmail.com', name: 'Joanne Belela', role: 'senior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_jadejuan.sidc@gmail.com', email: 'jadejuan.sidc@gmail.com', name: 'Jesrel De Juan', role: 'senior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_fcfrancisco.sidc@gmail.com', email: 'fcfrancisco.sidc@gmail.com', name: 'Franz Lordan C. Francisco', role: 'senior_auditor', branchName: 'NLBO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_esmabealyssa13@gmail.com', email: 'esmabealyssa13@gmail.com', name: 'Alyssa Maries R. Esmabe', role: 'senior_auditor', branchName: 'NLBO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_kathleenkaye.sidc@gmail.com', email: 'kathleenkaye.sidc@gmail.com', name: 'Kathleen Kaye R. Macatangay', role: 'internal_compliance_assistant_junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_jcadion.sidc@gmail.com', email: 'jcadion.sidc@gmail.com', name: 'Jeylord C. Cadion', role: 'internal_compliance_assistant_junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_roshamarie.sidc@gmail.com', email: 'roshamarie.sidc@gmail.com', name: 'Rosha Marie Dipasupil', role: 'internal_compliance_assistant_junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_mjigonzalessidc@gmail.com', email: 'mjigonzalessidc@gmail.com', name: 'Mark Jerrold I. Gonzales', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_jeromeicd.sidc@gmail.com', email: 'jeromeicd.sidc@gmail.com', name: 'Jerome R. De Leon', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_avpcultura.icd.sidc@gmail.com', email: 'avpcultura.icd.sidc@gmail.com', name: 'Anne Vi Cultura', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_jeccultura30@gmail.com', email: 'jeccultura30@gmail.com', name: 'A. Cultura', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_icdjoyce.sidc@gmail.com', email: 'icdjoyce.sidc@gmail.com', name: 'Joyce Quinery Andal', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_yarahmichaelaburog.sidc@gmail.com', email: 'yarahmichaelaburog.sidc@gmail.com', name: 'Yarah Michaela Burog', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_cbpagcaliwagan.sidc26@gmail.com', email: 'cbpagcaliwagan.sidc26@gmail.com', name: 'Christian B. Pagcaliwagan', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_caguimbalsidc@gmail.com', email: 'caguimbalsidc@gmail.com', name: 'J.C. Caguimbal', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_mharcedrick.sidc@gmail.com', email: 'mharcedrick.sidc@gmail.com', name: 'Mhar Cedrick Dimaano', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_mwplata.sidc@gmail.com', email: 'mwplata.sidc@gmail.com', name: 'Wilson Plata', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_cpolitado16.sidc@gmail.com', email: 'cpolitado16.sidc@gmail.com', name: 'Cecile Politado', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_betty.sidc@gmail.com', email: 'betty.sidc@gmail.com', name: 'Rezylyn D. Aguado (Betty)', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_jamespatricklira.sidc@gmail.com', email: 'jamespatricklira.sidc@gmail.com', name: 'James Patrick Lira', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_ilagmarielle.sidc@gmail.com', email: 'ilagmarielle.sidc@gmail.com', name: 'Marielle Ilag', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_mmespeleta.sidc@gmail.com', email: 'mmespeleta.sidc@gmail.com', name: 'M. Espeleta', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_ghenzzguintu@gmail.com', email: 'ghenzzguintu@gmail.com', name: 'Ghenzz M. Guintu', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_joyceagsao0.sidc@gmail.com', email: 'joyceagsao0.sidc@gmail.com', name: 'Joyce Faith Agsao', role: 'junior_auditor', branchName: 'BICOL', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_kdelacruzm.sidc@gmail.com', email: 'kdelacruzm.sidc@gmail.com', name: 'Kimberly D. Mandia', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_sidc.kdmandia@gmail.com', email: 'sidc.kdmandia@gmail.com', name: 'Kimberly D. Mandia (SIDC)', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_maryjeanpastor.sidc@gmail.com', email: 'maryjeanpastor.sidc@gmail.com', name: 'Mary Jean Pastor', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_sidc.jenmark@gmail.com', email: 'sidc.jenmark@gmail.com', name: 'Jen Mark Luha', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_aiza.sidc@gmail.com', email: 'aiza.sidc@gmail.com', name: 'Aiza Tapay', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_sidc.jesser@gmail.com', email: 'sidc.jesser@gmail.com', name: 'Jesser James A. Malaluan', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_sidc.malaluan@gmail.com', email: 'sidc.malaluan@gmail.com', name: 'J. Malaluan', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_airene.icd24.sidc@gmail.com', email: 'airene.icd24.sidc@gmail.com', name: 'Airene Rica Cubillas', role: 'junior_auditor', branchName: 'PALAWAN', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_airene.icd24.sidc1@gmail.com', email: 'airene.icd24.sidc1@gmail.com', name: 'Airene Rica Cubillas (Palawan)', role: 'junior_auditor', branchName: 'PALAWAN', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_mercadosyralen@gmail.com', email: 'mercadosyralen@gmail.com', name: 'Syra Len Mercado', role: 'junior_auditor', branchName: 'PALAWAN', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_nestle.sidc@gmail.com', email: 'nestle.sidc@gmail.com', name: 'Nestle Esmolada', role: 'junior_auditor', branchName: 'VISAYAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_hazel.dlssidc@gmail.com', email: 'hazel.dlssidc@gmail.com', name: 'Hazel D. Delos Santos', role: 'junior_auditor', branchName: 'VISAYAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_hzldlssnts.sidc@gmail.com', email: 'hzldlssnts.sidc@gmail.com', name: 'Hazel D. Delos Santos (Visayas)', role: 'junior_auditor', branchName: 'VISAYAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_lilagrcntqd.sidc@gmail.com', email: 'lilagrcntqd.sidc@gmail.com', name: 'Lila Grace M. Antiquado', role: 'junior_auditor', branchName: 'VISAYAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_pclandicho.sidc@gmail.com', email: 'pclandicho.sidc@gmail.com', name: 'P. Landicho', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_chedrielbalmes08@gmail.com', email: 'chedrielbalmes08@gmail.com', name: 'Chedriel Balmes', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_syjer07.sidc@gmail.com', email: 'syjer07.sidc@gmail.com', name: 'Syjer', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'dir_sidc.icd2025@gmail.com', email: 'sidc.icd2025@gmail.com', name: 'SIDC ICD BSO', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+      ];
+      const deletedSeedIds = await getDeletedDirectoryIds();
+      const existingEmailSet = new Set(entries.map((e) => String(e.email || '').trim().toLowerCase()));
+      const missingSeeds = DEFAULT_ICD_DIRECTORY_SEED.filter((s) => {
+        const lower = s.email.toLowerCase();
+        if (existingEmailSet.has(lower)) return false;
+        if (lower !== 'icdhubsystems@gmail.com' && (deletedSeedIds.has(lower) || deletedSeedIds.has(s.id.toLowerCase()))) {
+          return false;
+        }
+        return true;
+      });
+      if (missingSeeds.length > 0) {
+        await upsertLocalAdminDirectoryEntries(missingSeeds, false);
+        entries = await getLocalAdminDirectoryEntries();
       }
 
       const membersStmt = db.prepare(`
@@ -875,40 +1495,27 @@ async function createServerInstance(externalDb?: D1Database) {
 
   app.post('/api/admin/directory', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
+      const isSyncHop = req.headers['x-icd-sync-hop'] === '1';
+      const authHeader = req.headers.authorization;
+      const callerToken =
+        authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
+
       const items = Array.isArray(req.body?.entries) ? req.body.entries : [req.body];
-      const saved: any[] = [];
+      const saved = await upsertLocalAdminDirectoryEntries(items, true);
 
-      const stmt = db.prepare(`
-        INSERT OR REPLACE INTO admin_auditor_directory (id, email, name, role, branch_name, status, created_at, entry_json)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-      `);
+      if (isNodeDevBridgeActive && !isSyncHop && saved.length > 0) {
+        fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/directory`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-icd-sync-hop': '1',
+          },
+          body: JSON.stringify({ entries: saved }),
+        }).catch(() => {});
+      }
 
-      for (const raw of items) {
-        if (!raw || (!raw.email && !raw.name)) continue;
-        const email = String(raw.email || '').trim().toLowerCase();
-        const id = raw.id || (email ? `dir_${email}` : `dir_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
-        const entry = {
-          id,
-          email,
-          name: String(raw.name || (email ? email.split('@')[0] : 'Auditor')).trim(),
-          role: raw.role || 'senior_auditor',
-          branchName: String(raw.branchName || '').trim(),
-          status: raw.status || 'active',
-          createdAt: raw.createdAt || new Date().toISOString(),
-        };
-        await stmt
-          .bind(
-            entry.id,
-            entry.email,
-            entry.name,
-            entry.role,
-            entry.branchName,
-            entry.status,
-            entry.createdAt,
-            JSON.stringify(entry)
-          )
-          .run();
-        saved.push(entry);
+      if (!isSyncHop) {
+        void saveAdminStateToGoogleDrive(callerToken);
       }
 
       lastAdminDataModifiedAt = Date.now();
@@ -921,9 +1528,49 @@ async function createServerInstance(externalDb?: D1Database) {
 
   app.delete('/api/admin/directory/:id', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
+      const isSyncHop = req.headers['x-icd-sync-hop'] === '1';
+      const authHeader = req.headers.authorization;
+      const callerToken =
+        authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
       const { id } = req.params;
+
+      const deletedIds = await getDeletedDirectoryIds();
+      const cleanId = String(id || '').trim().toLowerCase();
+      if (cleanId) {
+        deletedIds.add(cleanId);
+        if (cleanId.startsWith('dir_')) {
+          deletedIds.add(cleanId.slice(4));
+        } else if (cleanId.includes('@')) {
+          deletedIds.add(`dir_${cleanId}`);
+        }
+        await saveDeletedDirectoryIds(deletedIds);
+      }
+
       const stmt = db.prepare('DELETE FROM admin_auditor_directory WHERE id = ?1 OR lower(email) = lower(?1)');
       await stmt.bind(id).run();
+
+      try {
+        const remaining = await getLocalAdminDirectoryEntries();
+        const backupStmt = db.prepare(`
+          INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at)
+          VALUES (?1, ?2, ?3)
+        `);
+        await backupStmt
+          .bind(GLOBAL_ADMIN_DIR_BACKUP_KEY, JSON.stringify(remaining), new Date().toISOString())
+          .run();
+      } catch {}
+
+      if (isNodeDevBridgeActive && !isSyncHop) {
+        fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/directory/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: { 'x-icd-sync-hop': '1' },
+        }).catch(() => {});
+      }
+
+      if (!isSyncHop) {
+        void saveAdminStateToGoogleDrive(callerToken);
+      }
+
       lastAdminDataModifiedAt = Date.now();
       return res.json({ success: true });
     } catch (err: any) {
@@ -1213,23 +1860,10 @@ async function createServerInstance(externalDb?: D1Database) {
   const MASTERDATA_D1_CHUNK_SIZE = 3500;
   let cachedMasterdataPayload: { updatedAt: string; rows: string[][] } | null = null;
   let inFlightMasterdataRefresh: Promise<{ updatedAt: string; rows: string[][] } | null> | null = null;
+  let lastLocalMasterdataMutationAt = 0;
 
-  async function saveMasterdataToD1(payload: { updatedAt: string; rows: string[][] }): Promise<void> {
+  async function saveMasterdataMetaToDb(now: string, chunkCount: number, totalRows: number): Promise<void> {
     try {
-      const rows = Array.isArray(payload?.rows) ? payload.rows : [];
-      const chunkCount = Math.ceil(rows.length / MASTERDATA_D1_CHUNK_SIZE);
-      const now = payload.updatedAt || new Date().toISOString();
-
-      for (let i = 0; i < chunkCount; i++) {
-        const slice = rows.slice(i * MASTERDATA_D1_CHUNK_SIZE, (i + 1) * MASTERDATA_D1_CHUNK_SIZE);
-        await db
-          .prepare(
-            `INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at) VALUES (?1, ?2, ?3)`
-          )
-          .bind(`${GLOBAL_MASTERDATA_CHUNK_PREFIX}${i}`, JSON.stringify(slice), now)
-          .run();
-      }
-
       await db
         .prepare(
           `INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at) VALUES (?1, ?2, ?3)`
@@ -1239,17 +1873,51 @@ async function createServerInstance(externalDb?: D1Database) {
           JSON.stringify({
             updatedAt: now,
             chunkCount,
-            totalRows: rows.length,
+            totalRows,
           }),
           now
         )
         .run();
     } catch (e) {
-      console.warn('Could not persist masterdata chunks to D1:', e);
+      console.warn('Could not persist masterdata meta to DB:', e);
     }
   }
 
+  async function saveMasterdataToD1(payload: { updatedAt: string; rows: string[][] }): Promise<void> {
+    const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+    const hasDataRows = rows.length > 1;
+    const chunkCount = hasDataRows ? Math.ceil(rows.length / MASTERDATA_D1_CHUNK_SIZE) : 0;
+    const now = payload.updatedAt || new Date().toISOString();
+
+    if (externalDb) {
+      try {
+        for (let i = 0; i < chunkCount; i++) {
+          const slice = rows.slice(i * MASTERDATA_D1_CHUNK_SIZE, (i + 1) * MASTERDATA_D1_CHUNK_SIZE);
+          await db
+            .prepare(
+              `INSERT OR REPLACE INTO user_workspace_state (user_key, state_json, updated_at) VALUES (?1, ?2, ?3)`
+            )
+            .bind(`${GLOBAL_MASTERDATA_CHUNK_PREFIX}${i}`, JSON.stringify(slice), now)
+            .run();
+        }
+        if (chunkCount === 0) {
+          try {
+            await db
+              .prepare(`DELETE FROM user_workspace_state WHERE user_key LIKE ?1`)
+              .bind(`${GLOBAL_MASTERDATA_CHUNK_PREFIX}%`)
+              .run();
+          } catch {}
+        }
+      } catch (e) {
+        console.warn('Could not persist masterdata chunks to D1:', e);
+      }
+    }
+
+    await saveMasterdataMetaToDb(now, chunkCount, rows.length);
+  }
+
   async function loadMasterdataFromD1(): Promise<{ updatedAt: string; rows: string[][] } | null> {
+    if (!externalDb) return null;
     try {
       const metaRow = await db
         .prepare('SELECT state_json FROM user_workspace_state WHERE user_key = ?1')
@@ -1264,7 +1932,7 @@ async function createServerInstance(externalDb?: D1Database) {
         return {
           updatedAt: updatedAt || new Date().toISOString(),
           rows: [
-            ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'UOM'],
+            ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'Unit'],
           ],
         };
       }
@@ -1321,8 +1989,7 @@ async function createServerInstance(externalDb?: D1Database) {
             !cachedMasterdataPayload ||
             !Array.isArray(cachedMasterdataPayload.rows) ||
             (parsed.updatedAt &&
-              (!cachedMasterdataPayload.updatedAt || parsed.updatedAt > cachedMasterdataPayload.updatedAt)) ||
-            parsed.rows.length > (cachedMasterdataPayload?.rows?.length || 0)
+              (!cachedMasterdataPayload.updatedAt || parsed.updatedAt > cachedMasterdataPayload.updatedAt))
           ) {
             cachedMasterdataPayload = parsed;
           }
@@ -1479,8 +2146,8 @@ async function createServerInstance(externalDb?: D1Database) {
     return defaultConfig;
   }
 
-  async function saveMasterdataConfig(cfg: MasterdataConfig): Promise<void> {
-    const now = new Date().toISOString();
+  async function saveMasterdataConfig(cfg: MasterdataConfig, fixedUpdatedAt?: string): Promise<void> {
+    const now = fixedUpdatedAt || new Date().toISOString();
     const updatedCfg: MasterdataConfig = {
       ...cfg,
       updatedAt: now,
@@ -1510,20 +2177,23 @@ async function createServerInstance(externalDb?: D1Database) {
     const headerRow = values[0].map((h) => (h || '').trim().toLowerCase());
 
     const findCol = (keywords: string[], fallbackIdx: number): number => {
-      const idx = headerRow.findIndex((h) => keywords.some((kw) => h === kw || h.includes(kw)));
-      return idx >= 0 ? idx : fallbackIdx;
+      const exactIdx = headerRow.findIndex((h) => keywords.some((kw) => h === kw));
+      if (exactIdx >= 0) return exactIdx;
+      const partialIdx = headerRow.findIndex((h) => keywords.some((kw) => h.includes(kw)));
+      return partialIdx >= 0 ? partialIdx : fallbackIdx;
     };
 
+    const hasUnitAtCol2 = headerRow[2] === 'unit' || headerRow[2] === 'uom';
     const codeIdx = findCol(['item code', 'itemcode', 'code'], 0);
     const descIdx = findCol(['item description', 'description', 'item desc', 'item name'], 1);
-    const catIdx = findCol(['category'], 2);
-    const subCatIdx = findCol(['sub category', 'subcategory', 'sub-category'], 3);
+    const unitIdx = findCol(['unit', 'uom'], hasUnitAtCol2 ? 2 : 6);
+    const catIdx = findCol(['category'], hasUnitAtCol2 ? 3 : 2);
+    const subCatIdx = findCol(['sub category', 'subcategory', 'sub-category'], hasUnitAtCol2 ? 4 : 3);
     const subSubCatIdx = findCol(
       ['sub sub category', 'subsubcategory', 'sub-sub-category', 'sub subcategory'],
-      4
+      hasUnitAtCol2 ? 5 : 4
     );
-    const bcIdx = findCol(['barcode', 'bar code'], 5);
-    const uomIdx = findCol(['uom', 'unit'], 6);
+    const bcIdx = findCol(['barcode', 'bar code'], hasUnitAtCol2 ? 6 : 5);
 
     const formattedRows: string[][] = [];
 
@@ -1541,7 +2211,7 @@ async function createServerInstance(externalDb?: D1Database) {
       const category = (r[catIdx] || '').trim();
       const subCategory = (r[subCatIdx] || '').trim();
       const subSubCategory = (r[subSubCatIdx] || '').trim();
-      const uom = (r[uomIdx] || '').trim() || 'PCS';
+      const unit = (r[unitIdx] || '').trim() || 'PCS';
 
       formattedRows.push([
         code,
@@ -1551,7 +2221,7 @@ async function createServerInstance(externalDb?: D1Database) {
         subSubCategory,
         barcode,
         tabName.trim().toUpperCase(),
-        uom,
+        unit,
       ]);
     }
 
@@ -1640,6 +2310,41 @@ async function createServerInstance(externalDb?: D1Database) {
     return [];
   }
 
+  function getActiveConfiguredMasterdataSheets(config: MasterdataConfig): string[] {
+    const removedSet = new Set((config.removedSheets || []).map((s) => String(s || '').trim().toUpperCase()));
+    const result: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of ['GRO', 'OTHERS', ...(config.additionalSheets || [])]) {
+      const upper = String(raw || '').trim().toUpperCase();
+      if (upper && !removedSet.has(upper) && !seen.has(upper)) {
+        seen.add(upper);
+        result.push(upper);
+      }
+    }
+    return result;
+  }
+
+  function filterMasterdataRowsByActiveSheets(rows: string[][], activeSheets: string[]): string[][] {
+    const header =
+      Array.isArray(rows) && rows.length > 0 && Array.isArray(rows[0])
+        ? rows[0]
+        : ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'Unit'];
+    if (!rows || rows.length <= 1 || activeSheets.length === 0) {
+      return [header];
+    }
+    const activeSet = new Set(activeSheets.map((s) => s.trim().toUpperCase()));
+    const filtered: string[][] = [header];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || r.length === 0) continue;
+      const sheetTag = String(r[6] || 'GRO').trim().toUpperCase();
+      if (activeSet.has(sheetTag)) {
+        filtered.push(r);
+      }
+    }
+    return filtered;
+  }
+
   async function refreshMasterdataFromGoogle(token?: string): Promise<{ updatedAt: string; rows: string[][] } | null> {
     if (inFlightMasterdataRefresh) {
       return inFlightMasterdataRefresh;
@@ -1652,12 +2357,18 @@ async function createServerInstance(externalDb?: D1Database) {
         const spreadsheetId = config.spreadsheetId;
         const removedSet = new Set((config.removedSheets || []).map((s) => s.toUpperCase()));
 
-        let tabsToFetch = Array.from(
-          new Set(['GRO', 'OTHERS', ...(config.additionalSheets || [])])
-        ).filter((t) => !removedSet.has(t.toUpperCase()));
+        const tabsToFetch = getActiveConfiguredMasterdataSheets(config);
 
-        // If Admin explicitly removed all sheets, keep the empty payload
+        // If Admin explicitly removed all sheets, keep the empty header-only payload
         if (tabsToFetch.length === 0) {
+          const emptyTs = config.updatedAt || new Date().toISOString();
+          cachedMasterdataPayload = {
+            updatedAt: emptyTs,
+            rows: [
+              ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'Unit'],
+            ],
+          };
+          await persistMasterdataCacheToDisk(emptyTs);
           return cachedMasterdataPayload;
         }
 
@@ -1670,7 +2381,8 @@ async function createServerInstance(externalDb?: D1Database) {
 
         // If a custom spreadsheet URL was set in Admin Console and doesn't have GRO/OTHERS tabs, auto-discover its tabs
         const anyNonEmpty = results.some((r) => Array.isArray(r.values) && r.values.length > 1);
-        if (!anyNonEmpty && spreadsheetId !== '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE') {
+        const isDefaultSpreadsheet = spreadsheetId === '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE';
+        if (!anyNonEmpty && !isDefaultSpreadsheet) {
           const discovered = await discoverMasterdataSpreadsheetTabs(spreadsheetId, effectiveToken);
           const customTabs = discovered.filter(
             (t) =>
@@ -1685,18 +2397,37 @@ async function createServerInstance(externalDb?: D1Database) {
                 return { tabName, values };
               })
             );
+            const nextRemoved = new Set((config.removedSheets || []).map((s) => s.toUpperCase()));
+            nextRemoved.add('GRO');
+            nextRemoved.add('OTHERS');
+            config.removedSheets = Array.from(nextRemoved);
             for (const ct of customTabs) {
               const u = ct.toUpperCase();
               if (!config.additionalSheets.includes(u)) {
                 config.additionalSheets.push(u);
               }
             }
-            await saveMasterdataConfig(config);
+          }
+        } else if (!isDefaultSpreadsheet) {
+          // Prune empty GRO / OTHERS from custom spreadsheets so missingConfiguredSheet doesn't loop
+          let configMutated = false;
+          const nextRemoved = new Set((config.removedSheets || []).map((s) => s.toUpperCase()));
+          for (const r of results) {
+            const upper = r.tabName.toUpperCase();
+            if ((upper === 'GRO' || upper === 'OTHERS') && (!r.values || r.values.length <= 1)) {
+              if (!nextRemoved.has(upper)) {
+                nextRemoved.add(upper);
+                configMutated = true;
+              }
+            }
+          }
+          if (configMutated) {
+            config.removedSheets = Array.from(nextRemoved);
           }
         }
 
         const combinedRows: string[][] = [
-          ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'UOM'],
+          ['Item Code', 'Item Description', 'Category', 'SubCategory', 'SubSubCategory', 'Barcode', 'Sheet', 'Unit'],
         ];
 
         for (const { tabName, values } of results) {
@@ -1711,18 +2442,19 @@ async function createServerInstance(externalDb?: D1Database) {
         const groResult = results.find((r) => r.tabName.toUpperCase() === 'GRO')?.values || [];
         const othersResult = results.find((r) => r.tabName.toUpperCase() === 'OTHERS')?.values || [];
 
-        const isDefaultSheet = spreadsheetId === '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE';
         const meetsCompletenessCheck =
-          isDefaultSheet && groRequested && othersRequested
+          isDefaultSpreadsheet && groRequested && othersRequested
             ? groResult.length > 1 && othersResult.length > 1 && combinedRows.length > 1
             : combinedRows.length > 1;
 
         if (meetsCompletenessCheck) {
+          const sharedNow = new Date().toISOString();
           cachedMasterdataPayload = {
-            updatedAt: new Date().toISOString(),
+            updatedAt: sharedNow,
             rows: combinedRows,
           };
-          await persistMasterdataCacheToDisk();
+          await persistMasterdataCacheToDisk(sharedNow);
+          await saveMasterdataConfig(config, sharedNow);
           console.log(
             `[Masterdata] Cached ${combinedRows.length - 1} total items across ${results.length} sheets`
           );
@@ -1749,30 +2481,52 @@ async function createServerInstance(externalDb?: D1Database) {
       const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
       const metaOnly = req.query.meta === '1' || req.query.meta === 'true';
 
-      const config = await ensureMasterdataConfigLoaded();
-      const removedSet = new Set((config.removedSheets || []).map((s) => s.toUpperCase()));
-      const activeTabsCount = ['GRO', 'OTHERS', ...(config.additionalSheets || [])].filter(
-        (t) => !removedSet.has(t.toUpperCase())
-      ).length;
+      if (isNodeDevBridgeActive && req.headers['x-icd-sync-hop'] !== '1') {
+        await syncMasterdataFromCloudIfNeeded();
+      }
 
-      // Reload from disk / D1 if memory cache is not yet populated
+      const config = await ensureMasterdataConfigLoaded();
+      const configuredSheets = getActiveConfiguredMasterdataSheets(config);
+      const activeTabsCount = configuredSheets.length;
+
+      // Reload from disk / D1 if memory cache is not yet populated or if config was updated more recently
       if (
         !cachedMasterdataPayload ||
         !Array.isArray(cachedMasterdataPayload.rows) ||
-        cachedMasterdataPayload.rows.length <= 1
+        (config.updatedAt &&
+          (!cachedMasterdataPayload.updatedAt || config.updatedAt > cachedMasterdataPayload.updatedAt))
       ) {
         await loadMasterdataCacheFromDisk();
       }
 
-      // If still empty and sheets are configured, hydrate immediately from Google Sheets
-      if (
-        activeTabsCount > 0 &&
-        (!cachedMasterdataPayload ||
-          !Array.isArray(cachedMasterdataPayload.rows) ||
-          cachedMasterdataPayload.rows.length <= 1)
-      ) {
-        await refreshMasterdataFromGoogle(bearerToken || undefined);
+      // Check if any configured sheet is completely missing from the current cached rows
+      let filteredRows = filterMasterdataRowsByActiveSheets(
+        cachedMasterdataPayload?.rows || [],
+        configuredSheets
+      );
+
+      if (activeTabsCount > 0) {
+        const presentSheets = new Set<string>();
+        for (let i = 1; i < filteredRows.length; i++) {
+          const s = String(filteredRows[i][6] || 'GRO').trim().toUpperCase();
+          if (s) presentSheets.add(s);
+        }
+        const missingConfiguredSheet = configuredSheets.some((s) => !presentSheets.has(s));
+
+        if (filteredRows.length <= 1 || missingConfiguredSheet || forceRefresh) {
+          await refreshMasterdataFromGoogle(bearerToken || undefined);
+          filteredRows = filterMasterdataRowsByActiveSheets(
+            cachedMasterdataPayload?.rows || [],
+            configuredSheets
+          );
+        }
       }
+
+      const effectiveUpdatedAt =
+        config.updatedAt &&
+        (!cachedMasterdataPayload?.updatedAt || config.updatedAt > cachedMasterdataPayload.updatedAt)
+          ? config.updatedAt
+          : cachedMasterdataPayload?.updatedAt || config.updatedAt || new Date().toISOString();
 
       if (metaOnly) {
         const ageMs = cachedMasterdataPayload?.updatedAt
@@ -1782,38 +2536,28 @@ async function createServerInstance(externalDb?: D1Database) {
           void refreshMasterdataFromGoogle(bearerToken || undefined);
         }
 
-        const totalItems =
-          cachedMasterdataPayload &&
-          Array.isArray(cachedMasterdataPayload.rows) &&
-          cachedMasterdataPayload.rows.length > 1
-            ? cachedMasterdataPayload.rows.length - 1
-            : 0;
+        const totalItems = Math.max(0, filteredRows.length - 1);
         return res.json({
-          updatedAt: cachedMasterdataPayload?.updatedAt || null,
+          updatedAt: effectiveUpdatedAt,
           totalItems,
+          configuredSheets,
+          spreadsheetId: config.spreadsheetId,
         });
       }
 
-      if (forceRefresh && activeTabsCount > 0) {
-        const fresh = await refreshMasterdataFromGoogle(bearerToken || undefined);
-        if (fresh && Array.isArray(fresh.rows) && fresh.rows.length >= 1) {
-          return res.json(fresh);
-        }
-      }
-
-      if (
-        cachedMasterdataPayload &&
-        Array.isArray(cachedMasterdataPayload.rows) &&
-        cachedMasterdataPayload.rows.length >= 1
-      ) {
-        const ageMs = Date.now() - new Date(cachedMasterdataPayload.updatedAt || 0).getTime();
-        if (activeTabsCount > 0 && ageMs > 3 * 60 * 1000) {
+      if (activeTabsCount > 0 && cachedMasterdataPayload?.updatedAt) {
+        const ageMs = Date.now() - new Date(cachedMasterdataPayload.updatedAt).getTime();
+        if (ageMs > 3 * 60 * 1000 && !forceRefresh) {
           void refreshMasterdataFromGoogle(bearerToken || undefined);
         }
-        return res.json(cachedMasterdataPayload);
       }
 
-      return res.json({ updatedAt: null, rows: [] });
+      return res.json({
+        updatedAt: effectiveUpdatedAt,
+        rows: filteredRows,
+        configuredSheets,
+        spreadsheetId: config.spreadsheetId,
+      });
     } catch (err: any) {
       console.error('Error serving /api/masterdata:', err);
       return res.status(500).json({ error: err.message || 'Internal server error' });
@@ -1840,10 +2584,10 @@ async function createServerInstance(externalDb?: D1Database) {
     return null;
   }
 
-  // Helper to find a row index (1-based) in a Masterdata Google Sheet tab ('GRO' or 'OTHERS')
+  // Helper to find a row index (1-based) in a Masterdata Google Sheet tab
   async function findMasterdataSheetRowNumber(
     spreadsheetId: string,
-    tabName: 'GRO' | 'OTHERS',
+    tabName: string,
     token: string,
     matchCode: string,
     matchBarcode: string,
@@ -1858,6 +2602,12 @@ async function createServerInstance(externalDb?: D1Database) {
     if (!gRes.ok) return -1;
     const gData: any = await gRes.json();
     const rows: string[][] = Array.isArray(gData?.values) ? gData.values : [];
+    const headerRow = (rows[0] || []).map((h) => String(h || '').trim().toLowerCase());
+    const bcColIdx = (() => {
+      const idx = headerRow.findIndex((h) => h === 'barcode' || h === 'bar code' || h.includes('barcode'));
+      if (idx >= 0) return idx;
+      return headerRow[2] === 'unit' || headerRow[2] === 'uom' ? 6 : 5;
+    })();
     const normCode = matchCode.trim().toLowerCase();
     const normBc = matchBarcode.trim().toLowerCase();
     const normDesc = matchDescription.trim().toLowerCase();
@@ -1875,7 +2625,7 @@ async function createServerInstance(externalDb?: D1Database) {
     if (normBc) {
       for (let i = 1; i < rows.length; i++) {
         const r = rows[i] || [];
-        const rBc = String(r[5] || '').trim().toLowerCase();
+        const rBc = String(r[bcColIdx] ?? r[6] ?? r[5] ?? '').trim().toLowerCase();
         const rDesc = String(r[1] || '').trim().toLowerCase();
         if (rBc === normBc && (!normDesc || rDesc === normDesc)) {
           return i + 1;
@@ -1896,7 +2646,7 @@ async function createServerInstance(externalDb?: D1Database) {
 
   async function deleteMasterdataSheetRowByNumber(
     spreadsheetId: string,
-    tabName: 'GRO' | 'OTHERS',
+    tabName: string,
     token: string,
     rowNumber1Based: number
   ): Promise<boolean> {
@@ -1939,15 +2689,120 @@ async function createServerInstance(externalDb?: D1Database) {
     return delRes.ok;
   }
 
-  async function persistMasterdataCacheToDisk(): Promise<void> {
+  async function persistMasterdataCacheToDisk(fixedUpdatedAt?: string): Promise<void> {
     if (!cachedMasterdataPayload) return;
-    cachedMasterdataPayload.updatedAt = new Date().toISOString();
+    cachedMasterdataPayload.updatedAt = fixedUpdatedAt || new Date().toISOString();
     lastAdminDataModifiedAt = Date.now();
     await saveMasterdataToD1(cachedMasterdataPayload);
     try {
       await fs.promises.mkdir(path.dirname(masterdataCachePath), { recursive: true });
       await fs.promises.writeFile(masterdataCachePath, JSON.stringify(cachedMasterdataPayload));
     } catch {}
+  }
+
+  let lastCloudMasterdataPullMs = 0;
+  let inFlightCloudMasterdataPull: Promise<void> | null = null;
+
+  async function syncMasterdataFromCloudIfNeeded(force = false): Promise<void> {
+    if (!isNodeDevBridgeActive) return;
+    const now = Date.now();
+    if (!force && (now - lastCloudMasterdataPullMs < 6000 || now - lastLocalMasterdataMutationAt < 5000)) {
+      return;
+    }
+    if (inFlightCloudMasterdataPull) return inFlightCloudMasterdataPull;
+    lastCloudMasterdataPullMs = now;
+
+    inFlightCloudMasterdataPull = (async () => {
+      try {
+        const metaRes = await fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/masterdata?meta=1&_ts=${Date.now()}`, {
+          headers: { 'x-icd-sync-hop': '1' },
+          signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(5000) : undefined,
+        });
+        if (!metaRes.ok) return;
+        const remoteMeta = (await metaRes.json()) as {
+          updatedAt?: string;
+          totalItems?: number;
+          configuredSheets?: string[];
+          spreadsheetId?: string;
+        };
+        const remoteUpdatedAt = String(remoteMeta?.updatedAt || '').trim();
+        if (!remoteUpdatedAt) return;
+
+        const localConfig = await ensureMasterdataConfigLoaded();
+        const localUpdatedAt = String(localConfig.updatedAt || cachedMasterdataPayload?.updatedAt || '');
+        const localSheets = getActiveConfiguredMasterdataSheets(localConfig).join(',');
+        const remoteSheets = Array.isArray(remoteMeta.configuredSheets)
+          ? remoteMeta.configuredSheets.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean).join(',')
+          : localSheets;
+
+        const isRemoteNewer = !localUpdatedAt || remoteUpdatedAt > localUpdatedAt;
+        const isConfigDifferent =
+          (remoteMeta.spreadsheetId && remoteMeta.spreadsheetId !== localConfig.spreadsheetId) ||
+          remoteSheets !== localSheets;
+
+        if (!isRemoteNewer && !isConfigDifferent) return;
+        if (!force && Date.now() - lastLocalMasterdataMutationAt < 5000) return;
+
+        const [infoRes, dataRes] = await Promise.all([
+          fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/masterdata/sheets?_ts=${Date.now()}`, {
+            headers: { 'x-icd-sync-hop': '1' },
+            signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(8000) : undefined,
+          }),
+          fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/masterdata?_ts=${Date.now()}`, {
+            headers: { 'x-icd-sync-hop': '1' },
+            signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(15000) : undefined,
+          }),
+        ]);
+
+        if (!dataRes.ok) return;
+        const data = (await dataRes.json()) as {
+          updatedAt?: string;
+          rows?: string[][];
+          configuredSheets?: string[];
+          spreadsheetId?: string;
+        };
+        const info = infoRes.ok
+          ? ((await infoRes.json()) as { spreadsheetId?: string; spreadsheetUrl?: string })
+          : {};
+
+        if (!Array.isArray(data?.rows)) return;
+        const activeSheets = Array.isArray(data.configuredSheets)
+          ? data.configuredSheets.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean)
+          : [];
+        const activeSet = new Set(activeSheets);
+        const removedSheets = ['GRO', 'OTHERS'].filter((s) => !activeSet.has(s));
+        const additionalSheets = activeSheets.filter((s) => s !== 'GRO' && s !== 'OTHERS');
+        const nextSpreadsheetId =
+          data.spreadsheetId || info.spreadsheetId || localConfig.spreadsheetId;
+        const nextSpreadsheetUrl =
+          info.spreadsheetUrl ||
+          (nextSpreadsheetId === localConfig.spreadsheetId
+            ? localConfig.spreadsheetUrl
+            : `https://docs.google.com/spreadsheets/d/${nextSpreadsheetId}/edit`);
+
+        const syncTs = data.updatedAt || remoteUpdatedAt;
+        cachedMasterdataPayload = {
+          updatedAt: syncTs,
+          rows: data.rows,
+        };
+        await persistMasterdataCacheToDisk(syncTs);
+        await saveMasterdataConfig(
+          {
+            spreadsheetId: nextSpreadsheetId,
+            spreadsheetUrl: nextSpreadsheetUrl,
+            additionalSheets,
+            removedSheets,
+          },
+          syncTs
+        );
+      } catch {
+        // Ignore transient network failures when pulling from Cloudflare Worker
+      } finally {
+        inFlightCloudMasterdataPull = null;
+      }
+    })();
+
+    return inFlightCloudMasterdataPull;
   }
 
   // Admin Endpoint: Edit an existing Masterdata item in GRO or OTHERS (updates Google Sheet + Server Cache)
@@ -1966,6 +2821,7 @@ async function createServerInstance(externalDb?: D1Database) {
         itemCode = '',
         barcode = '',
         itemDescription = '',
+        unit = 'PCS',
         category = '',
         subCategory = '',
         subsubCategory = '',
@@ -1973,11 +2829,12 @@ async function createServerInstance(externalDb?: D1Database) {
         targetSheet: reqTargetSheet,
       } = req.body || {};
 
-      const targetSheet: 'GRO' | 'OTHERS' =
-        String(reqTargetSheet || sheet).toUpperCase() === 'OTHERS' ? 'OTHERS' : 'GRO';
-      const prevSheet: 'GRO' | 'OTHERS' =
-        String(originalSheet).toUpperCase() === 'OTHERS' ? 'OTHERS' : 'GRO';
+      const targetSheet: string =
+        String(reqTargetSheet || sheet || 'GRO').trim().toUpperCase() || 'GRO';
+      const prevSheet: string =
+        String(originalSheet || targetSheet || 'GRO').trim().toUpperCase() || 'GRO';
 
+      const cleanUnit = String(unit || '').trim() || 'PCS';
       const cleanRowValues = [
         String(itemCode || '').trim(),
         String(itemDescription || '').trim(),
@@ -1985,6 +2842,16 @@ async function createServerInstance(externalDb?: D1Database) {
         String(subCategory || '').trim(),
         String(subsubCategory || '').trim(),
         String(barcode || '').trim(),
+      ];
+      // Google Sheet row order: Item Code | Item Description | Unit | Category | SubCategory | SubSubCategory | Barcode
+      const sheetRowValues = [
+        cleanRowValues[0],
+        cleanRowValues[1],
+        cleanUnit,
+        cleanRowValues[2],
+        cleanRowValues[3],
+        cleanRowValues[4],
+        cleanRowValues[5],
       ];
 
       if (!cleanRowValues[0] && !cleanRowValues[1] && !cleanRowValues[5]) {
@@ -1995,12 +2862,16 @@ async function createServerInstance(externalDb?: D1Database) {
         await loadMasterdataCacheFromDisk();
       }
 
+      const config = await ensureMasterdataConfigLoaded();
       let sheetUpdated = false;
       let sheetError: string | null = null;
-      const spreadsheetIds = [
-        '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE',
-        '1qnY9fJGHdYUqddEhXy4MDqh5qT7TOPorNsuz-7J8eQY',
-      ];
+      const spreadsheetIds = Array.from(
+        new Set([
+          config.spreadsheetId,
+          '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE',
+          '1qnY9fJGHdYUqddEhXy4MDqh5qT7TOPorNsuz-7J8eQY',
+        ].filter(Boolean))
+      );
 
       if (token) {
         for (const spreadsheetId of spreadsheetIds) {
@@ -2016,7 +2887,7 @@ async function createServerInstance(externalDb?: D1Database) {
 
             if (rowNum > 1) {
               if (prevSheet === targetSheet) {
-                const range = `${encodeURIComponent(targetSheet)}!A${rowNum}:F${rowNum}`;
+                const range = `${encodeURIComponent(targetSheet)}!A${rowNum}:G${rowNum}`;
                 const putRes = await fetch(
                   `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=RAW`,
                   {
@@ -2025,7 +2896,7 @@ async function createServerInstance(externalDb?: D1Database) {
                       Authorization: `Bearer ${token}`,
                       'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ values: [cleanRowValues] }),
+                    body: JSON.stringify({ values: [sheetRowValues] }),
                   }
                 );
                 if (putRes.ok) {
@@ -2040,14 +2911,14 @@ async function createServerInstance(externalDb?: D1Database) {
                 const appendRes = await fetch(
                   `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
                     targetSheet
-                  )}!A:F:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+                  )}!A:G:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
                   {
                     method: 'POST',
                     headers: {
                       Authorization: `Bearer ${token}`,
                       'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ values: [cleanRowValues] }),
+                    body: JSON.stringify({ values: [sheetRowValues] }),
                   }
                 );
                 if (appendRes.ok) {
@@ -2062,14 +2933,14 @@ async function createServerInstance(externalDb?: D1Database) {
               const appendRes = await fetch(
                 `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
                   targetSheet
-                )}!A:F:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+                )}!A:G:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
                 {
                   method: 'POST',
                   headers: {
                     Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json',
                   },
-                  body: JSON.stringify({ values: [cleanRowValues] }),
+                  body: JSON.stringify({ values: [sheetRowValues] }),
                 }
               );
               if (appendRes.ok) {
@@ -2104,14 +2975,14 @@ async function createServerInstance(externalDb?: D1Database) {
             !normOrigCode && !normOrigBc && normOrigDesc && rDesc === normOrigDesc && rSheet === prevSheet;
 
           if (codeMatch || bcMatch || descMatch) {
-            cachedMasterdataPayload.rows[i] = [...cleanRowValues, targetSheet];
+            cachedMasterdataPayload.rows[i] = [...cleanRowValues, targetSheet, cleanUnit];
             updatedInCache = true;
             break;
           }
         }
 
         if (!updatedInCache) {
-          cachedMasterdataPayload.rows.push([...cleanRowValues, targetSheet]);
+          cachedMasterdataPayload.rows.push([...cleanRowValues, targetSheet, cleanUnit]);
         }
         await persistMasterdataCacheToDisk();
       }
@@ -2124,6 +2995,7 @@ async function createServerInstance(externalDb?: D1Database) {
         item: {
           itemCode: cleanRowValues[0],
           itemDescription: cleanRowValues[1],
+          unit: cleanUnit,
           category: cleanRowValues[2],
           subCategory: cleanRowValues[3],
           subsubCategory: cleanRowValues[4],
@@ -2149,6 +3021,7 @@ async function createServerInstance(externalDb?: D1Database) {
         itemCode = '',
         barcode = '',
         itemDescription = '',
+        unit = 'PCS',
         category = '',
         subCategory = '',
         subsubCategory = '',
@@ -2156,9 +3029,10 @@ async function createServerInstance(externalDb?: D1Database) {
         targetSheet: reqTargetSheet,
       } = req.body || {};
 
-      const targetSheet: 'GRO' | 'OTHERS' =
-        String(reqTargetSheet || sheet).toUpperCase() === 'OTHERS' ? 'OTHERS' : 'GRO';
+      const targetSheet: string =
+        String(reqTargetSheet || sheet || 'GRO').trim().toUpperCase() || 'GRO';
 
+      const cleanUnit = String(unit || '').trim() || 'PCS';
       const cleanRowValues = [
         String(itemCode || '').trim(),
         String(itemDescription || '').trim(),
@@ -2166,6 +3040,15 @@ async function createServerInstance(externalDb?: D1Database) {
         String(subCategory || '').trim(),
         String(subsubCategory || '').trim(),
         String(barcode || '').trim(),
+      ];
+      const sheetRowValues = [
+        cleanRowValues[0],
+        cleanRowValues[1],
+        cleanUnit,
+        cleanRowValues[2],
+        cleanRowValues[3],
+        cleanRowValues[4],
+        cleanRowValues[5],
       ];
 
       if (!cleanRowValues[0] && !cleanRowValues[1] && !cleanRowValues[5]) {
@@ -2176,12 +3059,16 @@ async function createServerInstance(externalDb?: D1Database) {
         await loadMasterdataCacheFromDisk();
       }
 
+      const config = await ensureMasterdataConfigLoaded();
       let sheetUpdated = false;
       let sheetError: string | null = null;
-      const spreadsheetIds = [
-        '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE',
-        '1qnY9fJGHdYUqddEhXy4MDqh5qT7TOPorNsuz-7J8eQY',
-      ];
+      const spreadsheetIds = Array.from(
+        new Set([
+          config.spreadsheetId,
+          '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE',
+          '1qnY9fJGHdYUqddEhXy4MDqh5qT7TOPorNsuz-7J8eQY',
+        ].filter(Boolean))
+      );
 
       if (token) {
         for (const spreadsheetId of spreadsheetIds) {
@@ -2189,14 +3076,14 @@ async function createServerInstance(externalDb?: D1Database) {
             const appendRes = await fetch(
               `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
                 targetSheet
-              )}!A:F:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+              )}!A:G:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
               {
                 method: 'POST',
                 headers: {
                   Authorization: `Bearer ${token}`,
                   'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ values: [cleanRowValues] }),
+                body: JSON.stringify({ values: [sheetRowValues] }),
               }
             );
             if (appendRes.ok) {
@@ -2212,7 +3099,7 @@ async function createServerInstance(externalDb?: D1Database) {
       }
 
       if (cachedMasterdataPayload && Array.isArray(cachedMasterdataPayload.rows)) {
-        cachedMasterdataPayload.rows.splice(1, 0, [...cleanRowValues, targetSheet]);
+        cachedMasterdataPayload.rows.splice(1, 0, [...cleanRowValues, targetSheet, cleanUnit]);
         await persistMasterdataCacheToDisk();
       }
 
@@ -2224,6 +3111,7 @@ async function createServerInstance(externalDb?: D1Database) {
         item: {
           itemCode: cleanRowValues[0],
           itemDescription: cleanRowValues[1],
+          unit: cleanUnit,
           category: cleanRowValues[2],
           subCategory: cleanRowValues[3],
           subsubCategory: cleanRowValues[4],
@@ -2237,7 +3125,7 @@ async function createServerInstance(externalDb?: D1Database) {
     }
   });
 
-  // Admin Endpoint: Delete a Masterdata item from GRO or OTHERS (deletes from Google Sheet + Server Cache)
+  // Admin Endpoint: Delete a Masterdata item from any active Masterdata sheet (deletes from Google Sheet + Server Cache)
   app.delete('/api/masterdata/item', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
       const authHeader = req.headers.authorization;
@@ -2252,19 +3140,23 @@ async function createServerInstance(externalDb?: D1Database) {
         sheet = 'GRO',
       } = req.body || {};
 
-      const targetSheet: 'GRO' | 'OTHERS' =
-        String(sheet).toUpperCase() === 'OTHERS' ? 'OTHERS' : 'GRO';
+      const targetSheet: string =
+        String(sheet || 'GRO').trim().toUpperCase() || 'GRO';
 
       if (!cachedMasterdataPayload) {
         await loadMasterdataCacheFromDisk();
       }
 
+      const config = await ensureMasterdataConfigLoaded();
       let sheetUpdated = false;
       let sheetError: string | null = null;
-      const spreadsheetIds = [
-        '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE',
-        '1qnY9fJGHdYUqddEhXy4MDqh5qT7TOPorNsuz-7J8eQY',
-      ];
+      const spreadsheetIds = Array.from(
+        new Set([
+          config.spreadsheetId,
+          '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE',
+          '1qnY9fJGHdYUqddEhXy4MDqh5qT7TOPorNsuz-7J8eQY',
+        ].filter(Boolean))
+      );
 
       if (token) {
         for (const spreadsheetId of spreadsheetIds) {
@@ -2392,8 +3284,10 @@ async function createServerInstance(externalDb?: D1Database) {
 
     // 3. If sheets were discovered directly from the spreadsheet, return live spreadsheet tabs
     if (discovered.length > 0) {
-      if (!seenUpper.has('GRO')) addTab('GRO');
-      if (!seenUpper.has('OTHERS')) addTab('OTHERS');
+      if (spreadsheetId === '1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE') {
+        if (!seenUpper.has('GRO')) addTab('GRO');
+        if (!seenUpper.has('OTHERS')) addTab('OTHERS');
+      }
       return discovered;
     }
 
@@ -2409,6 +3303,9 @@ async function createServerInstance(externalDb?: D1Database) {
   // Admin: Get Masterdata sheets info
   app.get('/api/admin/masterdata/sheets', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
+      if (isNodeDevBridgeActive && req.headers['x-icd-sync-hop'] !== '1') {
+        await syncMasterdataFromCloudIfNeeded();
+      }
       const config = await ensureMasterdataConfigLoaded();
       if (!cachedMasterdataPayload || !Array.isArray(cachedMasterdataPayload.rows)) {
         await loadMasterdataCacheFromDisk();
@@ -2467,13 +3364,20 @@ async function createServerInstance(externalDb?: D1Database) {
 
       const config = await ensureMasterdataConfigLoaded();
       let spreadsheetId = config.spreadsheetId;
+      let isDifferentSpreadsheet = false;
 
-      if (spreadsheetUrl && typeof spreadsheetUrl === 'string') {
-        const match = spreadsheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-        if (match && match[1]) {
-          spreadsheetId = match[1];
+      if (spreadsheetUrl && typeof spreadsheetUrl === 'string' && spreadsheetUrl.trim()) {
+        const cleanUrl = spreadsheetUrl.trim();
+        const match = cleanUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+        const extractedId =
+          (match && match[1]) || (/^[a-zA-Z0-9_-]{25,60}$/.test(cleanUrl) ? cleanUrl : '');
+        if (extractedId) {
+          isDifferentSpreadsheet = config.spreadsheetId !== extractedId;
+          spreadsheetId = extractedId;
           config.spreadsheetId = spreadsheetId;
-          config.spreadsheetUrl = spreadsheetUrl.trim();
+          config.spreadsheetUrl = cleanUrl.startsWith('http')
+            ? cleanUrl
+            : `https://docs.google.com/spreadsheets/d/${extractedId}/edit`;
         }
       }
 
@@ -2504,7 +3408,7 @@ async function createServerInstance(externalDb?: D1Database) {
         await loadMasterdataCacheFromDisk();
       }
 
-      const existingHeader = (cachedMasterdataPayload?.rows && cachedMasterdataPayload.rows[0]) || [
+      const existingHeader = [
         'Item Code',
         'Item Description',
         'Category',
@@ -2512,24 +3416,36 @@ async function createServerInstance(externalDb?: D1Database) {
         'SubSubCategory',
         'Barcode',
         'Sheet',
-        'UOM',
+        'Unit',
       ];
 
+      // If Admin switched to a new spreadsheet, clear rows and sheet list from the previous spreadsheet
+      if (isDifferentSpreadsheet) {
+        config.additionalSheets = [];
+        const availableUpper = new Set(availableSheets.map((s) => s.trim().toUpperCase()));
+        const nextRemoved: string[] = [];
+        if (!availableUpper.has('GRO') && normSheet !== 'GRO') nextRemoved.push('GRO');
+        if (!availableUpper.has('OTHERS') && normSheet !== 'OTHERS') nextRemoved.push('OTHERS');
+        config.removedSheets = nextRemoved;
+      }
+
       // Remove existing items with this sheet tag to prevent duplicates upon re-adding
-      const existingRows = (cachedMasterdataPayload?.rows || []).slice(1);
+      const existingRows = isDifferentSpreadsheet ? [] : (cachedMasterdataPayload?.rows || []).slice(1);
       const filteredExisting = existingRows.filter(
         (r) => String(r[6] || '').trim().toUpperCase() !== normSheet
       );
 
       // Append new sheet rows
       const combined = [existingHeader, ...filteredExisting, ...newRows];
+      const sharedNow = new Date().toISOString();
+      lastLocalMasterdataMutationAt = Date.now();
 
       cachedMasterdataPayload = {
-        updatedAt: new Date().toISOString(),
+        updatedAt: sharedNow,
         rows: combined,
       };
 
-      await persistMasterdataCacheToDisk();
+      await persistMasterdataCacheToDisk(sharedNow);
 
       // Unmark from removedSheets if previously removed
       if (config.removedSheets) {
@@ -2541,7 +3457,22 @@ async function createServerInstance(externalDb?: D1Database) {
           config.additionalSheets.push(normSheet);
         }
       }
-      await saveMasterdataConfig(config);
+      await saveMasterdataConfig(config, sharedNow);
+
+      if (isNodeDevBridgeActive && req.headers['x-icd-sync-hop'] !== '1') {
+        try {
+          await fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/masterdata/sheets`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-icd-sync-hop': '1',
+              ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+            },
+            body: JSON.stringify({ sheetName: rawSheetName, spreadsheetUrl }),
+            signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(10000) : undefined,
+          });
+        } catch {}
+      }
 
       return res.json({
         success: true,
@@ -2559,6 +3490,9 @@ async function createServerInstance(externalDb?: D1Database) {
   // Admin: Remove a Masterdata sheet or all sheets (including GRO and OTHERS)
   app.delete('/api/admin/masterdata/sheets', async (req: ExpressRequest, res: ExpressResponse) => {
     try {
+      const authHeader = req.headers.authorization;
+      const bearerToken =
+        authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
       const { sheetName = '', removeAll = false } = req.body || {};
       const normSheet = String(sheetName || '').trim().toUpperCase();
 
@@ -2571,7 +3505,7 @@ async function createServerInstance(externalDb?: D1Database) {
         await loadMasterdataCacheFromDisk();
       }
 
-      const existingHeader = (cachedMasterdataPayload?.rows && cachedMasterdataPayload.rows[0]) || [
+      const existingHeader = [
         'Item Code',
         'Item Description',
         'Category',
@@ -2579,21 +3513,44 @@ async function createServerInstance(externalDb?: D1Database) {
         'SubSubCategory',
         'Barcode',
         'Sheet',
-        'UOM',
+        'Unit',
       ];
 
       if (!config.removedSheets) config.removedSheets = [];
+      const sharedNow = new Date().toISOString();
+      lastLocalMasterdataMutationAt = Date.now();
 
       if (removeAll || normSheet === '__ALL__') {
         cachedMasterdataPayload = {
-          updatedAt: new Date().toISOString(),
+          updatedAt: sharedNow,
           rows: [existingHeader],
         };
-        await persistMasterdataCacheToDisk();
+        await persistMasterdataCacheToDisk(sharedNow);
 
+        const allKnownToRemove = new Set([
+          ...config.removedSheets.map((s) => s.toUpperCase()),
+          'GRO',
+          'OTHERS',
+          ...(config.additionalSheets || []).map((s) => s.toUpperCase()),
+        ]);
         config.additionalSheets = [];
-        config.removedSheets = Array.from(new Set([...config.removedSheets, 'GRO', 'OTHERS']));
-        await saveMasterdataConfig(config);
+        config.removedSheets = Array.from(allKnownToRemove);
+        await saveMasterdataConfig(config, sharedNow);
+
+        if (isNodeDevBridgeActive && req.headers['x-icd-sync-hop'] !== '1') {
+          try {
+            await fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/masterdata/sheets`, {
+              method: 'DELETE',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-icd-sync-hop': '1',
+                ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+              },
+              body: JSON.stringify({ sheetName: '__ALL__', removeAll: true }),
+              signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(8000) : undefined,
+            });
+          } catch {}
+        }
 
         return res.json({
           success: true,
@@ -2609,17 +3566,32 @@ async function createServerInstance(externalDb?: D1Database) {
       );
 
       cachedMasterdataPayload = {
-        updatedAt: new Date().toISOString(),
+        updatedAt: sharedNow,
         rows: [existingHeader, ...filtered],
       };
 
-      await persistMasterdataCacheToDisk();
+      await persistMasterdataCacheToDisk(sharedNow);
 
       config.additionalSheets = config.additionalSheets.filter((s) => s.toUpperCase() !== normSheet);
       if (!config.removedSheets.includes(normSheet)) {
         config.removedSheets.push(normSheet);
       }
-      await saveMasterdataConfig(config);
+      await saveMasterdataConfig(config, sharedNow);
+
+      if (isNodeDevBridgeActive && req.headers['x-icd-sync-hop'] !== '1') {
+        try {
+          await fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/masterdata/sheets`, {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-icd-sync-hop': '1',
+              ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+            },
+            body: JSON.stringify({ sheetName: normSheet, removeAll: false }),
+            signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(8000) : undefined,
+          });
+        } catch {}
+      }
 
       return res.json({
         success: true,
@@ -2643,18 +3615,42 @@ async function createServerInstance(externalDb?: D1Database) {
 
       const config = await ensureMasterdataConfigLoaded();
       const { sheetName, spreadsheetUrl } = req.body || {};
-      if (spreadsheetUrl && typeof spreadsheetUrl === 'string') {
-        const match = spreadsheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-        if (match && match[1]) {
-          const isDifferentSpreadsheet = config.spreadsheetId !== match[1];
-          config.spreadsheetId = match[1];
-          config.spreadsheetUrl = spreadsheetUrl.trim();
+      lastLocalMasterdataMutationAt = Date.now();
+      const header = [
+        'Item Code',
+        'Item Description',
+        'Category',
+        'SubCategory',
+        'SubSubCategory',
+        'Barcode',
+        'Sheet',
+        'Unit',
+      ];
+      let isDifferentSpreadsheet = false;
+
+      if (spreadsheetUrl && typeof spreadsheetUrl === 'string' && spreadsheetUrl.trim()) {
+        const cleanUrl = spreadsheetUrl.trim();
+        const match = cleanUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+        const extractedId =
+          (match && match[1]) || (/^[a-zA-Z0-9_-]{25,60}$/.test(cleanUrl) ? cleanUrl : '');
+        if (extractedId) {
+          isDifferentSpreadsheet = config.spreadsheetId !== extractedId;
+          config.spreadsheetId = extractedId;
+          config.spreadsheetUrl = cleanUrl.startsWith('http')
+            ? cleanUrl
+            : `https://docs.google.com/spreadsheets/d/${extractedId}/edit`;
           if (isDifferentSpreadsheet) {
+            config.additionalSheets = [];
             config.removedSheets = [];
+            cachedMasterdataPayload = {
+              updatedAt: new Date().toISOString(),
+              rows: [header],
+            };
           }
           await saveMasterdataConfig(config);
         }
       }
+
       if (sheetName) {
         const normSheet = String(sheetName).trim().toUpperCase();
         const values = await fetchSheetValuesWithFallback(config.spreadsheetId, normSheet, token || undefined);
@@ -2664,28 +3660,37 @@ async function createServerInstance(externalDb?: D1Database) {
             if (!cachedMasterdataPayload || !Array.isArray(cachedMasterdataPayload.rows)) {
               await loadMasterdataCacheFromDisk();
             }
-            const header = cachedMasterdataPayload?.rows[0] || [
-              'Item Code',
-              'Item Description',
-              'Category',
-              'SubCategory',
-              'SubSubCategory',
-              'Barcode',
-              'Sheet',
-              'UOM',
-            ];
-            const filtered = (cachedMasterdataPayload?.rows || []).slice(1).filter(
-              (r) => String(r[6] || '').trim().toUpperCase() !== normSheet
-            );
+            const filtered = isDifferentSpreadsheet
+              ? []
+              : (cachedMasterdataPayload?.rows || []).slice(1).filter(
+                  (r) => String(r[6] || '').trim().toUpperCase() !== normSheet
+                );
+            const sharedNow = new Date().toISOString();
             cachedMasterdataPayload = {
-              updatedAt: new Date().toISOString(),
+              updatedAt: sharedNow,
               rows: [header, ...filtered, ...newRows],
             };
-            await persistMasterdataCacheToDisk();
+            await persistMasterdataCacheToDisk(sharedNow);
+            await saveMasterdataConfig(config, sharedNow);
           }
         }
       } else {
         await refreshMasterdataFromGoogle(token || undefined);
+      }
+
+      if (isNodeDevBridgeActive && req.headers['x-icd-sync-hop'] !== '1') {
+        try {
+          await fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/admin/masterdata/sheets/sync`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-icd-sync-hop': '1',
+              ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+            },
+            body: JSON.stringify({ sheetName, spreadsheetUrl }),
+            signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(12000) : undefined,
+          });
+        } catch {}
       }
 
       return res.json({
@@ -5268,6 +6273,21 @@ async function createServerInstance(externalDb?: D1Database) {
         };
         applyCustomLinksToHubCache(hubAssetsCache);
         await saveHubAssetsCacheToDisk(hubAssetsCache);
+
+        const isSyncHop = req.headers['x-icd-sync-hop'] === '1';
+        if (isNodeDevBridgeActive && !isSyncHop) {
+          fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/hub/sync`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-icd-sync-hop': '1',
+            },
+            body: JSON.stringify({
+              customLinks: hubAssetsCache.customLinks,
+              accessToken: tokenToUse || undefined,
+            }),
+          }).catch(() => {});
+        }
       }
 
       // Also allow client to push updated template specs directly into cache (ignoring monitoring/corrupted tabs)
@@ -5343,7 +6363,8 @@ async function createServerInstance(externalDb?: D1Database) {
     checkFile(path.resolve(__dirname, 'index.html'));
     checkFile(path.resolve(__dirname, 'public', 'sw.js'));
 
-    cachedCodeMtime = maxMtime || SERVER_BOOT_TIMESTAMP;
+    // On Cloudflare Workers (externalDb present), filesystem mtimes are 0 — return 0 instead of per-isolate SERVER_BOOT_TIMESTAMP
+    cachedCodeMtime = maxMtime || (externalDb ? 0 : SERVER_BOOT_TIMESTAMP);
     return cachedCodeMtime;
   }
 
@@ -5386,14 +6407,91 @@ async function createServerInstance(externalDb?: D1Database) {
     } catch {}
   }
 
-  // Lightweight endpoint to check code version and data updates in real time
+  // Lightweight endpoint to check code version and data updates in real time (DB-backed across all Cloudflare Worker isolates & Node)
   app.get('/api/app-version', async (_req: ExpressRequest, res: ExpressResponse) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    if (isNodeDevBridgeActive) {
+      void syncMasterdataFromCloudIfNeeded();
+    }
+
     const codeModifiedAt = getLatestCodeMtime();
-    const hubUpdatedAt = hubAssetsCache?.updatedAt || '';
-    const customLinksUpdatedAt = hubAssetsCache?.customLinks?.updatedAt || '';
-    const masterdataUpdatedAt = cachedMasterdataPayload?.updatedAt || '';
-    const dataUpdatedAt = `${hubUpdatedAt}_${customLinksUpdatedAt}_${masterdataUpdatedAt}_${lastAdminDataModifiedAt}`;
+    let dbHubUpdatedAt = hubAssetsCache?.updatedAt || '';
+    let dbCustomLinksUpdatedAt = hubAssetsCache?.customLinks?.updatedAt || '';
+    let dbConfigUpdatedAt = cachedMasterdataConfig?.updatedAt || '';
+    let dbMetaUpdatedAt = cachedMasterdataPayload?.updatedAt || '';
+    let dbSpreadsheetId = cachedMasterdataConfig?.spreadsheetId || '';
+    let dbConfiguredSheetsSig = cachedMasterdataConfig
+      ? getActiveConfiguredMasterdataSheets(cachedMasterdataConfig).join(',')
+      : '';
+    let dbRolesUpdatedAt = '';
+    let dbDirUpdatedAt = '';
+
+    try {
+      const rowsRes = await db
+        .prepare(
+          'SELECT user_key, state_json, updated_at FROM user_workspace_state WHERE user_key IN (?1, ?2, ?3, ?4, ?5)'
+        )
+        .bind(
+          GLOBAL_MASTERDATA_CONFIG_KEY,
+          GLOBAL_MASTERDATA_META_KEY,
+          GLOBAL_HUB_ASSETS_CACHE_KEY,
+          GLOBAL_ADMIN_ROLES_KEY,
+          GLOBAL_ADMIN_DIR_BACKUP_KEY
+        )
+        .all<{ user_key: string; state_json: string; updated_at: string }>();
+
+      for (const r of rowsRes.results || []) {
+        if (r.user_key === GLOBAL_MASTERDATA_CONFIG_KEY && r.state_json) {
+          try {
+            const parsedCfg = JSON.parse(r.state_json) as MasterdataConfig;
+            cachedMasterdataConfig = {
+              ...getDefaultMasterdataConfig(),
+              ...parsedCfg,
+              additionalSheets: Array.isArray(parsedCfg.additionalSheets) ? parsedCfg.additionalSheets : [],
+              removedSheets: Array.isArray(parsedCfg.removedSheets) ? parsedCfg.removedSheets : [],
+            };
+            dbConfigUpdatedAt = String(parsedCfg.updatedAt || r.updated_at || '');
+            dbSpreadsheetId = String(cachedMasterdataConfig.spreadsheetId || '');
+            dbConfiguredSheetsSig = getActiveConfiguredMasterdataSheets(cachedMasterdataConfig).join(',');
+          } catch {}
+        } else if (r.user_key === GLOBAL_MASTERDATA_META_KEY && r.state_json) {
+          try {
+            const parsedMeta = JSON.parse(r.state_json);
+            dbMetaUpdatedAt = String(parsedMeta?.updatedAt || r.updated_at || '');
+          } catch {}
+        } else if (r.user_key === GLOBAL_HUB_ASSETS_CACHE_KEY && r.state_json) {
+          try {
+            const parsedHub = JSON.parse(r.state_json);
+            if (parsedHub?.updatedAt) dbHubUpdatedAt = String(parsedHub.updatedAt);
+            if (parsedHub?.customLinks?.updatedAt) {
+              dbCustomLinksUpdatedAt = String(parsedHub.customLinks.updatedAt);
+            }
+          } catch {}
+        } else if (r.user_key === GLOBAL_ADMIN_ROLES_KEY) {
+          dbRolesUpdatedAt = String(r.updated_at || '');
+        } else if (r.user_key === GLOBAL_ADMIN_DIR_BACKUP_KEY) {
+          dbDirUpdatedAt = String(r.updated_at || '');
+        }
+      }
+    } catch {}
+
+    const effectiveMasterdataUpdatedAt =
+      dbConfigUpdatedAt && dbMetaUpdatedAt
+        ? dbConfigUpdatedAt > dbMetaUpdatedAt
+          ? dbConfigUpdatedAt
+          : dbMetaUpdatedAt
+        : dbConfigUpdatedAt || dbMetaUpdatedAt || '';
+
+    const dataUpdatedAt = [
+      dbHubUpdatedAt,
+      dbCustomLinksUpdatedAt,
+      effectiveMasterdataUpdatedAt,
+      dbSpreadsheetId,
+      dbConfiguredSheetsSig,
+      dbRolesUpdatedAt,
+      dbDirUpdatedAt,
+    ].join('|');
+
     const version = `${codeModifiedAt}_${dataUpdatedAt}`;
     const notifications = await getStoredUpdateNotifications();
 
@@ -5401,6 +6499,8 @@ async function createServerInstance(externalDb?: D1Database) {
       version,
       codeModifiedAt,
       dataUpdatedAt,
+      masterdataUpdatedAt: effectiveMasterdataUpdatedAt,
+      masterdataSheets: dbConfiguredSheetsSig ? dbConfiguredSheetsSig.split(',') : [],
       notifications,
       latestNotification: notifications[0] || null,
       serverTime: Date.now(),
@@ -5459,12 +6559,38 @@ async function createServerInstance(externalDb?: D1Database) {
       void syncHubAssetsFromGoogleDrive();
       await loadMasterdataCacheFromDisk();
 
+      // Sync Admin Directory, Roles, Masterdata, and Custom Drive Links with Cloudflare Worker & Google Drive on boot
+      try {
+        await syncAdminDirectoryWithCloud({ forceDriveCheck: true });
+        await syncAdminRolesWithCloud();
+        await syncMasterdataFromCloudIfNeeded(true);
+        if (isNodeDevBridgeActive) {
+          if (
+            hubAssetsCache?.customLinks &&
+            (hubAssetsCache.customLinks.formsLocationLink ||
+              hubAssetsCache.customLinks.inventoryTemplateLink ||
+              hubAssetsCache.customLinks.overallCountTemplateLink)
+          ) {
+            fetch(`${CLOUDFLARE_WORKER_ORIGIN}/api/hub/sync`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-icd-sync-hop': '1',
+              },
+              body: JSON.stringify({ customLinks: hubAssetsCache.customLinks }),
+            }).catch(() => {});
+          }
+        }
+      } catch {}
+
       // Proactively refresh Masterdata from Google Sheets on boot so server always has fresh data
       void refreshMasterdataFromGoogle();
 
-      // Periodically sync Masterdata from Google Sheets every 3 minutes so additions in Google Sheets are picked up automatically
+      // Periodically sync Masterdata from Google Sheets & Cloudflare Worker so additions/removals are picked up automatically
       setInterval(() => {
+        void syncMasterdataFromCloudIfNeeded();
         void refreshMasterdataFromGoogle();
+        void syncAdminDirectoryWithCloud();
       }, 3 * 60 * 1000);
     }, 1000);
   };

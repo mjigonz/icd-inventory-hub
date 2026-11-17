@@ -41,10 +41,8 @@ import {
   TelegramDoodleBackground,
   BackgroundIconTheme,
   BACKGROUND_ICON_THEMES,
-  CharacterDensity,
-  getAutoSeasonalTheme,
 } from './components/TelegramDoodleBackground';
-import { DecorationProvider, MotionPreference } from './components/PanelDecoration';
+import { DecorationProvider } from './components/PanelDecoration';
 import { setActiveAuditUserEmail, RecentCountsheetSession } from './services/auditReportService';
 import { SignInView } from './views/SignInView';
 import { BranchView } from './views/BranchView';
@@ -83,16 +81,19 @@ export default function App() {
 function AppContent() {
   const { t } = useLanguage();
   const isOnline = useOnlineStatus();
-  const { theme, appearanceMode, setAppearanceMode, toggleTheme } = useTheme();
+  const {
+    theme,
+    appearanceMode,
+    setAppearanceMode,
+    toggleTheme,
+    themeAnimationEnabled,
+    setThemeAnimationEnabled,
+  } = useTheme();
   const [backgroundTheme, setBackgroundTheme] = useState<BackgroundIconTheme>(() => {
     try {
       const savedTheme = localStorage.getItem('countsheet_bg_icon_theme') as BackgroundIconTheme | null;
       if (savedTheme && BACKGROUND_ICON_THEMES.some((t) => t.id === savedTheme)) {
         return savedTheme;
-      }
-      // Migrate legacy boolean toggle if present
-      if (localStorage.getItem('countsheet_bg_icons_enabled') === 'false') {
-        return 'minimal_monochrome';
       }
     } catch {
       // ignore storage errors
@@ -107,44 +108,6 @@ function AppContent() {
     } catch {}
     return true;
   });
-
-  const [characterDensity, setCharacterDensity] = useState<CharacterDensity>(() => {
-    try {
-      const saved = localStorage.getItem('countsheet_character_density') as CharacterDensity | null;
-      if (saved === 'off' || saved === 'minimal' || saved === 'balanced' || saved === 'playful') {
-        return saved;
-      }
-    } catch {}
-    return 'balanced';
-  });
-
-  const [characterAnimation, setCharacterAnimation] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('countsheet_char_anim') === 'true';
-    } catch {}
-    return false;
-  });
-
-  const [autoSeasonalTheme, setAutoSeasonalTheme] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('countsheet_auto_seasonal_theme') === 'true';
-    } catch {}
-    return false;
-  });
-
-  const [motionPreference, setMotionPreference] = useState<MotionPreference>(() => {
-    try {
-      const saved = localStorage.getItem('countsheet_motion_pref');
-      if (saved === 'off' || saved === 'subtle' || saved === 'smooth') {
-        return saved;
-      }
-    } catch {}
-    return 'smooth';
-  });
-
-  const effectiveBackgroundTheme: BackgroundIconTheme = autoSeasonalTheme
-    ? getAutoSeasonalTheme()
-    : backgroundTheme;
 
   const handleSelectBackgroundTheme = (nextTheme: BackgroundIconTheme) => {
     setBackgroundTheme(nextTheme);
@@ -162,78 +125,25 @@ function AppContent() {
     } catch {}
   };
 
-  const handleSetCharacterDensity = (density: CharacterDensity) => {
-    setCharacterDensity(density);
-    try {
-      localStorage.setItem('countsheet_character_density', density);
-    } catch {}
-  };
-
-  const handleSetCharacterAnimation = (enabled: boolean) => {
-    setCharacterAnimation(enabled);
-    try {
-      localStorage.setItem('countsheet_char_anim', String(enabled));
-    } catch {}
-  };
-
-  const handleSetAutoSeasonalTheme = (enabled: boolean) => {
-    setAutoSeasonalTheme(enabled);
-    try {
-      localStorage.setItem('countsheet_auto_seasonal_theme', String(enabled));
-    } catch {}
-  };
-
-  const handleSetMotionPreference = (pref: MotionPreference) => {
-    setMotionPreference(pref);
-    try {
-      localStorage.setItem('countsheet_motion_pref', pref);
-    } catch {}
-  };
-
   useEffect(() => {
     try {
-      document.documentElement.setAttribute('data-window-theme', effectiveBackgroundTheme);
-      document.body.setAttribute('data-window-theme', effectiveBackgroundTheme);
+      document.documentElement.setAttribute('data-window-theme', backgroundTheme);
+      document.body.setAttribute('data-window-theme', backgroundTheme);
     } catch {
       // ignore DOM errors
     }
-  }, [effectiveBackgroundTheme]);
-
-  useEffect(() => {
-    try {
-      document.documentElement.setAttribute('data-char-anim', characterAnimation ? 'on' : 'off');
-    } catch {}
-  }, [characterAnimation]);
-
-  useEffect(() => {
-    try {
-      document.documentElement.setAttribute('data-motion', motionPreference);
-    } catch {}
-  }, [motionPreference]);
+  }, [backgroundTheme]);
 
   const decorationContextValue = React.useMemo(
     () => ({
-      activeTheme: effectiveBackgroundTheme,
+      activeTheme: backgroundTheme,
       selectedTheme: backgroundTheme,
       seasonalDecorations,
-      characterDensity,
-      characterAnimation,
-      autoSeasonalTheme,
-      motionPreference,
       onSetSeasonalDecorations: handleSetSeasonalDecorations,
-      onSetCharacterDensity: handleSetCharacterDensity,
-      onSetCharacterAnimation: handleSetCharacterAnimation,
-      onSetAutoSeasonalTheme: handleSetAutoSeasonalTheme,
-      onSetMotionPreference: handleSetMotionPreference,
     }),
     [
-      effectiveBackgroundTheme,
       backgroundTheme,
       seasonalDecorations,
-      characterDensity,
-      characterAnimation,
-      autoSeasonalTheme,
-      motionPreference,
     ]
   );
 
@@ -333,21 +243,37 @@ function AppContent() {
     }
   }, [user?.email, effectiveAccessToken, isGoogleConnected, isAdminMode, currentTab]);
 
+  const selectedBranchRef = useRef<SelectedBranch | null>(null);
+
   useEffect(() => {
     void fetchAdminRoleDefinitionsFromServer().catch(() => {});
-    void fetchAdminDirectoryFromServer().catch(() => {});
+    void fetchAdminDirectoryFromServer(effectiveAccessToken).catch(() => {});
+
+    const syncMasterdataLive = () => {
+      void syncMasterdataFromServerIfUpdated(selectedBranchRef.current)
+        .then((res) => {
+          if (res.updated && res.updatedBranch) {
+            setSelectedBranch((prev) =>
+              prev && prev.id === res.updatedBranch!.id ? res.updatedBranch! : prev
+            );
+          }
+        })
+        .catch(() => {});
+    };
 
     const handleRealtimeDataSync = () => {
       void fetchAdminRoleDefinitionsFromServer().catch(() => {});
-      void fetchAdminDirectoryFromServer().catch(() => {});
-      void syncMasterdataFromServerIfUpdated(null).catch(() => {});
+      void fetchAdminDirectoryFromServer(effectiveAccessToken).catch(() => {});
+      syncMasterdataLive();
     };
 
     window.addEventListener(REALTIME_DATA_SYNC_EVENT, handleRealtimeDataSync);
+    window.addEventListener('online', syncMasterdataLive);
     return () => {
       window.removeEventListener(REALTIME_DATA_SYNC_EVENT, handleRealtimeDataSync);
+      window.removeEventListener('online', syncMasterdataLive);
     };
-  }, []);
+  }, [effectiveAccessToken]);
 
   useEffect(() => {
     const syncAdminFromDirOrRoles = (updatedDir?: any[]) => {
@@ -444,6 +370,7 @@ function AppContent() {
   // Selected Branch & Role
   const [selectedBranch, setSelectedBranch] = useState<SelectedBranch | null>(null);
   const [userRole, setUserRole] = useState<'owner' | 'encoder' | 'unassigned'>('unassigned');
+  selectedBranchRef.current = selectedBranch;
 
   // Live Presence Tracking: broadcast presence for both Google Accounts and Guest Mode users
   usePresenceHeartbeat({
@@ -707,7 +634,7 @@ function AppContent() {
     const onMasterdataUpdated = (e: Event) => {
       const customEvent = e as CustomEvent<{ count?: number }>;
       const newCount = customEvent.detail?.count;
-      if (typeof newCount === 'number' && newCount > 0) {
+      if (typeof newCount === 'number' && newCount >= 0) {
         setSelectedBranch((prev) =>
           prev && prev.masterdataCount !== newCount
             ? { ...prev, masterdataCount: newCount }
@@ -849,13 +776,12 @@ function AppContent() {
   // Loading state
   if (isAuthInitializing) {
     return (
-      <div className={`min-h-screen relative flex flex-col items-center justify-center p-6 select-none transition-colors duration-350 ease-in-out ${
-        theme === 'dark' ? 'bg-[#121214] text-white dark' : 'bg-slate-50 text-slate-900'
+      <div className={`min-h-screen relative flex flex-col items-center justify-center p-6 select-none bg-[var(--theme-bg)] text-[var(--theme-text)] transition-colors duration-[var(--duration-theme)] ease-in-out ${
+        theme === 'dark' ? 'dark' : ''
       }`}>
         <TelegramDoodleBackground
-          themeId={effectiveBackgroundTheme}
+          themeId={backgroundTheme}
           seasonalDecorations={seasonalDecorations}
-          characterDensity={characterDensity}
         />
         <div className="relative z-10 flex flex-col items-center">
           <div className="relative mb-5">
@@ -898,7 +824,7 @@ function AppContent() {
           onCancelSignIn={() => setIsSigningIn(false)}
           theme={theme}
           onToggleTheme={toggleTheme}
-          backgroundTheme={effectiveBackgroundTheme}
+          backgroundTheme={backgroundTheme}
         />
       </DecorationProvider>
     );
@@ -908,16 +834,15 @@ function AppContent() {
     <DecorationProvider value={decorationContextValue}>
       <div
         id="app-root-container"
-        data-window-theme={effectiveBackgroundTheme}
-        className={`min-h-screen min-h-[100dvh] relative flex flex-col antialiased transition-colors duration-350 ease-in-out ${
-          theme === 'dark' ? 'bg-slate-950 text-zinc-100 dark' : 'bg-slate-50 text-slate-900'
+        data-window-theme={backgroundTheme}
+        className={`min-h-screen min-h-[100dvh] relative flex flex-col antialiased bg-[var(--theme-bg)] text-[var(--theme-text)] transition-colors duration-[var(--duration-theme)] ease-in-out ${
+          theme === 'dark' ? 'dark' : ''
         }`}
       >
         {/* Background icons pattern */}
         <TelegramDoodleBackground
-          themeId={effectiveBackgroundTheme}
+          themeId={backgroundTheme}
           seasonalDecorations={seasonalDecorations}
-          characterDensity={characterDensity}
         />
 
         {/* Top Header with Hamburger Menu and Desktop Navigation */}
@@ -948,11 +873,13 @@ function AppContent() {
           currentTab={currentTab}
           onSelectTab={setCurrentTab}
           countItemTotal={countItemTotal}
-          backgroundTheme={effectiveBackgroundTheme}
+          backgroundTheme={backgroundTheme}
           onSelectBackgroundTheme={handleSelectBackgroundTheme}
           isAdminMode={isAdminMode}
           isUserAdmin={isUserAdmin}
           onToggleAdminMode={handleToggleAdminMode}
+          themeAnimationEnabled={themeAnimationEnabled}
+          onSetThemeAnimationEnabled={setThemeAnimationEnabled}
         />
 
       {/* Random Inventory Countsheet Modal (IATD Driven with Item Description, Cat, SubCat, SubSubCat filters) */}

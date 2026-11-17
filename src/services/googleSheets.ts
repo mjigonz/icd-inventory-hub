@@ -1052,11 +1052,19 @@ export const FIXED_MASTERDATA_SHEET_NAMES = ['GRO', 'OTHERS'] as const;
 function parseMasterdataRows(rows: string[][], defaultSheetName?: string): InventoryItem[] {
   if (!rows || rows.length < 2) return [];
 
-  // Fast path for standard GRO & OTHERS Row 1 header: Item Code | Item Description | Category | Subcategory | SubSubCategory | Barcode
+  // Fast path for standard GRO & OTHERS Row 1 header:
+  // Direct sheet layout: Item Code | Item Description | Unit | Category | SubCategory | SubSubCategory | Barcode
+  // Server cache layout: Item Code | Item Description | Category | SubCategory | SubSubCategory | Barcode | Sheet | Unit
   const firstRow = rows[0] || [];
+  const col0Header = String(firstRow[0] || '').trim().toLowerCase();
+  const col1Header = String(firstRow[1] || '').trim().toLowerCase();
+  const col2Header = String(firstRow[2] || '').trim().toLowerCase();
+  const col6Header = String(firstRow[6] || '').trim().toLowerCase();
   const isStandardGroHeader =
-    String(firstRow[0] || '').toLowerCase().includes('code') &&
-    String(firstRow[1] || '').toLowerCase().includes('desc');
+    col0Header.includes('code') &&
+    col1Header.includes('desc');
+  const hasUnitAtCol2 = col2Header === 'unit' || col2Header === 'uom' || col2Header === 'unit/uom';
+  const hasSheetAtCol6 = col6Header === 'sheet' || col6Header === 'tab';
 
   if (isStandardGroHeader) {
     const len = rows.length;
@@ -1067,40 +1075,78 @@ function parseMasterdataRows(rows: string[][], defaultSheetName?: string): Inven
       if (!r || r.length === 0) continue;
       const itemCode = r[0] ? String(r[0]).trim() : '';
       const itemDescription = r[1] ? String(r[1]).trim() : '';
-      const barcode = r[5] ? String(r[5]).trim() : '';
-      if (!itemCode && !barcode && !itemDescription) continue;
-      if (itemCode.toLowerCase() === 'item code' && itemDescription.toLowerCase().includes('desc')) {
-        continue;
+
+      if (hasUnitAtCol2) {
+        const unit = (r[2] ? String(r[2]).trim() : '') || 'PCS';
+        const category = r[3] ? String(r[3]).trim() : '';
+        const subCategory = r[4] ? String(r[4]).trim() : '';
+        const subsubCategory = r[5] ? String(r[5]).trim() : '';
+        const barcode = r[6] ? String(r[6]).trim() : '';
+        if (!itemCode && !barcode && !itemDescription) continue;
+        if (itemCode.toLowerCase() === 'item code' && itemDescription.toLowerCase().includes('desc')) {
+          continue;
+        }
+        const rawCol7 = r[7] ? String(r[7]).trim().toUpperCase() : '';
+        const sheetTag =
+          rawCol7 ||
+          defaultSheetName?.trim().toUpperCase() ||
+          (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
+
+        fastItems[writeIdx++] = {
+          itemCode,
+          barcode,
+          itemDescription,
+          category,
+          subCategory,
+          subsubCategory,
+          cost: 0,
+          selling: 0,
+          unit,
+          begQty: 0,
+          in: 0,
+          out: 0,
+          balance: 0,
+          amount: 0,
+          gp: 0,
+          source: 'MASTERDATA',
+          masterdataSheet: sheetTag,
+        };
+      } else {
+        const barcode = r[5] ? String(r[5]).trim() : '';
+        if (!itemCode && !barcode && !itemDescription) continue;
+        if (itemCode.toLowerCase() === 'item code' && itemDescription.toLowerCase().includes('desc')) {
+          continue;
+        }
+
+        const rawCol6 = r[6] ? String(r[6]).trim() : '';
+        const isExplicitSheetCol =
+          hasSheetAtCol6 ? Boolean(rawCol6) : (rawCol6.toUpperCase() === 'GRO' || rawCol6.toUpperCase() === 'OTHERS');
+        const sheetTag =
+          (isExplicitSheetCol ? rawCol6.toUpperCase() : defaultSheetName?.trim().toUpperCase()) ||
+          (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
+        const unit =
+          (!isExplicitSheetCol && rawCol6 ? rawCol6 : (r[7] ? String(r[7]).trim() : '')) || 'PCS';
+
+        fastItems[writeIdx++] = {
+          itemCode,
+          barcode,
+          itemDescription,
+          category: r[2] ? String(r[2]).trim() : '',
+          subCategory: r[3] ? String(r[3]).trim() : '',
+          subsubCategory: r[4] ? String(r[4]).trim() : '',
+          cost: 0,
+          selling: 0,
+          unit,
+          begQty: 0,
+          in: 0,
+          out: 0,
+          balance: 0,
+          amount: 0,
+          gp: 0,
+          source: 'MASTERDATA',
+          masterdataSheet: sheetTag,
+        };
       }
-
-      const rawCol6 = r[6] ? String(r[6]).trim() : '';
-      const isExplicitSheetCol =
-        rawCol6.toUpperCase() === 'GRO' || rawCol6.toUpperCase() === 'OTHERS';
-      const sheetTag =
-        (isExplicitSheetCol ? rawCol6.toUpperCase() : defaultSheetName) ||
-        (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
-      const unit =
-        (!isExplicitSheetCol && rawCol6 ? rawCol6 : (r[7] ? String(r[7]).trim() : '')) || 'PCS';
-
-      fastItems[writeIdx++] = {
-        itemCode,
-        barcode,
-        itemDescription,
-        category: r[2] ? String(r[2]).trim() : '',
-        subCategory: r[3] ? String(r[3]).trim() : '',
-        subsubCategory: r[4] ? String(r[4]).trim() : '',
-        cost: 0,
-        selling: 0,
-        unit,
-        begQty: 0,
-        in: 0,
-        out: 0,
-        balance: 0,
-        amount: 0,
-        gp: 0,
-        source: 'MASTERDATA',
-        masterdataSheet: sheetTag,
-      };
     }
     fastItems.length = writeIdx;
     return fastItems;
@@ -1163,8 +1209,10 @@ function parseMasterdataRows(rows: string[][], defaultSheetName?: string): Inven
     }
 
     const rawCol6 = row[6] ? String(row[6]).trim() : '';
+    const isExplicitSheetCol =
+      hasSheetAtCol6 ? Boolean(rawCol6) : (rawCol6.toUpperCase() === 'GRO' || rawCol6.toUpperCase() === 'OTHERS');
     const sheetTag =
-      (rawCol6 ? rawCol6.toUpperCase() : defaultSheetName) ||
+      (isExplicitSheetCol ? rawCol6.toUpperCase() : defaultSheetName?.trim().toUpperCase()) ||
       (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
 
     items.push({
@@ -1192,7 +1240,7 @@ function parseMasterdataRows(rows: string[][], defaultSheetName?: string): Inven
 }
 
 // 4. Fetch and parse MASTERDATA from fast server cache or fixed spreadsheet ID (1tIoDEOmqf-WOGuBalLtSrcCv-lPuz2lqRUzG7O90VUE, tabs "GRO" and "OTHERS")
-// Row 1 Headers: Item Code | Item Description | Category | Subcategory | SubSubCategory | Barcode
+// Row 1 Headers: Item Code | Item Description | Unit | Category | SubCategory | SubSubCategory | Barcode
 export async function fetchMasterdataSheet(
   accessToken: string,
   branchSpreadsheetId?: string,
@@ -1203,19 +1251,44 @@ export async function fetchMasterdataSheet(
   }
 
   const quickToken = isGoogleOAuthAccessToken(accessToken) ? accessToken : getStoredOAuthToken();
+  let serverConfiguredSheets: string[] | null = null;
+  let serverSpreadsheetId: string | null = null;
 
   // 1. ULTRA-FAST PATH: Fetch from server's /api/masterdata cache (or force refresh from Google Sheets when forceRefresh/strict is true, including in Guest Mode)
   try {
     const shouldRefresh = Boolean(options?.forceRefresh || options?.strict);
     const endpoint = shouldRefresh
       ? `/api/masterdata?refresh=1&_ts=${Date.now()}`
-      : '/api/masterdata';
+      : `/api/masterdata?_ts=${Date.now()}`;
     const cacheRes = await fetch(endpoint, {
       headers: quickToken ? { Authorization: `Bearer ${quickToken}` } : undefined,
-      cache: shouldRefresh ? 'no-store' : 'default',
+      cache: 'no-store',
     });
     if (cacheRes.ok) {
       const cacheData: any = await cacheRes.json();
+      if (typeof cacheData?.spreadsheetId === 'string' && cacheData.spreadsheetId.trim()) {
+        const cleanSpreadsheetId = cacheData.spreadsheetId.trim();
+        serverSpreadsheetId = cleanSpreadsheetId;
+        try {
+          localStorage.setItem('countsheet_active_masterdata_spreadsheet_id_v1', cleanSpreadsheetId);
+        } catch {}
+      }
+      if (Array.isArray(cacheData?.configuredSheets)) {
+        const configuredList: string[] = cacheData.configuredSheets
+          .map((s: any) => String(s || '').trim().toUpperCase())
+          .filter(Boolean);
+        serverConfiguredSheets = configuredList;
+        try {
+          localStorage.setItem(
+            'countsheet_active_masterdata_sheets_v1',
+            JSON.stringify(configuredList)
+          );
+        } catch {}
+        // If Admin removed all Masterdata sheets, return empty immediately
+        if (configuredList.length === 0) {
+          return [];
+        }
+      }
       if (Array.isArray(cacheData?.rows) && cacheData.rows.length > 1) {
         const parsed = parseMasterdataRows(cacheData.rows);
         if (parsed.length > 0) {
@@ -1227,7 +1300,7 @@ export async function fetchMasterdataSheet(
     console.warn('Fast server masterdata cache check notice:', e);
   }
 
-  // 2. Fallback: Direct Google Sheets API fetch using full range GRO!A:Z and OTHERS!A:Z
+  // 2. Fallback: Direct Google Sheets API fetch using configured tabs (or GRO and OTHERS if unconfigured)
   const tokenToUse =
     quickToken ||
     (await resolveValidOAuthToken(accessToken, { allowPopup: false }));
@@ -1243,9 +1316,17 @@ export async function fetchMasterdataSheet(
     return [];
   }
 
+  const tabsToLoad =
+    serverConfiguredSheets && serverConfiguredSheets.length > 0
+      ? serverConfiguredSheets
+      : [...FIXED_MASTERDATA_SHEET_NAMES];
+
+  const primaryId = serverSpreadsheetId || FIXED_MASTERDATA_SPREADSHEET_ID;
   const candidateSpreadsheets = [
-    { id: FIXED_MASTERDATA_SPREADSHEET_ID, tabs: FIXED_MASTERDATA_SHEET_NAMES },
-    { id: FALLBACK_MASTERDATA_SPREADSHEET_ID, tabs: ['GRO', 'OTHERS'] as const },
+    { id: primaryId, tabs: tabsToLoad },
+    ...(primaryId === FIXED_MASTERDATA_SPREADSHEET_ID
+      ? [{ id: FALLBACK_MASTERDATA_SPREADSHEET_ID, tabs: tabsToLoad }]
+      : []),
   ];
 
   let lastApiError: any = null;
@@ -1306,29 +1387,31 @@ export interface MasterdataMutationResponse {
   item?: {
     itemCode: string;
     itemDescription: string;
+    unit?: string;
     category: string;
     subCategory: string;
     subsubCategory: string;
     barcode: string;
-    masterdataSheet: 'GRO' | 'OTHERS';
+    masterdataSheet: string;
   };
 }
 
-// Update an existing Masterdata item in GRO or OTHERS tab (and server cache)
+// Update an existing Masterdata item in any active Masterdata sheet (and server cache)
 export async function saveMasterdataItemAdmin(
   accessToken: string,
   payload: {
     originalItemCode?: string;
     originalBarcode?: string;
     originalDescription?: string;
-    originalSheet?: 'GRO' | 'OTHERS' | string;
+    originalSheet?: string;
     itemCode: string;
     itemDescription: string;
+    unit?: string;
     category: string;
     subCategory: string;
     subsubCategory: string;
     barcode: string;
-    targetSheet: 'GRO' | 'OTHERS';
+    targetSheet: string;
   }
 ): Promise<MasterdataMutationResponse> {
   const tokenToUse =
@@ -1353,17 +1436,18 @@ export async function saveMasterdataItemAdmin(
   return data as MasterdataMutationResponse;
 }
 
-// Append a new Masterdata item to GRO or OTHERS tab (and server cache)
+// Append a new Masterdata item to any active Masterdata sheet (and server cache)
 export async function addMasterdataItemAdmin(
   accessToken: string,
   payload: {
     itemCode: string;
     itemDescription: string;
+    unit?: string;
     category: string;
     subCategory: string;
     subsubCategory: string;
     barcode: string;
-    targetSheet: 'GRO' | 'OTHERS';
+    targetSheet: string;
   }
 ): Promise<MasterdataMutationResponse> {
   const tokenToUse =

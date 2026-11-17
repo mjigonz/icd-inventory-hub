@@ -217,6 +217,12 @@ const getSnapEncodingKey = (branchId: string, accountKey = getAccountScopeKey())
 
 function parseServerMasterdataRows(rows: string[][]): InventoryItem[] {
   if (!rows || rows.length < 2) return [];
+  const firstRow = rows[0] || [];
+  const col2Header = String(firstRow[2] || '').trim().toLowerCase();
+  const col6Header = String(firstRow[6] || '').trim().toLowerCase();
+  const hasUnitAtCol2 = col2Header === 'unit' || col2Header === 'uom' || col2Header === 'unit/uom';
+  const hasSheetAtCol6 = col6Header === 'sheet' || col6Header === 'tab';
+
   const len = rows.length;
   const items: InventoryItem[] = new Array(len - 1);
   let writeIdx = 0;
@@ -225,36 +231,77 @@ function parseServerMasterdataRows(rows: string[][]): InventoryItem[] {
     if (!r || r.length === 0) continue;
     const itemCode = r[0] ? String(r[0]).trim() : '';
     const itemDescription = r[1] ? String(r[1]).trim() : '';
-    const barcode = r[5] ? String(r[5]).trim() : '';
-    if (!itemCode && !barcode && !itemDescription) continue;
-    if (itemCode.toLowerCase() === 'item code' && itemDescription.toLowerCase().includes('desc')) {
-      continue;
-    }
-    const rawCol6 = r[6] ? String(r[6]).trim() : '';
-    const sheetTag =
-      rawCol6.toUpperCase() ||
-      (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
-    const unit = (r[7] ? String(r[7]).trim() : '') || (rawCol6 && rawCol6.length <= 4 && !rawCol6.includes('GRO') && !rawCol6.includes('OTHER') ? rawCol6 : 'PCS');
 
-    items[writeIdx++] = {
-      itemCode,
-      barcode,
-      itemDescription,
-      category: r[2] ? String(r[2]).trim() : '',
-      subCategory: r[3] ? String(r[3]).trim() : '',
-      subsubCategory: r[4] ? String(r[4]).trim() : '',
-      cost: 0,
-      selling: 0,
-      unit,
-      begQty: 0,
-      in: 0,
-      out: 0,
-      balance: 0,
-      amount: 0,
-      gp: 0,
-      source: 'MASTERDATA',
-      masterdataSheet: sheetTag,
-    };
+    if (hasUnitAtCol2) {
+      const unit = (r[2] ? String(r[2]).trim() : '') || 'PCS';
+      const category = r[3] ? String(r[3]).trim() : '';
+      const subCategory = r[4] ? String(r[4]).trim() : '';
+      const subsubCategory = r[5] ? String(r[5]).trim() : '';
+      const barcode = r[6] ? String(r[6]).trim() : '';
+      if (!itemCode && !barcode && !itemDescription) continue;
+      if (itemCode.toLowerCase() === 'item code' && itemDescription.toLowerCase().includes('desc')) {
+        continue;
+      }
+      const rawCol7 = r[7] ? String(r[7]).trim().toUpperCase() : '';
+      const sheetTag =
+        rawCol7 ||
+        (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
+
+      items[writeIdx++] = {
+        itemCode,
+        barcode,
+        itemDescription,
+        category,
+        subCategory,
+        subsubCategory,
+        cost: 0,
+        selling: 0,
+        unit,
+        begQty: 0,
+        in: 0,
+        out: 0,
+        balance: 0,
+        amount: 0,
+        gp: 0,
+        source: 'MASTERDATA',
+        masterdataSheet: sheetTag,
+      };
+    } else {
+      const barcode = r[5] ? String(r[5]).trim() : '';
+      if (!itemCode && !barcode && !itemDescription) continue;
+      if (itemCode.toLowerCase() === 'item code' && itemDescription.toLowerCase().includes('desc')) {
+        continue;
+      }
+      const rawCol6 = r[6] ? String(r[6]).trim() : '';
+      const isExplicitSheetCol =
+        hasSheetAtCol6 ? Boolean(rawCol6) : (rawCol6.toUpperCase() === 'GRO' || rawCol6.toUpperCase() === 'OTHERS');
+      const sheetTag =
+        (isExplicitSheetCol ? rawCol6.toUpperCase() : '') ||
+        (itemCode.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS');
+      const unit =
+        (r[7] ? String(r[7]).trim() : '') ||
+        (!isExplicitSheetCol && rawCol6 && rawCol6.length <= 6 ? rawCol6 : 'PCS');
+
+      items[writeIdx++] = {
+        itemCode,
+        barcode,
+        itemDescription,
+        category: r[2] ? String(r[2]).trim() : '',
+        subCategory: r[3] ? String(r[3]).trim() : '',
+        subsubCategory: r[4] ? String(r[4]).trim() : '',
+        cost: 0,
+        selling: 0,
+        unit,
+        begQty: 0,
+        in: 0,
+        out: 0,
+        balance: 0,
+        amount: 0,
+        gp: 0,
+        source: 'MASTERDATA',
+        masterdataSheet: sheetTag,
+      };
+    }
   }
   items.length = writeIdx;
   return items;
@@ -272,18 +319,15 @@ async function saveBranchInventoryLocalOnly(
   if (encodingItems.length > 0 || !memoryEncodingByBranch.has(memKey)) {
     memoryEncodingByBranch.set(memKey, encodingItems);
   }
-  if (
-    masterdataItems.length > 0 &&
-    (!memoryMasterdataItems || masterdataItems.length >= memoryMasterdataItems.length)
-  ) {
+  if (masterdataItems.length > 0) {
     memoryMasterdataItems = masterdataItems;
   }
 
   const effectiveEnc = memoryEncodingByBranch.get(memKey) || encodingItems;
   const effectiveMast =
-    memoryMasterdataItems && memoryMasterdataItems.length >= masterdataItems.length
-      ? memoryMasterdataItems
-      : masterdataItems;
+    masterdataItems.length > 0
+      ? masterdataItems
+      : memoryMasterdataItems || masterdataItems;
 
   const syncedBranch: SelectedBranch = {
     ...branch,
@@ -391,7 +435,7 @@ export async function getBranchInventoryBySource(
   const effectiveBranchId = branchId || GUEST_LOCAL_BRANCH_ID;
 
   if (source === 'MASTERDATA') {
-    if (memoryMasterdataItems && memoryMasterdataItems.length > 0) {
+    if (memoryMasterdataItems !== null) {
       void syncMasterdataFromServerIfUpdated(null);
       return memoryMasterdataItems;
     }
@@ -403,10 +447,18 @@ export async function getBranchInventoryBySource(
         req.onsuccess = () => resolve(req.result || null);
         req.onerror = () => resolve(null);
       });
-      if (snap && Array.isArray(snap.items) && snap.items.length > 0) {
+      const isExplicitlyEmptySnap =
+        Array.isArray(snap?.configuredSheets) && snap.configuredSheets.length === 0;
+      if (snap && Array.isArray(snap.items) && (snap.items.length > 0 || isExplicitlyEmptySnap)) {
         memoryMasterdataItems = snap.items;
         if (snap.updatedAt && !lastKnownServerMasterdataUpdatedAt) {
           lastKnownServerMasterdataUpdatedAt = snap.updatedAt;
+        }
+        if (snap.spreadsheetId && !lastKnownServerSpreadsheetId) {
+          lastKnownServerSpreadsheetId = snap.spreadsheetId;
+        }
+        if (Array.isArray(snap.configuredSheets) && !lastKnownServerConfiguredSheets) {
+          lastKnownServerConfiguredSheets = snap.configuredSheets;
         }
         void syncMasterdataFromServerIfUpdated(null);
         return snap.items;
@@ -417,31 +469,67 @@ export async function getBranchInventoryBySource(
         inFlightMasterdataFetch = (async () => {
           try {
             const storedToken = getStoredOAuthToken();
-            const res = await fetch('/api/masterdata', {
+            const res = await fetch(`/api/masterdata?_ts=${Date.now()}`, {
               headers:
                 storedToken && isGoogleOAuthAccessToken(storedToken)
                   ? { Authorization: `Bearer ${storedToken}` }
                   : undefined,
+              cache: 'no-store',
             });
             if (res.ok) {
               const data: any = await res.json();
-              if (Array.isArray(data?.rows) && data.rows.length > 1) {
-                const parsed = parseServerMasterdataRows(data.rows);
-                if (parsed.length > 0) {
-                  memoryMasterdataItems = parsed;
-                  const writeDb = await openDB();
-                  await new Promise<void>((resolve) => {
-                    const tx = writeDb.transaction('inventory', 'readwrite');
-                    tx.objectStore('inventory').put({
-                      id: SNAP_MASTERDATA_KEY,
-                      items: parsed,
-                      updatedAt: new Date().toISOString(),
-                    });
-                    tx.oncomplete = () => resolve();
-                    tx.onerror = () => resolve();
+              const configuredList: string[] | null = Array.isArray(data?.configuredSheets)
+                ? data.configuredSheets.map((s: any) => String(s || '').trim().toUpperCase()).filter(Boolean)
+                : null;
+              const serverSpreadsheetId =
+                typeof data?.spreadsheetId === 'string' ? data.spreadsheetId.trim() : '';
+              const serverUpdatedAt =
+                typeof data?.updatedAt === 'string' && data.updatedAt.trim()
+                  ? data.updatedAt.trim()
+                  : new Date().toISOString();
+
+              if (configuredList !== null) {
+                lastKnownServerConfiguredSheets = configuredList;
+                try {
+                  localStorage.setItem(
+                    'countsheet_active_masterdata_sheets_v1',
+                    JSON.stringify(configuredList)
+                  );
+                } catch {}
+              }
+              if (serverSpreadsheetId) {
+                lastKnownServerSpreadsheetId = serverSpreadsheetId;
+                try {
+                  localStorage.setItem(
+                    'countsheet_active_masterdata_spreadsheet_id_v1',
+                    serverSpreadsheetId
+                  );
+                } catch {}
+              }
+
+              const parsed =
+                Array.isArray(data?.rows) && data.rows.length > 1
+                  ? parseServerMasterdataRows(data.rows)
+                  : [];
+              const isExplicitlyEmpty = configuredList !== null && configuredList.length === 0;
+
+              if (parsed.length > 0 || isExplicitlyEmpty) {
+                memoryMasterdataItems = parsed;
+                lastKnownServerMasterdataUpdatedAt = serverUpdatedAt;
+                const writeDb = await openDB();
+                await new Promise<void>((resolve) => {
+                  const tx = writeDb.transaction('inventory', 'readwrite');
+                  tx.objectStore('inventory').put({
+                    id: SNAP_MASTERDATA_KEY,
+                    items: parsed,
+                    updatedAt: serverUpdatedAt,
+                    spreadsheetId: serverSpreadsheetId || undefined,
+                    configuredSheets: configuredList || undefined,
                   });
-                  return parsed;
-                }
+                  tx.oncomplete = () => resolve();
+                  tx.onerror = () => resolve();
+                });
+                return parsed;
               }
             }
           } catch {}
@@ -452,7 +540,7 @@ export async function getBranchInventoryBySource(
       }
 
       const hydrated = await inFlightMasterdataFetch;
-      if (hydrated && hydrated.length > 0) {
+      if (hydrated && (hydrated.length > 0 || memoryMasterdataItems !== null)) {
         return hydrated;
       }
     } catch {}
@@ -534,17 +622,41 @@ export async function countBranchInventoryBySource(
 }
 
 let lastKnownServerMasterdataUpdatedAt: string | null = null;
+let lastKnownServerSpreadsheetId: string | null = null;
+let lastKnownServerConfiguredSheets: string[] | null = null;
+let inFlightMasterdataSyncPromise: Promise<{
+  updated: boolean;
+  count: number;
+  updatedBranch?: SelectedBranch | null;
+}> | null = null;
 
 // Save/Resync ONLY the MASTERDATA items (global & non-movable) while updating branch metadata if a branch is provided (works in Guest Mode when branch is null too)
 export async function saveBranchMasterdata(
   branch: SelectedBranch | null,
   masterdataItems: InventoryItem[],
-  serverUpdatedAt?: string | null
+  serverUpdatedAt?: string | null,
+  serverSpreadsheetId?: string | null,
+  serverConfiguredSheets?: string[] | null
 ): Promise<SelectedBranch | null> {
   const accountKey = getAccountScopeKey();
   memoryMasterdataItems = masterdataItems;
   if (serverUpdatedAt) {
     lastKnownServerMasterdataUpdatedAt = serverUpdatedAt;
+  }
+  if (serverSpreadsheetId) {
+    lastKnownServerSpreadsheetId = serverSpreadsheetId;
+    try {
+      localStorage.setItem('countsheet_active_masterdata_spreadsheet_id_v1', serverSpreadsheetId);
+    } catch {}
+  }
+  if (Array.isArray(serverConfiguredSheets)) {
+    lastKnownServerConfiguredSheets = serverConfiguredSheets;
+    try {
+      localStorage.setItem(
+        'countsheet_active_masterdata_sheets_v1',
+        JSON.stringify(serverConfiguredSheets)
+      );
+    } catch {}
   }
   const nowIso = new Date().toISOString();
 
@@ -592,7 +704,12 @@ export async function saveBranchMasterdata(
     tx.objectStore('inventory').put({
       id: SNAP_MASTERDATA_KEY,
       items: masterdataItems,
-      updatedAt: serverUpdatedAt || nowIso,
+      updatedAt: serverUpdatedAt || lastKnownServerMasterdataUpdatedAt || nowIso,
+      spreadsheetId: serverSpreadsheetId || lastKnownServerSpreadsheetId || undefined,
+      configuredSheets:
+        (Array.isArray(serverConfiguredSheets)
+          ? serverConfiguredSheets
+          : lastKnownServerConfiguredSheets) || undefined,
     });
     tx.oncomplete = () => {
       notifySavedBranchesListeners();
@@ -613,100 +730,220 @@ export async function saveBranchMasterdata(
   return updatedBranch;
 }
 
-// Check if the server's global Masterdata snapshot has a newer timestamp or item count and sync if needed
+// Check if the server's global Masterdata snapshot has a newer timestamp, item count, spreadsheet ID, or configured sheets and sync if needed
 export async function syncMasterdataFromServerIfUpdated(
   branch: SelectedBranch | null
 ): Promise<{ updated: boolean; count: number; updatedBranch?: SelectedBranch | null }> {
-  try {
-    const metaRes = await fetch(`/api/masterdata?meta=1&_ts=${Date.now()}`, {
-      cache: 'no-store',
-    });
-    if (!metaRes.ok) {
-      return { updated: false, count: memoryMasterdataItems?.length || 0 };
-    }
-    const meta: { updatedAt?: string | null; totalItems?: number } = await metaRes.json();
-    const serverTotal = Number(meta?.totalItems || 0);
-    const serverUpdatedAt = meta?.updatedAt || null;
+  if (inFlightMasterdataSyncPromise) {
+    return inFlightMasterdataSyncPromise;
+  }
 
-    if (serverTotal <= 0) {
-      return { updated: false, count: memoryMasterdataItems?.length || 0 };
-    }
-
-    let localUpdatedAt = lastKnownServerMasterdataUpdatedAt;
-    let localCount = memoryMasterdataItems?.length || 0;
-
-    // Inspect IndexedDB snapshot if in-memory metadata isn't set yet
-    if (!localUpdatedAt || localCount === 0) {
-      try {
-        const db = await openDB();
-        const snap = await new Promise<any>((resolve) => {
-          const tx = db.transaction('inventory', 'readonly');
-          const req = tx.objectStore('inventory').get(SNAP_MASTERDATA_KEY);
-          req.onsuccess = () => resolve(req.result || null);
-          req.onerror = () => resolve(null);
-        });
-        if (snap) {
-          if (!localUpdatedAt && snap.updatedAt) localUpdatedAt = snap.updatedAt;
-          if (localCount === 0 && Array.isArray(snap.items)) localCount = snap.items.length;
-        }
-      } catch {}
-    }
-
-    const isCountDifferent = localCount !== serverTotal;
-    const isTimestampNewer =
-      Boolean(serverUpdatedAt) &&
-      (!localUpdatedAt || serverUpdatedAt !== localUpdatedAt);
-
-    if (!isCountDifferent && !isTimestampNewer) {
-      if (serverUpdatedAt && !lastKnownServerMasterdataUpdatedAt) {
-        lastKnownServerMasterdataUpdatedAt = serverUpdatedAt;
+  inFlightMasterdataSyncPromise = (async () => {
+    try {
+      const metaRes = await fetch(`/api/masterdata?meta=1&_ts=${Date.now()}`, {
+        cache: 'no-store',
+      });
+      if (!metaRes.ok) {
+        return { updated: false, count: memoryMasterdataItems?.length || 0 };
       }
-      return { updated: false, count: localCount };
-    }
+      const meta: {
+        updatedAt?: string | null;
+        totalItems?: number;
+        configuredSheets?: string[];
+        spreadsheetId?: string;
+      } = await metaRes.json();
+      const serverTotal = Number(meta?.totalItems || 0);
+      const serverUpdatedAt = meta?.updatedAt || null;
+      const serverSpreadsheetId =
+        typeof meta?.spreadsheetId === 'string' && meta.spreadsheetId.trim()
+          ? meta.spreadsheetId.trim()
+          : null;
+      const serverConfiguredSheets = Array.isArray(meta?.configuredSheets)
+        ? meta.configuredSheets.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean)
+        : null;
 
-    const storedToken = getStoredOAuthToken();
-    const dataRes = await fetch(`/api/masterdata?_ts=${Date.now()}`, {
-      headers:
-        storedToken && isGoogleOAuthAccessToken(storedToken)
-          ? { Authorization: `Bearer ${storedToken}` }
-          : undefined,
-      cache: 'no-store',
-    });
-    if (!dataRes.ok) {
-      return { updated: false, count: localCount };
-    }
-    const data: any = await dataRes.json();
-    if (Array.isArray(data?.rows) && data.rows.length > 1) {
-      const parsed = parseServerMasterdataRows(data.rows);
-      if (parsed.length > 0) {
-        lastKnownServerMasterdataUpdatedAt = data.updatedAt || serverUpdatedAt;
-        const updatedBranch = await saveBranchMasterdata(
-          branch,
-          parsed,
-          data.updatedAt || serverUpdatedAt
-        );
+      const isExplicitlyEmptyConfig =
+        serverConfiguredSheets !== null && serverConfiguredSheets.length === 0;
 
-        // Notify UI components across the app to update item counts and tables automatically
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(
-            new CustomEvent('masterdata-updated', {
-              detail: {
-                count: parsed.length,
-                updatedAt: data.updatedAt || serverUpdatedAt,
-              },
-            })
+      if (serverTotal <= 0 && !isExplicitlyEmptyConfig) {
+        return { updated: false, count: memoryMasterdataItems?.length || 0 };
+      }
+
+      let localUpdatedAt = lastKnownServerMasterdataUpdatedAt;
+      let localSpreadsheetId = lastKnownServerSpreadsheetId;
+      let localConfiguredSheets = lastKnownServerConfiguredSheets;
+      let localCount = memoryMasterdataItems?.length || 0;
+
+      // Inspect IndexedDB snapshot if in-memory metadata isn't set yet
+      if (
+        !localUpdatedAt ||
+        !localSpreadsheetId ||
+        !localConfiguredSheets ||
+        (localCount === 0 && memoryMasterdataItems === null)
+      ) {
+        try {
+          const db = await openDB();
+          const snap = await new Promise<any>((resolve) => {
+            const tx = db.transaction('inventory', 'readonly');
+            const req = tx.objectStore('inventory').get(SNAP_MASTERDATA_KEY);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+          });
+          if (snap) {
+            if (!localUpdatedAt && snap.updatedAt) localUpdatedAt = snap.updatedAt;
+            if (!localSpreadsheetId && snap.spreadsheetId) localSpreadsheetId = snap.spreadsheetId;
+            if (!localConfiguredSheets && Array.isArray(snap.configuredSheets)) {
+              localConfiguredSheets = snap.configuredSheets;
+            }
+            if (localCount === 0 && Array.isArray(snap.items)) localCount = snap.items.length;
+          }
+        } catch {}
+      }
+
+      if (!localSpreadsheetId) {
+        try {
+          localSpreadsheetId = localStorage.getItem('countsheet_active_masterdata_spreadsheet_id_v1');
+        } catch {}
+      }
+
+      let isSheetsDifferent = false;
+      if (serverConfiguredSheets !== null) {
+        const serverSig = [...serverConfiguredSheets].sort().join(',');
+        try {
+          const savedSheetsRaw = localStorage.getItem('countsheet_active_masterdata_sheets_v1');
+          if (savedSheetsRaw) {
+            const savedSheets: string[] = JSON.parse(savedSheetsRaw);
+            if (
+              Array.isArray(savedSheets) &&
+              savedSheets.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean).sort().join(',') !==
+                serverSig
+            ) {
+              isSheetsDifferent = true;
+            }
+          }
+        } catch {}
+
+        if (
+          !isSheetsDifferent &&
+          localConfiguredSheets &&
+          localConfiguredSheets.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean).sort().join(',') !==
+            serverSig
+        ) {
+          isSheetsDifferent = true;
+        }
+
+        if (!isSheetsDifferent && memoryMasterdataItems && memoryMasterdataItems.length > 0) {
+          const localSheetSet = new Set<string>();
+          for (let i = 0; i < memoryMasterdataItems.length; i++) {
+            const s = String(
+              memoryMasterdataItems[i].masterdataSheet ||
+                (memoryMasterdataItems[i].itemCode?.toUpperCase().startsWith('GRO') ? 'GRO' : 'OTHERS')
+            )
+              .trim()
+              .toUpperCase();
+            if (s) localSheetSet.add(s);
+          }
+          const serverSheetSet = new Set(serverConfiguredSheets);
+          for (const ls of localSheetSet) {
+            if (!serverSheetSet.has(ls)) {
+              isSheetsDifferent = true;
+              break;
+            }
+          }
+          if (!isSheetsDifferent) {
+            for (const ss of serverSheetSet) {
+              if (!localSheetSet.has(ss)) {
+                isSheetsDifferent = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      const isCountDifferent = localCount !== serverTotal;
+      const isTimestampNewer =
+        Boolean(serverUpdatedAt) &&
+        (!localUpdatedAt || serverUpdatedAt !== localUpdatedAt);
+      const isSpreadsheetDifferent =
+        Boolean(serverSpreadsheetId) && serverSpreadsheetId !== (localSpreadsheetId || '');
+
+      if (!isCountDifferent && !isTimestampNewer && !isSheetsDifferent && !isSpreadsheetDifferent) {
+        if (serverUpdatedAt && !lastKnownServerMasterdataUpdatedAt) {
+          lastKnownServerMasterdataUpdatedAt = serverUpdatedAt;
+        }
+        if (serverSpreadsheetId && !lastKnownServerSpreadsheetId) {
+          lastKnownServerSpreadsheetId = serverSpreadsheetId;
+        }
+        if (serverConfiguredSheets && !lastKnownServerConfiguredSheets) {
+          lastKnownServerConfiguredSheets = serverConfiguredSheets;
+        }
+        return { updated: false, count: localCount };
+      }
+
+      const storedToken = getStoredOAuthToken();
+      const dataRes = await fetch(`/api/masterdata?_ts=${Date.now()}`, {
+        headers:
+          storedToken && isGoogleOAuthAccessToken(storedToken)
+            ? { Authorization: `Bearer ${storedToken}` }
+            : undefined,
+        cache: 'no-store',
+      });
+      if (!dataRes.ok) {
+        return { updated: false, count: localCount };
+      }
+      const data: any = await dataRes.json();
+      if (Array.isArray(data?.rows)) {
+        const parsed = data.rows.length > 1 ? parseServerMasterdataRows(data.rows) : [];
+        const dataConfiguredSheets: string[] | null = Array.isArray(data?.configuredSheets)
+          ? data.configuredSheets.map((s: any) => String(s || '').trim().toUpperCase()).filter(Boolean)
+          : serverConfiguredSheets;
+        const dataSpreadsheetId: string | null =
+          typeof data?.spreadsheetId === 'string' && data.spreadsheetId.trim()
+            ? data.spreadsheetId.trim()
+            : serverSpreadsheetId;
+        const allowEmptySave =
+          Array.isArray(dataConfiguredSheets) && dataConfiguredSheets.length === 0;
+
+        if (parsed.length > 0 || allowEmptySave) {
+          const effectiveUpdatedAt = data.updatedAt || serverUpdatedAt || new Date().toISOString();
+
+          const updatedBranch = await saveBranchMasterdata(
+            branch,
+            parsed,
+            effectiveUpdatedAt,
+            dataSpreadsheetId,
+            dataConfiguredSheets
           );
-        }
 
-        return {
-          updated: true,
-          count: parsed.length,
-          updatedBranch,
-        };
+          // Notify UI components across the app to update item counts, sheet tabs, and tables automatically
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('masterdata-updated', {
+                detail: {
+                  count: parsed.length,
+                  updatedAt: effectiveUpdatedAt,
+                  sheets: dataConfiguredSheets || undefined,
+                  spreadsheetId: dataSpreadsheetId || undefined,
+                },
+              })
+            );
+          }
+
+          return {
+            updated: true,
+            count: parsed.length,
+            updatedBranch,
+          };
+        }
       }
-    }
-  } catch {}
-  return { updated: false, count: memoryMasterdataItems?.length || 0 };
+    } catch {}
+    return { updated: false, count: memoryMasterdataItems?.length || 0 };
+  })().finally(() => {
+    inFlightMasterdataSyncPromise = null;
+  });
+
+  return inFlightMasterdataSyncPromise;
 }
 
 // Apply an in-place Masterdata item edit/add/delete to local memory and IndexedDB snapshot immediately

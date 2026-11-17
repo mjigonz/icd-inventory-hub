@@ -1,5 +1,5 @@
 // CountSheet PWA Service Worker
-const CACHE_NAME = 'countsheet-v17';
+const CACHE_NAME = 'countsheet-v19';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

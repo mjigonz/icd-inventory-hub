@@ -1,6 +1,0 @@
-{
-  "summary":  "Implementation plan to fix the Cloudflare Worker deployment failure while preserving dual-runtime support for AI Studio and restoring the Cloudflare Workers URL as the primary share link.",
-  "updatedAt":  "2026-11-10T16:34:56.070575688Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

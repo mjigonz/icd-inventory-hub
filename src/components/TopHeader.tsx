@@ -89,6 +89,8 @@ interface TopHeaderProps {
   isAdminMode?: boolean;
   isUserAdmin?: boolean;
   onToggleAdminMode?: (enabled: boolean) => void;
+  themeAnimationEnabled?: boolean;
+  onSetThemeAnimationEnabled?: (enabled: boolean) => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -119,6 +121,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   isAdminMode = false,
   isUserAdmin = false,
   onToggleAdminMode,
+  themeAnimationEnabled,
+  onSetThemeAnimationEnabled,
 }) => {
   const { t } = useLanguage();
   const isOnline = useOnlineStatus();
@@ -793,6 +797,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             currentTab={currentTab}
             onSelectTab={onSelectTab}
             countItemTotal={countItemTotal}
+            themeAnimationEnabled={themeAnimationEnabled}
+            onSetThemeAnimationEnabled={onSetThemeAnimationEnabled}
           />
         </div>
       </div>

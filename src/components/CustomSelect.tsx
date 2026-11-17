@@ -94,7 +94,8 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
     const spaceAbove = rect.top;
     const openUpward = spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow;
 
-    const menuWidth = Math.max(rect.width, menuMinWidth);
+    const maxAllowedWidth = Math.min(340, viewportWidth - 16);
+    const menuWidth = Math.min(Math.max(rect.width, menuMinWidth), maxAllowedWidth);
     const clampedLeft = Math.max(8, Math.min(rect.left, viewportWidth - menuWidth - 8));
 
     setCoords({

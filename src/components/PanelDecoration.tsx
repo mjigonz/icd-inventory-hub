@@ -1,7 +1,6 @@
 import React, { createContext, useContext } from 'react';
 import {
   BackgroundIconTheme,
-  CharacterDensity,
   isCharacterFreeEnterpriseTheme,
 } from './TelegramDoodleBackground';
 
@@ -18,31 +17,17 @@ export type DecorationAnchorPosition =
 
 export type DecorationTier = 'major' | 'secondary' | 'playful';
 
-export type MotionPreference = 'off' | 'subtle' | 'smooth';
-
 export interface DecorationContextValue {
   activeTheme: BackgroundIconTheme;
   selectedTheme: BackgroundIconTheme;
   seasonalDecorations: boolean;
-  characterDensity: CharacterDensity;
-  characterAnimation: boolean;
-  autoSeasonalTheme: boolean;
-  motionPreference?: MotionPreference;
   onSetSeasonalDecorations?: (enabled: boolean) => void;
-  onSetCharacterDensity?: (density: CharacterDensity) => void;
-  onSetCharacterAnimation?: (enabled: boolean) => void;
-  onSetAutoSeasonalTheme?: (enabled: boolean) => void;
-  onSetMotionPreference?: (pref: MotionPreference) => void;
 }
 
 const DecorationContext = createContext<DecorationContextValue>({
   activeTheme: 'default',
   selectedTheme: 'default',
   seasonalDecorations: true,
-  characterDensity: 'balanced',
-  characterAnimation: false,
-  autoSeasonalTheme: false,
-  motionPreference: 'smooth',
 });
 
 export const DecorationProvider: React.FC<{
@@ -493,469 +478,7 @@ function renderThemeCharacterSvg(
     }
 
     // =========================================================================
-    // 5. SPRING BLOSSOM
-    // Characters: Small birds, Butterflies, Cherry blossoms, Tiny rabbits, Hanging flowers
-    // =========================================================================
-    case 'spring_blossom': {
-      if (isHanging) {
-        return (
-          <svg className="w-11 h-9 char-anim-sway drop-shadow-2xs" viewBox="0 0 44 38" fill="none">
-            <path d="M12 0c0 6 2 10 2 16" stroke="#16A34A" strokeWidth="1.5" />
-            <circle cx="14" cy="18" r="4.8" fill="#F472B6" />
-            <circle cx="14" cy="18" r="1.8" fill="#FDE047" />
-            <path d="M28 0c0 8-2 13-2 20" stroke="#16A34A" strokeWidth="1.5" />
-            <circle cx="26" cy="22" r="4.2" fill="#FB7185" />
-            <circle cx="26" cy="22" r="1.6" fill="#FEF08A" />
-          </svg>
-        );
-      }
-
-      if (v === 1) {
-        // Fluttering Spring Butterfly + Blossom
-        return (
-          <svg className="w-10 h-9 char-anim-flutter drop-shadow-2xs" viewBox="0 0 40 36" fill="none">
-            <path d="M19 18c-6-8-13-6-12 1 1 5 6 5 12-1z" fill="#EC4899" />
-            <path d="M19 18c6-8 13-6 12 1-1 5-6 5-12-1z" fill="#EC4899" />
-            <path d="M19 19c-5 2-9 7-6 10 2 2 6-2 6-10z" fill="#F472B6" />
-            <path d="M19 19c5 2 9 7 6 10-2 2-6-2-6-10z" fill="#F472B6" />
-            <line x1="19" y1="13" x2="19" y2="27" stroke="#1E293B" strokeWidth="1.8" strokeLinecap="round" />
-            <path d="M19 13l-3-4M19 13l3-4" stroke="#1E293B" strokeWidth="1" strokeLinecap="round" />
-          </svg>
-        );
-      }
-
-      if (v === 2) {
-        // Tiny White Spring Rabbit with Pink Blossom Crown
-        return (
-          <svg className="w-10 h-10 char-anim-tilt drop-shadow-2xs" viewBox="0 0 40 40" fill="none">
-            <ellipse cx="15" cy="10" rx="2.5" ry="7" transform="rotate(-10 15 10)" fill="#FFFFFF" stroke="#FBCFE8" strokeWidth="1" />
-            <ellipse cx="23" cy="10" rx="2.5" ry="7" transform="rotate(10 23 10)" fill="#FFFFFF" stroke="#FBCFE8" strokeWidth="1" />
-            <path d="M11 33c0-6 3.5-11 8-11s8 5 8 11H11z" fill="#FFFFFF" stroke="#FBCFE8" strokeWidth="1" />
-            <circle cx="19" cy="21" r="6.5" fill="#FFFFFF" stroke="#FBCFE8" strokeWidth="1" />
-            <circle cx="19" cy="15" r="2.2" fill="#EC4899" />
-            <circle cx="16.5" cy="20.5" r="1.1" fill="#1E293B" className="char-anim-blink" />
-            <circle cx="21.5" cy="20.5" r="1.1" fill="#1E293B" className="char-anim-blink" />
-          </svg>
-        );
-      }
-
-      // Small Meadow Bird perched on a blooming twig
-      return (
-        <svg className="w-10 h-9 char-anim-tilt drop-shadow-2xs" viewBox="0 0 40 34" fill="none">
-          <path d="M4 29h32" stroke="#15803D" strokeWidth="2" strokeLinecap="round" />
-          <circle cx="9" cy="28" r="2.8" fill="#F472B6" />
-          <circle cx="9" cy="28" r="1" fill="#FDE047" />
-          <path d="M14 28c0-7 4.5-12 10-12 4 0 6 3 6 7 0 3-2 5-5 5H14z" fill="#38BDF8" />
-          <path d="M17 23c2-1 5 0 6 2" stroke="#0284C7" strokeWidth="1.6" strokeLinecap="round" />
-          <circle cx="25.5" cy="20" r="1.1" fill="#0F172A" className="char-anim-blink" />
-          <polygon points="30,20.5 33.5,21.5 30,22.5" fill="#F59E0B" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 6. SUMMER BREEZE
-    // Characters: Miniature suns, Tropical birds, Palm leaves, Small crabs, Beach gear
-    // =========================================================================
-    case 'summer_breeze': {
-      if (isHanging) {
-        return (
-          <svg className="w-11 h-9 char-anim-sway drop-shadow-2xs" viewBox="0 0 44 36" fill="none">
-            <path d="M4 2c10 2 18 8 22 16-6-2-14-3-22-16z" fill="#10B981" />
-            <path d="M4 2c12-1 22 3 28 10-7 0-16-2-28-10z" fill="#059669" />
-            <circle cx="33" cy="12" r="5" fill="#FBBF24" />
-          </svg>
-        );
-      }
-
-      if (v === 0) {
-        // Small Red Crab perched on card border
-        return (
-          <svg className="w-11 h-8 char-anim-tilt drop-shadow-2xs" viewBox="0 0 42 32" fill="none">
-            <path d="M12 18c-3-3-4-7-1-9 1.5 2 3 2 4 0 1 3 0 6-3 9z" fill="#EF4444" />
-            <path d="M30 18c3-3 4-7 1-9-1.5 2-3 2-4 0-1 3 0 6 3 9z" fill="#EF4444" />
-            <path d="M11 24l-4 3M12 26l-3 3M31 24l4 3M30 26l3 3" stroke="#DC2626" strokeWidth="1.8" strokeLinecap="round" />
-            <ellipse cx="21" cy="23" rx="9" ry="5.5" fill="#EF4444" />
-            <line x1="18" y1="18" x2="18" y2="14.5" stroke="#DC2626" strokeWidth="1.8" />
-            <line x1="24" y1="18" x2="24" y2="14.5" stroke="#DC2626" strokeWidth="1.8" />
-            <circle cx="18" cy="14" r="1.5" fill="#0F172A" className="char-anim-blink" />
-            <circle cx="24" cy="14" r="1.5" fill="#0F172A" className="char-anim-blink" />
-            <path d="M18.5 23.5c1.5 1.2 3.5 1.2 5 0" stroke="#FEF2F2" strokeWidth="1.2" strokeLinecap="round" />
-          </svg>
-        );
-      }
-
-      if (v === 2) {
-        // Tropical Toucan Bird perched on border
-        return (
-          <svg className="w-11 h-9 char-anim-tilt drop-shadow-2xs" viewBox="0 0 44 36" fill="none">
-            <path d="M10 30c0-8 4-14 9-14s8 6 8 14H10z" fill="#0F172A" />
-            <ellipse cx="19" cy="23" rx="4" ry="4.5" fill="#FACC15" />
-            <circle cx="18" cy="19.5" r="1.2" fill="#0F172A" className="char-anim-blink" />
-            {/* Big colorful Toucan beak */}
-            <path d="M23 17c6 0 11 2 11 5.5H23V17z" fill="#F97316" />
-            <path d="M31 18.2c2 .8 3 2.2 3 4.3h-3v-4.3z" fill="#0F172A" />
-          </svg>
-        );
-      }
-
-      // Smiling Miniature Sun with cool shades
-      return (
-        <svg className="w-10 h-10 char-anim-float drop-shadow-2xs" viewBox="0 0 38 38" fill="none">
-          <path d="M19 3v4M19 31v4M3 19h4M31 19h4M7.7 7.7l2.8 2.8M27.5 27.5l2.8 2.8M30.3 7.7l-2.8 2.8M10.5 27.5l-2.8 2.8" stroke="#F59E0B" strokeWidth="2.2" strokeLinecap="round" />
-          <circle cx="19" cy="19" r="9.5" fill="#FBBF24" />
-          <rect x="12.5" y="15.5" width="5.5" height="3.8" rx="1" fill="#0F172A" />
-          <rect x="20" y="15.5" width="5.5" height="3.8" rx="1" fill="#0F172A" />
-          <line x1="18" y1="16.8" x2="20" y2="16.8" stroke="#0F172A" strokeWidth="1.4" />
-          <path d="M16.5 22.5c1.5 1.4 3.5 1.4 5 0" stroke="#92400E" strokeWidth="1.4" strokeLinecap="round" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 7. AUTUMN HARVEST
-    // Characters: Tiny foxes, Falling leaves, Miniature squirrels, Acorns, Pumpkins
-    // =========================================================================
-    case 'autumn_harvest': {
-      if (isHanging) {
-        return (
-          <svg className="w-11 h-9 char-anim-sway drop-shadow-2xs" viewBox="0 0 44 36" fill="none">
-            <line x1="14" y1="0" x2="14" y2="10" stroke="#78350F" strokeWidth="1.3" />
-            <path d="M9 13c0-2.5 2.2-4 5-4s5 1.5 5 4H9z" fill="#78350F" />
-            <path d="M10 13h8v4.5c0 2.5-1.8 4.5-4 4.5s-4-2-4-4.5V13z" fill="#D97706" />
-            <line x1="29" y1="0" x2="29" y2="13" stroke="#92400E" strokeWidth="1.2" />
-            <path d="M29 12l3 4 4-1-2 4 3 2-5 1-1 4-2-4-5-1 3-2-2-4 4 1 1-4z" fill="#EA580C" />
-          </svg>
-        );
-      }
-
-      if (v % 2 === 0) {
-        // Tiny Woodland Fox sitting on card edge
-        return (
-          <svg className="w-11 h-9 char-anim-tilt drop-shadow-2xs" viewBox="0 0 42 36" fill="none">
-            <path d="M27 28c6 0 11-4 10-9-2-1-5 1-7 4-1.5 2-3 5-3 5z" fill="#EA580C" />
-            <path d="M37 19c-1.5-.8-3.2.2-4.5 2 1.5 1 3.2 1 4.5-2z" fill="#FFFBEB" />
-            <polygon points="11,15 13,6 18,13" fill="#EA580C" />
-            <polygon points="27,15 25,6 20,13" fill="#EA580C" />
-            <path d="M11 29c0-6 3.5-10 8-10s8 4 8 10H11z" fill="#EA580C" />
-            <circle cx="19" cy="17" r="7" fill="#EA580C" />
-            <path d="M12.5 18c2 0 4.5 1.5 6.5 4 2-2.5 4.5-4 6.5-4-1 4-3.5 6-6.5 6s-5.5-2-6.5-6z" fill="#FFFBEB" />
-            <circle cx="16" cy="16.5" r="1.1" fill="#1C1917" className="char-anim-blink" />
-            <circle cx="22" cy="16.5" r="1.1" fill="#1C1917" className="char-anim-blink" />
-            <circle cx="19" cy="21" r="1.3" fill="#1C1917" />
-          </svg>
-        );
-      }
-
-      // Miniature Squirrel holding an Acorn + Maple Leaf
-      return (
-        <svg className="w-11 h-9 drop-shadow-2xs" viewBox="0 0 42 36" fill="none">
-          <path d="M25 28c6 0 10-5 9-11s-6-6-7-2c-.5 2 1 4 0 7-1 2-2 6-2 6z" fill="#92400E" />
-          <circle cx="17" cy="15" r="5.5" fill="#B45309" />
-          <ellipse cx="14" cy="10" rx="1.8" ry="2.5" fill="#92400E" />
-          <ellipse cx="18" cy="24" rx="6.5" ry="6" fill="#B45309" />
-          <circle cx="15.5" cy="14.5" r="1.1" fill="#1C1917" className="char-anim-blink" />
-          <circle cx="12" cy="23" r="2.8" fill="#D97706" />
-          <path d="M9.5 21.5c0-1.5 1.1-2.5 2.5-2.5s2.5 1 2.5 2.5h-5z" fill="#451A03" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 8. WINTER FROST
-    // Characters: Tiny penguins, Polar bears, Snowflakes, Snowmen, Icicles
-    // =========================================================================
-    case 'winter_frost': {
-      if (isHanging) {
-        return (
-          <svg className="w-12 h-8 drop-shadow-2xs" viewBox="0 0 48 32" fill="none">
-            <polygon points="4,0 10,0 7,18" fill="#BAE6FD" fillOpacity="0.85" />
-            <polygon points="11,0 16,0 13.5,12" fill="#7DD3FC" fillOpacity="0.8" />
-            <polygon points="17,0 24,0 20.5,24" fill="#BAE6FD" fillOpacity="0.9" />
-            <polygon points="25,0 30,0 27.5,14" fill="#38BDF8" fillOpacity="0.75" />
-            <polygon points="31,0 37,0 34,20" fill="#BAE6FD" fillOpacity="0.85" />
-          </svg>
-        );
-      }
-
-      if (v % 2 === 0) {
-        // Tiny Penguin tilting its head slightly with warm earmuffs
-        return (
-          <svg className="w-10 h-9 char-anim-tilt drop-shadow-2xs" viewBox="0 0 38 36" fill="none">
-            <path d="M10 17c0-6 4-10 9-10s9 4 9 10" stroke="#0284C7" strokeWidth="1.8" />
-            <path d="M11 30c0-8 3.5-15 8-15s8 7 8 15H11z" fill="#0F172A" />
-            <path d="M14 30c0-5.5 2.2-10 5-10s5 4.5 5 10H14z" fill="#F8FAFC" />
-            <circle cx="10" cy="18" r="2.5" fill="#38BDF8" />
-            <circle cx="28" cy="18" r="2.5" fill="#38BDF8" />
-            <circle cx="16.8" cy="18.5" r="1.1" fill="#0F172A" className="char-anim-blink" />
-            <circle cx="21.2" cy="18.5" r="1.1" fill="#0F172A" className="char-anim-blink" />
-            <polygon points="19,21.5 17.2,19.8 20.8,19.8" fill="#F59E0B" />
-            <ellipse cx="15" cy="30.5" rx="2.5" ry="1.4" fill="#F59E0B" />
-            <ellipse cx="23" cy="30.5" rx="2.5" ry="1.4" fill="#F59E0B" />
-          </svg>
-        );
-      }
-
-      // Cute Polar Bear Cub peeking over panel edge
-      return (
-        <svg className="w-10 h-8 drop-shadow-2xs" viewBox="0 0 38 32" fill="none">
-          <circle cx="11.5" cy="11" r="3.5" fill="#F8FAFC" stroke="#CBD5E1" strokeWidth="1" />
-          <circle cx="26.5" cy="11" r="3.5" fill="#F8FAFC" stroke="#CBD5E1" strokeWidth="1" />
-          <path d="M10 28c0-7 4-13 9-13s9 6 9 13H10z" fill="#FFFFFF" stroke="#CBD5E1" strokeWidth="1" />
-          <ellipse cx="19" cy="22.5" rx="3.5" ry="2.6" fill="#E2E8F0" />
-          <circle cx="15.8" cy="19" r="1.1" fill="#0F172A" className="char-anim-blink" />
-          <circle cx="22.2" cy="19" r="1.1" fill="#0F172A" className="char-anim-blink" />
-          <ellipse cx="19" cy="21.8" rx="1.5" ry="1.1" fill="#0F172A" />
-          <ellipse cx="12" cy="28" rx="2.6" ry="1.6" fill="#F1F5F9" stroke="#CBD5E1" strokeWidth="1" />
-          <ellipse cx="26" cy="28" rx="2.6" ry="1.6" fill="#F1F5F9" stroke="#CBD5E1" strokeWidth="1" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 9. EASTER
-    // Characters: Miniature rabbits, Easter eggs, Baby chicks, Hanging pastel decorations
-    // =========================================================================
-    case 'easter': {
-      if (isHanging) {
-        return (
-          <svg className="w-11 h-9 char-anim-sway drop-shadow-2xs" viewBox="0 0 42 36" fill="none">
-            <line x1="13" y1="0" x2="13" y2="10" stroke="#C4B5FD" strokeWidth="1.2" />
-            <ellipse cx="13" cy="16" rx="5" ry="6.5" fill="#DDD6FE" stroke="#8B5CF6" strokeWidth="1" />
-            <path d="M8.5 16l2.2-1.5 2.3 1.5 2.3-1.5 2.2 1.5" stroke="#EC4899" strokeWidth="1.2" strokeLinecap="round" />
-            <line x1="29" y1="0" x2="29" y2="14" stroke="#99F6E4" strokeWidth="1.2" />
-            <ellipse cx="29" cy="19.5" rx="4.5" ry="5.8" fill="#FEF08A" stroke="#F59E0B" strokeWidth="1" />
-            <circle cx="29" cy="19.5" r="1.3" fill="#8B5CF6" />
-          </svg>
-        );
-      }
-
-      if (v % 2 === 1) {
-        // Fluffy Yellow Baby Chick & Pastel Egg
-        return (
-          <svg className="w-11 h-8 char-anim-bounce drop-shadow-2xs" viewBox="0 0 40 34" fill="none">
-            <ellipse cx="29" cy="24" rx="4.8" ry="6.2" fill="#C4B5FD" />
-            <path d="M24.5 24h9" stroke="#F472B6" strokeWidth="1.5" />
-            <circle cx="16" cy="22" r="7" fill="#FACC15" />
-            <circle cx="16" cy="13.5" r="5" fill="#FDE047" />
-            <circle cx="14.5" cy="13" r="1" fill="#1E293B" className="char-anim-blink" />
-            <circle cx="17.5" cy="13" r="1" fill="#1E293B" className="char-anim-blink" />
-            <polygon points="16,14.2 14.5,15.8 17.5,15.8" fill="#F97316" />
-          </svg>
-        );
-      }
-
-      // Miniature Easter Bunny with long pastel ears peeking/sitting
-      return (
-        <svg className="w-10 h-10 char-anim-tilt drop-shadow-2xs" viewBox="0 0 38 40" fill="none">
-          <ellipse cx="15" cy="10" rx="2.6" ry="7.5" transform="rotate(-8 15 10)" fill="#FFFFFF" stroke="#DDD6FE" strokeWidth="1" />
-          <ellipse cx="15" cy="10.5" rx="1.3" ry="5" transform="rotate(-8 15 10.5)" fill="#FBCFE8" />
-          <ellipse cx="23" cy="10" rx="2.6" ry="7.5" transform="rotate(8 23 10)" fill="#FFFFFF" stroke="#DDD6FE" strokeWidth="1" />
-          <ellipse cx="23" cy="10.5" rx="1.3" ry="5" transform="rotate(8 23 10.5)" fill="#FBCFE8" />
-          <path d="M11 33c0-6.5 3.6-12 8-12s8 5.5 8 12H11z" fill="#FFFFFF" stroke="#DDD6FE" strokeWidth="1" />
-          <circle cx="19" cy="21" r="6.8" fill="#FFFFFF" stroke="#DDD6FE" strokeWidth="1" />
-          <circle cx="16.5" cy="20" r="1.1" fill="#1E1B4B" className="char-anim-blink" />
-          <circle cx="21.5" cy="20" r="1.1" fill="#1E1B4B" className="char-anim-blink" />
-          <polygon points="19,22.5 17.8,21.2 20.2,21.2" fill="#F472B6" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 10. NATURE FOREST
-    // Characters: Woodland animals, Hanging vines, Mushrooms, Small birds, Butterflies
-    // =========================================================================
-    case 'nature_forest': {
-      if (isHanging) {
-        return (
-          <svg className="w-11 h-11 char-anim-sway drop-shadow-2xs" viewBox="0 0 40 44" fill="none">
-            <path d="M14 0c-2 10 4 18 0 30" stroke="#15803D" strokeWidth="1.6" strokeLinecap="round" />
-            <ellipse cx="10" cy="10" rx="4" ry="2.2" transform="rotate(-25 10 10)" fill="#22C55E" />
-            <ellipse cx="18" cy="17" rx="4" ry="2.2" transform="rotate(25 18 17)" fill="#16A34A" />
-            <ellipse cx="11" cy="25" rx="3.8" ry="2" transform="rotate(-20 11 25)" fill="#22C55E" />
-            <path d="M28 0c2 8-3 14 0 22" stroke="#15803D" strokeWidth="1.4" strokeLinecap="round" />
-            <ellipse cx="31" cy="12" rx="3.5" ry="2" transform="rotate(20 31 12)" fill="#4ADE80" />
-          </svg>
-        );
-      }
-
-      if (v % 2 === 0) {
-        // Red-Spotted Woodland Toadstool Mushrooms + Tiny Forest Bird
-        return (
-          <svg className="w-11 h-9 drop-shadow-2xs" viewBox="0 0 42 36" fill="none">
-            <rect x="13" y="21" width="6" height="10" rx="2" fill="#FEF3C7" />
-            <path d="M7 22c0-6 4-10 9-10s9 4 9 10H7z" fill="#EF4444" />
-            <circle cx="13" cy="16" r="1.6" fill="#FFFFFF" />
-            <circle cx="19" cy="15" r="1.2" fill="#FFFFFF" />
-            <circle cx="16" cy="19" r="1.4" fill="#FFFFFF" />
-            <rect x="27" y="25" width="4" height="6" rx="1.5" fill="#FEF3C7" />
-            <path d="M24 26c0-3.5 2.2-6 5-6s5 2.5 5 6H24z" fill="#DC2626" />
-            <circle cx="28" cy="23" r="1" fill="#FFFFFF" />
-          </svg>
-        );
-      }
-
-      // Cute Woodland Hedgehog resting on panel edge
-      return (
-        <svg className="w-11 h-8 char-anim-tilt drop-shadow-2xs" viewBox="0 0 42 32" fill="none">
-          <path d="M9 27c0-8 5-13 13-13 7 0 11 5 11 13H9z" fill="#78350F" />
-          <path d="M7 27c0-4 3-7 7-7s6 3 6 7H7z" fill="#FDE68A" />
-          <circle cx="12" cy="23" r="1.1" fill="#1C1917" className="char-anim-blink" />
-          <circle cx="7.5" cy="24.5" r="1.5" fill="#1C1917" />
-          <ellipse cx="22" cy="13" rx="3.5" ry="1.8" transform="rotate(-15 22 13)" fill="#22C55E" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 11. OCEAN BREEZE
-    // Characters: Miniature turtles, Small fish, Seashells, Starfish, Tiny octopuses
-    // =========================================================================
-    case 'ocean_breeze': {
-      if (isHanging) {
-        return (
-          <svg className="w-10 h-10 char-anim-sway drop-shadow-2xs" viewBox="0 0 40 40" fill="none">
-            <circle cx="20" cy="14" r="7.5" fill="#FB7185" />
-            <circle cx="17.5" cy="13.5" r="1.2" fill="#0F172A" className="char-anim-blink" />
-            <circle cx="22.5" cy="13.5" r="1.2" fill="#0F172A" className="char-anim-blink" />
-            <path d="M18.5 16.2c1 .8 2 .8 3 0" stroke="#881337" strokeWidth="1.2" strokeLinecap="round" />
-            <path d="M14 20c-2 4-4 6-2 9M18 21c-1 4 0 7-1 9M22 21c1 4 0 7 1 9M26 20c2 4 4 6 2 9" stroke="#FB7185" strokeWidth="2.2" strokeLinecap="round" />
-          </svg>
-        );
-      }
-
-      if (v % 2 === 0) {
-        // Miniature Sea Turtle resting on card edge
-        return (
-          <svg className="w-11 h-8 char-anim-float drop-shadow-2xs" viewBox="0 0 42 32" fill="none">
-            <ellipse cx="12" cy="25" rx="3.5" ry="1.8" transform="rotate(-20 12 25)" fill="#10B981" />
-            <ellipse cx="28" cy="25" rx="3.5" ry="1.8" transform="rotate(20 28 25)" fill="#10B981" />
-            <path d="M10 24c0-6 4.5-10 10-10s10 4 10 10H10z" fill="#047857" />
-            <path d="M14 24c0-4 2.5-7 6-7s6 3 6 7" stroke="#34D399" strokeWidth="1.2" />
-            <circle cx="33" cy="21" r="3.8" fill="#10B981" />
-            <circle cx="34.2" cy="20.2" r="0.9" fill="#0F172A" className="char-anim-blink" />
-          </svg>
-        );
-      }
-
-      // Coral Starfish & Pearl Scallop Seashell
-      return (
-        <svg className="w-11 h-8 char-anim-tilt drop-shadow-2xs" viewBox="0 0 42 32" fill="none">
-          <path d="M8 26c0-5.5 4-10 9-10s9 4.5 9 10H8z" fill="#FDE68A" stroke="#F59E0B" strokeWidth="1" />
-          <path d="M17 26v-9M13 26l2-8M21 26l-2-8" stroke="#F59E0B" strokeWidth="1" />
-          <polygon points="31,14 32.8,18.2 37.2,18.8 33.8,21.8 34.8,26.2 31,23.8 27.2,26.2 28.2,21.8 24.8,18.8 29.2,18.2" fill="#FB7185" />
-          <circle cx="31" cy="20.5" r="1" fill="#FFF1F2" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 12. SAKURA DREAM
-    // Characters: Maneki-Neko lucky cats, Cherry blossom branches, Daruma dolls, Petals
-    // =========================================================================
-    case 'sakura_dream': {
-      if (isHanging) {
-        return (
-          <svg className="w-11 h-10 char-anim-sway drop-shadow-2xs" viewBox="0 0 44 40" fill="none">
-            <path d="M2 4c12 2 22 0 36 4" stroke="#78350F" strokeWidth="2" strokeLinecap="round" />
-            <circle cx="12" cy="5" r="3.8" fill="#FBCFE8" />
-            <circle cx="12" cy="5" r="1.2" fill="#DB2777" />
-            <circle cx="28" cy="6" r="3.5" fill="#F472B6" />
-            <circle cx="28" cy="6" r="1.1" fill="#FEF08A" />
-            <line x1="20" y1="5" x2="20" y2="13" stroke="#DB2777" strokeWidth="1" />
-            <path d="M15 18c0-3 2.2-5 5-5s5 2 5 5H15z" fill="#BAE6FD" fillOpacity="0.85" stroke="#38BDF8" strokeWidth="1" />
-            <line x1="20" y1="18" x2="20" y2="24" stroke="#DB2777" strokeWidth="1" />
-            <rect x="18" y="24" width="4" height="8" rx="0.8" fill="#F472B6" />
-          </svg>
-        );
-      }
-
-      // Lucky Maneki-Neko / Calico Cat sitting among Cherry Blossom Petals
-      return (
-        <svg className="w-10 h-9 drop-shadow-2xs" viewBox="0 0 40 36" fill="none">
-          <polygon points="11,15 13,7 18,13" fill="#FFFFFF" stroke="#FBCFE8" strokeWidth="1" />
-          <polygon points="12.5,14 13.5,9 16.5,13" fill="#F472B6" />
-          <polygon points="29,15 27,7 22,13" fill="#F97316" />
-          <path d="M10 30c0-7.5 4.5-13 10-13s10 5.5 10 13H10z" fill="#FFFFFF" stroke="#E2E8F0" strokeWidth="1" />
-          <rect x="13" y="23" width="14" height="2.2" rx="1.1" fill="#E11D48" />
-          <circle cx="20" cy="25" r="1.8" fill="#FBBF24" />
-          <g className="char-anim-blink">
-            <path d="M15 19c1-1.2 2.5-1.2 3.5 0" stroke="#1E293B" strokeWidth="1.4" strokeLinecap="round" />
-            <path d="M21.5 19c1-1.2 2.5-1.2 3.5 0" stroke="#1E293B" strokeWidth="1.4" strokeLinecap="round" />
-          </g>
-          <ellipse cx="12" cy="22" rx="2.2" ry="3.2" fill="#FFFFFF" stroke="#CBD5E1" strokeWidth="1" className="char-anim-tilt" />
-          <circle cx="31" cy="27" r="3.2" fill="#F472B6" />
-          <circle cx="31" cy="27" r="1" fill="#FEF08A" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 13. MINIMAL MONOCHROME
-    // Characters: Monochrome Tuxedo Cats, Origami Cranes, Sketch Owls & Line-Art Birds
-    // =========================================================================
-    case 'minimal_monochrome': {
-      if (isHanging) {
-        // Hanging Origami Paper Crane & Monochrome Geometric Star
-        return (
-          <svg className="w-10 h-10 char-anim-sway drop-shadow-2xs" viewBox="0 0 42 40" fill="none">
-            <line x1="15" y1="0" x2="15" y2="12" stroke="#71717A" strokeWidth="1.2" strokeDasharray="2 1" />
-            <polygon points="15,12 6,18 15,21 24,18" fill="#FAFAFA" stroke="#18181B" strokeWidth="1.3" />
-            <polygon points="15,12 15,26 22,19" fill="#E4E4E7" stroke="#18181B" strokeWidth="1.2" />
-            <line x1="31" y1="0" x2="31" y2="16" stroke="#71717A" strokeWidth="1.1" />
-            <polygon points="31,15 32.5,18.5 36,19 33.2,21.2 34,24.8 31,23 28,24.8 28.8,21.2 26,19 29.5,18.5" fill="#18181B" stroke="#FAFAFA" strokeWidth="0.8" />
-          </svg>
-        );
-      }
-
-      if (isPeeking) {
-        // Monochrome Tuxedo Cat peeking over bottom edge
-        return (
-          <svg className="w-10 h-8 drop-shadow-2xs" viewBox="0 0 40 32" fill="none">
-            <polygon points="11,16 13,6 19,13" fill="#18181B" />
-            <polygon points="29,16 27,6 21,13" fill="#18181B" />
-            <path d="M10 28c0-7.5 4.5-13 10-13s10 5.5 10 13H10z" fill="#18181B" />
-            <path d="M15 28c0-3.5 2.2-6 5-6s5 2.5 5 6H15z" fill="#FAFAFA" />
-            <circle cx="16.2" cy="20" r="1.6" fill="#FAFAFA" className="char-anim-blink" />
-            <circle cx="23.8" cy="20" r="1.6" fill="#FAFAFA" className="char-anim-blink" />
-            <ellipse cx="12" cy="28" rx="2.6" ry="1.6" fill="#FAFAFA" stroke="#18181B" strokeWidth="1.2" />
-            <ellipse cx="28" cy="28" rx="2.6" ry="1.6" fill="#FAFAFA" stroke="#18181B" strokeWidth="1.2" />
-          </svg>
-        );
-      }
-
-      if (v % 2 === 0) {
-        // Minimalist Ink-Sketch Tuxedo Cat sitting on panel corner
-        return (
-          <svg className="w-10 h-9 char-anim-tilt drop-shadow-2xs" viewBox="0 0 40 36" fill="none">
-            <path d="M27 28c5 0 9-4 8-8" stroke="#18181B" strokeWidth="2.4" strokeLinecap="round" />
-            <polygon points="12,14 14,6 18,12" fill="#18181B" />
-            <polygon points="26,14 24,6 20,12" fill="#18181B" />
-            <circle cx="19" cy="17" r="6.5" fill="#18181B" />
-            <path d="M12 30c0-5.5 3.2-10 7-10s7 4.5 7 10H12z" fill="#18181B" />
-            <ellipse cx="19" cy="26" rx="3.8" ry="4" fill="#FAFAFA" />
-            <circle cx="16.5" cy="16.5" r="1.2" fill="#FAFAFA" className="char-anim-blink" />
-            <circle cx="21.5" cy="16.5" r="1.2" fill="#FAFAFA" className="char-anim-blink" />
-          </svg>
-        );
-      }
-
-      // Monochrome Wise Sketch Owl with round glasses
-      return (
-        <svg className="w-10 h-9 char-anim-tilt drop-shadow-2xs" viewBox="0 0 40 36" fill="none">
-          <path d="M11 29c0-8 3.6-14 9-14s9 6 9 14H11z" fill="#27272A" stroke="#FAFAFA" strokeWidth="1" />
-          <ellipse cx="20" cy="25" rx="5.5" ry="4.5" fill="#F4F4F5" />
-          <circle cx="16.8" cy="19.5" r="2.8" fill="#FAFAFA" stroke="#18181B" strokeWidth="1.3" />
-          <circle cx="23.2" cy="19.5" r="2.8" fill="#FAFAFA" stroke="#18181B" strokeWidth="1.3" />
-          <circle cx="16.8" cy="19.5" r="1" fill="#18181B" className="char-anim-blink" />
-          <circle cx="23.2" cy="19.5" r="1" fill="#18181B" className="char-anim-blink" />
-          <polygon points="20,22 18.8,20.5 21.2,20.5" fill="#71717A" />
-        </svg>
-      );
-    }
-
-    // =========================================================================
-    // 14. MIDNIGHT PROFESSIONAL
+    // 5. MIDNIGHT PROFESSIONAL
     // Characters: Astro-Bots, Cyber Cats, Midnight Owls & Constellation Stars
     // =========================================================================
     case 'midnight_professional': {
@@ -1171,22 +694,6 @@ function getThemePositionSeed(theme: BackgroundIconTheme): number {
       return 2;
     case 'new_year':
       return 3;
-    case 'spring_blossom':
-      return 4;
-    case 'summer_breeze':
-      return 5;
-    case 'autumn_harvest':
-      return 6;
-    case 'winter_frost':
-      return 7;
-    case 'easter':
-      return 8;
-    case 'nature_forest':
-      return 9;
-    case 'ocean_breeze':
-      return 10;
-    case 'sakura_dream':
-      return 11;
     default:
       return 0;
   }
@@ -1290,7 +797,7 @@ export const PanelDecoration: React.FC<PanelDecorationProps> = ({
   className = '',
   hideOnMobile = false,
 }) => {
-  const { activeTheme, seasonalDecorations, characterDensity } = useDecorationSettings();
+  const { activeTheme, seasonalDecorations } = useDecorationSettings();
   const effectiveTheme = themeOverride || activeTheme;
 
   // 1. Default and Core Enterprise Themes do NOT display decorative characters
@@ -1298,16 +805,8 @@ export const PanelDecoration: React.FC<PanelDecorationProps> = ({
     return null;
   }
 
-  // 2. Respect Seasonal Decorations On/Off and Decorative Characters Density
-  if (!seasonalDecorations || characterDensity === 'off') {
-    return null;
-  }
-
-  // 3. Filter by Decoration Density tier (for Seasonal & Nature themes):
-  // - 'minimal': shows 'major' + 'secondary'
-  // - 'balanced' (default): shows all placements ('major' + 'secondary' + 'playful')
-  // - 'playful': shows all placements + extra companion character on major panels
-  if (characterDensity === 'minimal' && tier === 'playful') {
+  // 2. Respect Seasonal Decorations On/Off
+  if (!seasonalDecorations) {
     return null;
   }
 
@@ -1329,13 +828,6 @@ export const PanelDecoration: React.FC<PanelDecorationProps> = ({
     >
       <div className="inline-flex items-end gap-1.5">
         {svgNode}
-        {characterDensity === 'playful' &&
-          tier === 'major' &&
-          (resolvedPosition === 'top-border' || resolvedPosition === 'top-right') && (
-            <span className="scale-85 origin-bottom -ml-1">
-              {renderThemeCharacterSvg(effectiveTheme, 'top-left', (resolvedVariant + 2) % 4)}
-            </span>
-          )}
       </div>
     </div>
   );

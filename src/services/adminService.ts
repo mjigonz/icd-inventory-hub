@@ -41,6 +41,7 @@ export interface AdminDirectoryEntry {
   branchName: string;
   status: 'active' | 'on_field' | 'standby';
   createdAt: string;
+  updatedAt?: string;
 }
 
 export const LOCAL_DIR_KEY = 'countsheet_admin_directory_v1';
@@ -49,7 +50,7 @@ export const ADMIN_DIRECTORY_EVENT = 'countsheet_admin_directory_updated';
 export const LOCAL_ROLES_KEY = 'countsheet_admin_roles_v2';
 export const ADMIN_ROLES_EVENT = 'countsheet_admin_roles_updated';
 
-// Strictly only this email can access the Admin Console
+// Primary super admin email
 export const ADMIN_ONLY_EMAIL = 'icdhubsystems@gmail.com';
 export const DEFAULT_SUPER_ADMIN_EMAILS = [ADMIN_ONLY_EMAIL];
 
@@ -63,7 +64,7 @@ export const ROLE_PERMISSION_CATALOG: Array<{
     key: 'admin_console',
     label: 'Admin Console Access',
     shortLabel: 'Admin Console',
-    description: 'Admin Console settings, Drive links, and dispatches (Strictly restricted to icdhubsystems@gmail.com)',
+    description: 'Admin Console settings, Drive links, and dispatches',
   },
   {
     key: 'create_encoding',
@@ -120,7 +121,25 @@ export const ALL_ROLE_PERMISSIONS: RolePermissionKey[] = [
   'monitoring_manage',
 ];
 
+export const ALL_OPERATIONAL_PERMISSIONS: RolePermissionKey[] = [
+  'create_encoding',
+  'create_countsheet',
+  'view_forms',
+  'branch_manage',
+  'count_items',
+  'inventory_edit',
+  'monitoring_manage',
+];
+
 export const DEFAULT_ROLE_DEFINITIONS: AdminRoleDefinition[] = [
+  {
+    id: 'admin',
+    name: 'Admin',
+    description: 'Full Admin Console access and all compliance, encoding, countsheets, forms, branch, inventory, and monitoring tools',
+    color: 'purple',
+    permissions: [...ALL_ROLE_PERMISSIONS],
+    isSystem: true,
+  },
   {
     id: 'internal_compliance_manager',
     name: 'Internal Compliance Manager',
@@ -134,7 +153,7 @@ export const DEFAULT_ROLE_DEFINITIONS: AdminRoleDefinition[] = [
     name: 'Assistant Manager - Reach',
     description: 'Full access to all compliance, encoding, countsheets, forms, branch, inventory, and monitoring tools',
     color: 'indigo',
-    permissions: [...ALL_ROLE_PERMISSIONS],
+    permissions: [...ALL_OPERATIONAL_PERMISSIONS],
     isSystem: true,
   },
   {
@@ -142,7 +161,7 @@ export const DEFAULT_ROLE_DEFINITIONS: AdminRoleDefinition[] = [
     name: 'Assistant Manager - Return',
     description: 'Full access to all compliance, encoding, countsheets, forms, branch, inventory, and monitoring tools',
     color: 'cyan',
-    permissions: [...ALL_ROLE_PERMISSIONS],
+    permissions: [...ALL_OPERATIONAL_PERMISSIONS],
     isSystem: true,
   },
   {
@@ -150,7 +169,7 @@ export const DEFAULT_ROLE_DEFINITIONS: AdminRoleDefinition[] = [
     name: 'Internal Compliance Supervisor',
     description: 'Full access to all compliance, encoding, countsheets, forms, branch, inventory, and monitoring tools',
     color: 'amber',
-    permissions: [...ALL_ROLE_PERMISSIONS],
+    permissions: [...ALL_OPERATIONAL_PERMISSIONS],
     isSystem: true,
   },
   {
@@ -158,7 +177,7 @@ export const DEFAULT_ROLE_DEFINITIONS: AdminRoleDefinition[] = [
     name: 'Senior Auditor',
     description: 'Full access to all compliance, encoding, countsheets, forms, branch, inventory, and monitoring tools',
     color: 'blue',
-    permissions: [...ALL_ROLE_PERMISSIONS],
+    permissions: [...ALL_OPERATIONAL_PERMISSIONS],
     isSystem: true,
   },
   {
@@ -166,7 +185,7 @@ export const DEFAULT_ROLE_DEFINITIONS: AdminRoleDefinition[] = [
     name: 'Junior Auditor',
     description: 'Full access to all compliance, encoding, countsheets, forms, branch, inventory, and monitoring tools',
     color: 'emerald',
-    permissions: [...ALL_ROLE_PERMISSIONS],
+    permissions: [...ALL_OPERATIONAL_PERMISSIONS],
     isSystem: true,
   },
   {
@@ -174,7 +193,7 @@ export const DEFAULT_ROLE_DEFINITIONS: AdminRoleDefinition[] = [
     name: 'Internal Compliance Assitant / Junior Auditor',
     description: 'Full access to all compliance, encoding, countsheets, forms, branch, inventory, and monitoring tools',
     color: 'rose',
-    permissions: [...ALL_ROLE_PERMISSIONS],
+    permissions: [...ALL_OPERATIONAL_PERMISSIONS],
     isSystem: true,
   },
 ];
@@ -182,22 +201,34 @@ export const DEFAULT_ROLE_DEFINITIONS: AdminRoleDefinition[] = [
 export const DEFAULT_ADMIN_CODES = ['ICD2026', 'SIDC2026', 'ADMIN', '1234'];
 
 const LEGACY_ROLE_ID_MAP: Record<string, string> = {
-  admin: 'internal_compliance_manager',
   lead_auditor: 'internal_compliance_supervisor',
   auditor: 'senior_auditor',
   branch_email: 'internal_compliance_assistant_junior_auditor',
 };
 
 /**
- * Normalizes and merges role definitions so default roles are always present while preserving edits and custom roles.
+ * Normalizes and merges role definitions so default roles (including Admin) are always present while preserving edits and custom roles.
  */
 export function normalizeRoleDefinitions(rawList?: any[]): AdminRoleDefinition[] {
   if (!Array.isArray(rawList) || rawList.length === 0) {
     return DEFAULT_ROLE_DEFINITIONS;
   }
 
+  const isEntirelyLegacyList =
+    rawList.length <= 4 &&
+    rawList.every((item) => {
+      const id = String(item?.id || '').trim().toLowerCase();
+      return (id === 'admin' || id in LEGACY_ROLE_ID_MAP) && item?.isSystem !== false;
+    });
+  if (isEntirelyLegacyList) {
+    return DEFAULT_ROLE_DEFINITIONS;
+  }
+
   const validPermSet = new Set<RolePermissionKey>(ROLE_PERMISSION_CATALOG.map((p) => p.key));
   const byId = new Map<string, AdminRoleDefinition>();
+
+  // Ensure the primary 'admin' role is always available at the top of the role options
+  byId.set('admin', { ...DEFAULT_ROLE_DEFINITIONS[0] });
 
   for (const item of rawList) {
     if (!item || typeof item !== 'object') continue;
@@ -205,10 +236,6 @@ export function normalizeRoleDefinitions(rawList?: any[]): AdminRoleDefinition[]
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9_-]/g, '_');
-    // Skip obsolete legacy 4-role defaults if they were stored earlier
-    if (rawId in LEGACY_ROLE_ID_MAP && DEFAULT_ROLE_DEFINITIONS.every((d) => d.id !== rawId)) {
-      continue;
-    }
     const id = rawId;
     const name = String(item.name || '').trim();
     if (!id || !name) continue;
@@ -219,12 +246,22 @@ export function normalizeRoleDefinitions(rawList?: any[]): AdminRoleDefinition[]
     );
 
     const defMatch = DEFAULT_ROLE_DEFINITIONS.find((d) => d.id === id);
+    const defaultPerms =
+      id === 'admin' || id === 'internal_compliance_manager'
+        ? [...ALL_ROLE_PERMISSIONS]
+        : [...ALL_OPERATIONAL_PERMISSIONS];
+    const resolvedPerms = permissions.length > 0 ? permissions : defaultPerms;
+    const ensuredPerms =
+      id === 'admin' && !resolvedPerms.includes('admin_console')
+        ? (['admin_console', ...resolvedPerms] as RolePermissionKey[])
+        : resolvedPerms;
+
     byId.set(id, {
       id,
       name,
       description: String(item.description ?? defMatch?.description ?? '').trim(),
       color: (item.color as RoleBadgeColor) || defMatch?.color || 'blue',
-      permissions: permissions.length > 0 ? permissions : [...ALL_ROLE_PERMISSIONS],
+      permissions: ensuredPerms,
       isSystem: Boolean(defMatch || item.isSystem),
       updatedAt: item.updatedAt,
     });
@@ -263,10 +300,43 @@ export function saveAdminRoleDefinitionsLocal(roles: AdminRoleDefinition[]): Adm
   return normalized;
 }
 
+export function mergeRoleDefinitionsLists(
+  localRoles: AdminRoleDefinition[],
+  remoteRoles: AdminRoleDefinition[]
+): { merged: AdminRoleDefinition[]; hasLocalOnly: boolean } {
+  const normLocal = normalizeRoleDefinitions(localRoles);
+  const normRemote = normalizeRoleDefinitions(remoteRoles);
+  const byId = new Map<string, AdminRoleDefinition>();
+
+  for (const r of normRemote) {
+    byId.set(r.id, r);
+  }
+
+  let hasLocalOnly = false;
+  for (const l of normLocal) {
+    if (!byId.has(l.id)) {
+      byId.set(l.id, l);
+      hasLocalOnly = true;
+    } else {
+      const rem = byId.get(l.id)!;
+      if (l.updatedAt && (!rem.updatedAt || l.updatedAt > rem.updatedAt)) {
+        byId.set(l.id, l);
+        hasLocalOnly = true;
+      }
+    }
+  }
+
+  return { merged: Array.from(byId.values()), hasLocalOnly };
+}
+
 export async function saveAdminRoleDefinitions(
   roles: AdminRoleDefinition[]
 ): Promise<AdminRoleDefinition[]> {
-  const normalized = saveAdminRoleDefinitionsLocal(roles);
+  const stamped = roles.map((r) => ({
+    ...r,
+    updatedAt: r.updatedAt || new Date().toISOString(),
+  }));
+  const normalized = saveAdminRoleDefinitionsLocal(stamped);
   try {
     await fetch('/api/admin/roles', {
       method: 'POST',
@@ -280,37 +350,164 @@ export async function saveAdminRoleDefinitions(
 }
 
 export async function fetchAdminRoleDefinitionsFromServer(): Promise<AdminRoleDefinition[]> {
+  const localRoles = getAdminRoleDefinitions();
   try {
     const res = await fetch(`/api/admin/roles?_t=${Date.now()}`, { cache: 'no-store' });
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data?.roles) && data.roles.length > 0) {
-        return saveAdminRoleDefinitionsLocal(data.roles);
+        const { merged, hasLocalOnly } = mergeRoleDefinitionsLists(localRoles, data.roles);
+        const saved = saveAdminRoleDefinitionsLocal(merged);
+        if (hasLocalOnly) {
+          fetch('/api/admin/roles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ roles: saved }),
+          }).catch(() => {});
+        }
+        return saved;
       }
     }
   } catch {}
-  return getAdminRoleDefinitions();
+  return localRoles;
 }
 
-export async function fetchAdminDirectoryFromServer(): Promise<AdminDirectoryEntry[]> {
+export const LOCAL_DELETED_DIR_KEY = 'countsheet_admin_deleted_ids_v1';
+
+export function getLocalDeletedDirectoryIds(): Set<string> {
   try {
-    const res = await fetch(`/api/admin/directory?_t=${Date.now()}`, { cache: 'no-store' });
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data?.entries)) {
-        broadcastDirectoryUpdate(data.entries);
-        return data.entries;
+    const raw = localStorage.getItem(LOCAL_DELETED_DIR_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.map((x: any) => String(x || '').trim().toLowerCase()).filter(Boolean));
       }
     }
   } catch {}
+  return new Set<string>();
+}
+
+export function markLocalDirectoryIdDeleted(id?: string, email?: string): void {
+  try {
+    const set = getLocalDeletedDirectoryIds();
+    const cleanId = String(id || '').trim().toLowerCase();
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    if (cleanId) set.add(cleanId);
+    if (cleanEmail) {
+      set.add(cleanEmail);
+      set.add(`dir_${cleanEmail}`);
+    }
+    localStorage.setItem(LOCAL_DELETED_DIR_KEY, JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
+export function unmarkLocalDirectoryIdDeleted(id?: string, email?: string): void {
+  try {
+    const set = getLocalDeletedDirectoryIds();
+    const cleanId = String(id || '').trim().toLowerCase();
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    let changed = false;
+    if (cleanId && set.delete(cleanId)) changed = true;
+    if (cleanEmail) {
+      if (set.delete(cleanEmail)) changed = true;
+      if (set.delete(`dir_${cleanEmail}`)) changed = true;
+    }
+    if (changed) {
+      localStorage.setItem(LOCAL_DELETED_DIR_KEY, JSON.stringify(Array.from(set)));
+    }
+  } catch {}
+}
+
+export async function fetchAdminDirectoryFromServer(
+  accessToken?: string | null
+): Promise<AdminDirectoryEntry[]> {
+  const deletedSet = getLocalDeletedDirectoryIds();
+  let localEntries: AdminDirectoryEntry[] = [];
   try {
     const raw = localStorage.getItem(LOCAL_DIR_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) localEntries = parsed;
     }
   } catch {}
-  return [];
+
+  try {
+    const headers: Record<string, string> = {};
+    if (accessToken && accessToken.trim()) {
+      headers.Authorization = `Bearer ${accessToken.trim()}`;
+    }
+    const res = await fetch(`/api/admin/directory?_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers,
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.entries)) {
+        const remoteEntries: AdminDirectoryEntry[] = data.entries;
+        const map = new Map<string, AdminDirectoryEntry>();
+        const isDeleted = (item: AdminDirectoryEntry) => {
+          const idKey = String(item?.id || '').trim().toLowerCase();
+          const emailKey = String(item?.email || '').trim().toLowerCase();
+          if (emailKey === ADMIN_ONLY_EMAIL.toLowerCase()) return false;
+          return (
+            (idKey && deletedSet.has(idKey)) ||
+            (emailKey && (deletedSet.has(emailKey) || deletedSet.has(`dir_${emailKey}`)))
+          );
+        };
+
+        for (const item of localEntries) {
+          if (!item || isDeleted(item)) continue;
+          const k = String(item.email || item.id || '').trim().toLowerCase();
+          if (k) map.set(k, item);
+        }
+
+        const remoteKeys = new Map<string, AdminDirectoryEntry>();
+        for (const item of remoteEntries) {
+          if (!item || isDeleted(item)) continue;
+          const k = String(item.email || item.id || '').trim().toLowerCase();
+          if (k) {
+            remoteKeys.set(k, item);
+            const existingLocal = map.get(k);
+            if (!existingLocal) {
+              map.set(k, item);
+            } else {
+              const localTime = existingLocal.updatedAt || existingLocal.createdAt || '';
+              const remoteTime = item.updatedAt || item.createdAt || '';
+              if (!localTime || (remoteTime && remoteTime >= localTime)) {
+                map.set(k, item);
+              }
+            }
+          }
+        }
+
+        const merged = Array.from(map.values());
+        const unsyncedLocal = merged.filter((item) => {
+          const k = String(item.email || item.id || '').trim().toLowerCase();
+          if (!k) return false;
+          const rem = remoteKeys.get(k);
+          if (!rem) return true;
+          return rem.role !== item.role || rem.name !== item.name;
+        });
+
+        if (unsyncedLocal.length > 0) {
+          fetch('/api/admin/directory', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(accessToken && accessToken.trim()
+                ? { Authorization: `Bearer ${accessToken.trim()}` }
+                : {}),
+            },
+            body: JSON.stringify({ entries: unsyncedLocal }),
+          }).catch(() => {});
+        }
+
+        broadcastDirectoryUpdate(merged);
+        return merged;
+      }
+    }
+  } catch {}
+  return localEntries;
 }
 
 export function subscribeToRoleDefinitions(
@@ -349,7 +546,7 @@ export function getRoleDefinitionById(
     list.find((r) => r.id.toLowerCase() === mappedId || r.name.toLowerCase() === rawId) ||
     list.find((r) => r.id === 'senior_auditor') ||
     list[0] ||
-    DEFAULT_ROLE_DEFINITIONS[4]
+    DEFAULT_ROLE_DEFINITIONS[5]
   );
 }
 
@@ -364,7 +561,7 @@ export function doesRoleHavePermission(
     return true;
   }
   const def = getRoleDefinitionById(roleId, roles);
-  return def.permissions.includes('admin_console');
+  return def.id === 'admin' || def.permissions.includes('admin_console');
 }
 
 export function getRoleBadgeClasses(color: RoleBadgeColor): string {
@@ -412,21 +609,38 @@ export function verifyAdminPassword(inputCode: string | null | undefined): boole
 
 /**
  * Checks synchronously whether the given email has admin rights.
- * Admin Console is strictly restricted to icdhubsystems@gmail.com.
  */
 export function isUserAdminFromLocal(
   email: string | null | undefined,
-  _directory?: AdminDirectoryEntry[],
-  _roles?: AdminRoleDefinition[]
+  directory?: AdminDirectoryEntry[],
+  roles?: AdminRoleDefinition[]
 ): boolean {
   if (!email) return false;
   const cleanEmail = email.trim().toLowerCase();
-  return cleanEmail === ADMIN_ONLY_EMAIL.toLowerCase();
+  if (cleanEmail === ADMIN_ONLY_EMAIL.toLowerCase()) return true;
+
+  let dirList = directory;
+  if (!dirList) {
+    try {
+      const raw = localStorage.getItem(LOCAL_DIR_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) dirList = parsed;
+      }
+    } catch {
+      dirList = [];
+    }
+  }
+
+  const entry = dirList?.find(
+    (item) => item?.email && item.email.trim().toLowerCase() === cleanEmail
+  );
+  if (!entry?.role) return false;
+  return doesRoleHavePermission(entry.role, 'admin_console', roles);
 }
 
 /**
  * Returns the resolved role and permissions for a given email from local directory cache.
- * All roles have full operational access, while Admin Console is strictly accessible only to icdhubsystems@gmail.com.
  */
 export function getUserRoleAndPermissionsFromLocal(
   email: string | null | undefined,
@@ -456,19 +670,19 @@ export function getUserRoleAndPermissionsFromLocal(
   }
 
   const entry = dirList?.find((item) => item?.email && item.email.trim().toLowerCase() === cleanEmail);
-  const rawRoleId = entry?.role || (isStrictAdmin ? 'internal_compliance_manager' : 'senior_auditor');
+  const rawRoleId = entry?.role || (isStrictAdmin ? 'admin' : 'senior_auditor');
   const roleDefinition = getRoleDefinitionById(rawRoleId, roleList);
+  const hasAdminRole = isStrictAdmin || doesRoleHavePermission(roleDefinition.id, 'admin_console', roleList);
 
   return {
     roleId: roleDefinition.id,
     roleDefinition,
-    isAdmin: isStrictAdmin,
+    isAdmin: hasAdminRole,
   };
 }
 
 /**
  * Verifies with the server whether the given email or auth token has admin rights.
- * Admin Console is strictly restricted to icdhubsystems@gmail.com.
  */
 export async function verifyUserAdminAccess(
   email: string | null | undefined,
@@ -491,12 +705,19 @@ export async function verifyUserAdminAccess(
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.roles) && data.roles.length > 0) {
-        saveAdminRoleDefinitionsLocal(data.roles);
+        const { merged } = mergeRoleDefinitionsLists(getAdminRoleDefinitions(), data.roles);
+        saveAdminRoleDefinitionsLocal(merged);
       }
-      const roleId = data.role || (isStrictAdmin ? 'internal_compliance_manager' : 'senior_auditor');
+      const localInfo = getUserRoleAndPermissionsFromLocal(cleanEmail);
+      const roleId = data.role || localInfo.roleId || (isStrictAdmin ? 'admin' : 'senior_auditor');
       const roleDef = getRoleDefinitionById(roleId);
+      const isGrantedAdmin =
+        isStrictAdmin ||
+        Boolean(data.isAdmin) ||
+        localInfo.isAdmin ||
+        doesRoleHavePermission(roleDef.id, 'admin_console');
       return {
-        isAdmin: isStrictAdmin,
+        isAdmin: isGrantedAdmin,
         role: roleDef.id,
         permissions: roleDef.permissions,
       };
@@ -508,7 +729,7 @@ export async function verifyUserAdminAccess(
   // Fallback to local cache evaluation
   const localInfo = getUserRoleAndPermissionsFromLocal(cleanEmail);
   return {
-    isAdmin: isStrictAdmin,
+    isAdmin: localInfo.isAdmin,
     role: localInfo.roleId,
     permissions: localInfo.roleDefinition.permissions,
   };
@@ -581,7 +802,10 @@ export async function fetchMasterdataSheetsInfo(
   if (accessToken && accessToken.trim()) {
     headers.Authorization = `Bearer ${accessToken.trim()}`;
   }
-  const res = await fetch(`/api/admin/masterdata/sheets?${params.toString()}`, { headers });
+  const res = await fetch(`/api/admin/masterdata/sheets?${params.toString()}`, {
+    headers,
+    cache: 'no-store',
+  });
   if (!res.ok) {
     throw new Error('Failed to load masterdata sheets');
   }
@@ -610,12 +834,17 @@ export async function addMasterdataSheet(
 }
 
 export async function removeMasterdataSheet(
-  sheetName: string
+  sheetName: string,
+  accessToken?: string | null
 ): Promise<{ success: boolean; sheetName: string; totalItems: number; sheets: MasterdataSheetInfo[] }> {
   const isRemoveAll = sheetName === '__ALL__';
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken && accessToken.trim()) {
+    headers.Authorization = `Bearer ${accessToken.trim()}`;
+  }
   const res = await fetch('/api/admin/masterdata/sheets', {
     method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ sheetName, removeAll: isRemoveAll }),
   });
   const data = await res.json();
@@ -627,11 +856,16 @@ export async function removeMasterdataSheet(
 
 export async function syncMasterdataSheet(
   sheetName?: string,
-  spreadsheetUrl?: string
+  spreadsheetUrl?: string,
+  accessToken?: string | null
 ): Promise<{ success: boolean; totalItems: number; sheets: MasterdataSheetInfo[] }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken && accessToken.trim()) {
+    headers.Authorization = `Bearer ${accessToken.trim()}`;
+  }
   const res = await fetch('/api/admin/masterdata/sheets/sync', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ sheetName, spreadsheetUrl }),
   });
   const data = await res.json();

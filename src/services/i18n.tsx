@@ -143,11 +143,8 @@ export interface TranslationDictionary {
   autoSeasonalDesc: string;
   seasonalDecorations: string;
   seasonalDecorationsDesc: string;
-  decorativeCharacters: string;
-  densityOff: string;
-  densityMinimal: string;
-  densityBalanced: string;
-  densityPlayful: string;
+  themeAnimation: string;
+
   characterAnimation: string;
   characterAnimationOnDesc: string;
   characterAnimationOffDesc: string;
@@ -372,11 +369,8 @@ export const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     autoSeasonalDesc: 'Match theme to current calendar season',
     seasonalDecorations: 'Seasonal Decorations',
     seasonalDecorationsDesc: 'Panel characters, ornaments & themed objects',
-    decorativeCharacters: 'Decorative Characters',
-    densityOff: 'Off',
-    densityMinimal: 'Minimal',
-    densityBalanced: 'Balanced',
-    densityPlayful: 'Playful',
+    themeAnimation: 'Theme Animation',
+
     characterAnimation: 'Character Animation',
     characterAnimationOnDesc: 'Subtle sway, blink & float active',
     characterAnimationOffDesc: 'Static illustrations (Default Off)',
@@ -605,11 +599,8 @@ export const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     autoSeasonalDesc: '',
     seasonalDecorations: 'Palamuti',
     seasonalDecorationsDesc: '',
-    decorativeCharacters: 'Dami ng Karakter',
-    densityOff: 'Wala',
-    densityMinimal: 'Kaunti',
-    densityBalanced: 'Katamtaman',
-    densityPlayful: 'Marami',
+    themeAnimation: 'Animasyon ng Tema',
+
     characterAnimation: 'Galaw ng Karakter',
     characterAnimationOnDesc: '',
     characterAnimationOffDesc: '',
@@ -838,11 +829,8 @@ export const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     autoSeasonalDesc: '',
     seasonalDecorations: 'Mga Punî',
     seasonalDecorationsDesc: '',
-    decorativeCharacters: 'Kadamo sang Karakter',
-    densityOff: 'Wala',
-    densityMinimal: 'Diutay',
-    densityBalanced: 'Sakto',
-    densityPlayful: 'Madamo',
+    themeAnimation: 'Animasyon sang Tema',
+
     characterAnimation: 'Hulag sang Karakter',
     characterAnimationOnDesc: '',
     characterAnimationOffDesc: '',
@@ -1071,11 +1059,8 @@ export const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     autoSeasonalDesc: '',
     seasonalDecorations: 'Mga Puni',
     seasonalDecorationsDesc: '',
-    decorativeCharacters: 'Karake i’ang Karakter',
-    densityOff: 'Ara',
-    densityMinimal: 'Intik',
-    densityBalanced: 'Sakto',
-    densityPlayful: 'Marake',
+    themeAnimation: 'Animasyon sang Tema',
+
     characterAnimation: 'Giho i’ang Karakter',
     characterAnimationOnDesc: '',
     characterAnimationOffDesc: '',
@@ -1304,11 +1289,8 @@ export const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     autoSeasonalDesc: '',
     seasonalDecorations: 'Palamuti',
     seasonalDecorationsDesc: '',
-    decorativeCharacters: 'Dami ng Karakter',
-    densityOff: 'Wala',
-    densityMinimal: 'Kaunti',
-    densityBalanced: 'Katamtaman',
-    densityPlayful: 'Marami',
+    themeAnimation: 'Animasyon ng Tema',
+
     characterAnimation: 'Galaw ng Karakter',
     characterAnimationOnDesc: '',
     characterAnimationOffDesc: '',
@@ -1537,11 +1519,8 @@ export const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     autoSeasonalDesc: '',
     seasonalDecorations: 'Mga Samno',
     seasonalDecorationsDesc: '',
-    decorativeCharacters: 'Kadakulan nin Karakter',
-    densityOff: 'Mayo',
-    densityMinimal: 'Diit',
-    densityBalanced: 'Sakto',
-    densityPlayful: 'Dakol',
+    themeAnimation: 'Animasyon nin Tema',
+
     characterAnimation: 'Hiro nin Karakter',
     characterAnimationOnDesc: '',
     characterAnimationOffDesc: '',

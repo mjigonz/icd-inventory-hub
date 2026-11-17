@@ -37,7 +37,7 @@ import {
 import { SEOHead } from '../components/SEOHead';
 import { PanelDecoration } from '../components/PanelDecoration';
 import { SelectedBranch, MonitoringBlock } from '../types';
-import { getBranchMonitoringBlocks } from '../services/db';
+import { getBranchMonitoringBlocks, syncMasterdataFromServerIfUpdated } from '../services/db';
 import {
   broadcastDirectoryUpdate,
   AdminRoleDefinition,
@@ -57,6 +57,9 @@ import {
   addMasterdataSheet,
   removeMasterdataSheet,
   syncMasterdataSheet,
+  getLocalDeletedDirectoryIds,
+  markLocalDirectoryIdDeleted,
+  unmarkLocalDirectoryIdDeleted,
 } from '../services/adminService';
 import {
   getAdminDriveLinksConfig,
@@ -68,7 +71,7 @@ import {
   extractSpreadsheetId,
 } from '../services/auditReportService';
 import { CustomSelect, SelectOption } from '../components/CustomSelect';
-import { NotifyWebsiteUpdateAvailable } from '../hooks/useAppUpdate';
+import { NotifyWebsiteUpdateAvailable, REALTIME_DATA_SYNC_EVENT } from '../hooks/useAppUpdate';
 import { PresenceStats, fetchOnlinePresence, PRESENCE_UPDATED_EVENT } from '../services/presenceService';
 
 export interface AdminDirectoryEntry {
@@ -79,6 +82,7 @@ export interface AdminDirectoryEntry {
   branchName: string;
   status: 'active' | 'on_field' | 'standby';
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface AdminDispatchMessage {
@@ -111,15 +115,54 @@ const LOCAL_DIR_KEY = 'countsheet_admin_directory_v1';
 const LOCAL_MSG_KEY = 'countsheet_admin_messages_v1';
 
 const DEFAULT_DIRECTORY: AdminDirectoryEntry[] = [
-  {
-    id: 'dir_icdhubsystems@gmail.com',
-    email: 'icdhubsystems@gmail.com',
-    name: 'ICD Hub Systems',
-    role: 'internal_compliance_manager',
-    branchName: '',
-    status: 'active',
-    createdAt: new Date().toISOString(),
-  },
+  { id: 'dir_icdhubsystems@gmail.com', email: 'icdhubsystems@gmail.com', name: 'ICD Hub Systems', role: 'internal_compliance_manager', branchName: '', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_internalcompliance@sidc.coop', email: 'internalcompliance@sidc.coop', name: 'SIDC Internal Compliance', role: 'internal_compliance_manager', branchName: '', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_jccelis@sidc.coop', email: 'jccelis@sidc.coop', name: 'Jessica C. Celis', role: 'assistant_manager_reach', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_dlcollera@sidc.coop', email: 'dlcollera@sidc.coop', name: 'Desiree L. Collera', role: 'assistant_manager_return', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_zaasamonte@sidc.coop', email: 'zaasamonte@sidc.coop', name: 'Zandra Angelia A. Samonte', role: 'internal_compliance_supervisor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_voncedrickj.sidc@gmail.com', email: 'voncedrickj.sidc@gmail.com', name: 'Von Cedrick Jimenez', role: 'senior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_jjbelela.sidc@gmail.com', email: 'jjbelela.sidc@gmail.com', name: 'Joanne Belela', role: 'senior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_jadejuan.sidc@gmail.com', email: 'jadejuan.sidc@gmail.com', name: 'Jesrel De Juan', role: 'senior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_fcfrancisco.sidc@gmail.com', email: 'fcfrancisco.sidc@gmail.com', name: 'Franz Lordan C. Francisco', role: 'senior_auditor', branchName: 'NLBO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_esmabealyssa13@gmail.com', email: 'esmabealyssa13@gmail.com', name: 'Alyssa Maries R. Esmabe', role: 'senior_auditor', branchName: 'NLBO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_kathleenkaye.sidc@gmail.com', email: 'kathleenkaye.sidc@gmail.com', name: 'Kathleen Kaye R. Macatangay', role: 'internal_compliance_assistant_junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_jcadion.sidc@gmail.com', email: 'jcadion.sidc@gmail.com', name: 'Jeylord C. Cadion', role: 'internal_compliance_assistant_junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_roshamarie.sidc@gmail.com', email: 'roshamarie.sidc@gmail.com', name: 'Rosha Marie Dipasupil', role: 'internal_compliance_assistant_junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_mjigonzalessidc@gmail.com', email: 'mjigonzalessidc@gmail.com', name: 'Mark Jerrold I. Gonzales', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_jeromeicd.sidc@gmail.com', email: 'jeromeicd.sidc@gmail.com', name: 'Jerome R. De Leon', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_avpcultura.icd.sidc@gmail.com', email: 'avpcultura.icd.sidc@gmail.com', name: 'Anne Vi Cultura', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_jeccultura30@gmail.com', email: 'jeccultura30@gmail.com', name: 'A. Cultura', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_icdjoyce.sidc@gmail.com', email: 'icdjoyce.sidc@gmail.com', name: 'Joyce Quinery Andal', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_yarahmichaelaburog.sidc@gmail.com', email: 'yarahmichaelaburog.sidc@gmail.com', name: 'Yarah Michaela Burog', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_cbpagcaliwagan.sidc26@gmail.com', email: 'cbpagcaliwagan.sidc26@gmail.com', name: 'Christian B. Pagcaliwagan', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_caguimbalsidc@gmail.com', email: 'caguimbalsidc@gmail.com', name: 'J.C. Caguimbal', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_mharcedrick.sidc@gmail.com', email: 'mharcedrick.sidc@gmail.com', name: 'Mhar Cedrick Dimaano', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_mwplata.sidc@gmail.com', email: 'mwplata.sidc@gmail.com', name: 'Wilson Plata', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_cpolitado16.sidc@gmail.com', email: 'cpolitado16.sidc@gmail.com', name: 'Cecile Politado', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_betty.sidc@gmail.com', email: 'betty.sidc@gmail.com', name: 'Rezylyn D. Aguado (Betty)', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_jamespatricklira.sidc@gmail.com', email: 'jamespatricklira.sidc@gmail.com', name: 'James Patrick Lira', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_ilagmarielle.sidc@gmail.com', email: 'ilagmarielle.sidc@gmail.com', name: 'Marielle Ilag', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_mmespeleta.sidc@gmail.com', email: 'mmespeleta.sidc@gmail.com', name: 'M. Espeleta', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_ghenzzguintu@gmail.com', email: 'ghenzzguintu@gmail.com', name: 'Ghenzz M. Guintu', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_joyceagsao0.sidc@gmail.com', email: 'joyceagsao0.sidc@gmail.com', name: 'Joyce Faith Agsao', role: 'junior_auditor', branchName: 'BICOL', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_kdelacruzm.sidc@gmail.com', email: 'kdelacruzm.sidc@gmail.com', name: 'Kimberly D. Mandia', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_sidc.kdmandia@gmail.com', email: 'sidc.kdmandia@gmail.com', name: 'Kimberly D. Mandia (SIDC)', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_maryjeanpastor.sidc@gmail.com', email: 'maryjeanpastor.sidc@gmail.com', name: 'Mary Jean Pastor', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_sidc.jenmark@gmail.com', email: 'sidc.jenmark@gmail.com', name: 'Jen Mark Luha', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_aiza.sidc@gmail.com', email: 'aiza.sidc@gmail.com', name: 'Aiza Tapay', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_sidc.jesser@gmail.com', email: 'sidc.jesser@gmail.com', name: 'Jesser James A. Malaluan', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_sidc.malaluan@gmail.com', email: 'sidc.malaluan@gmail.com', name: 'J. Malaluan', role: 'junior_auditor', branchName: 'MIMARO', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_airene.icd24.sidc@gmail.com', email: 'airene.icd24.sidc@gmail.com', name: 'Airene Rica Cubillas', role: 'junior_auditor', branchName: 'PALAWAN', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_airene.icd24.sidc1@gmail.com', email: 'airene.icd24.sidc1@gmail.com', name: 'Airene Rica Cubillas (Palawan)', role: 'junior_auditor', branchName: 'PALAWAN', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_mercadosyralen@gmail.com', email: 'mercadosyralen@gmail.com', name: 'Syra Len Mercado', role: 'junior_auditor', branchName: 'PALAWAN', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_nestle.sidc@gmail.com', email: 'nestle.sidc@gmail.com', name: 'Nestle Esmolada', role: 'junior_auditor', branchName: 'VISAYAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_hazel.dlssidc@gmail.com', email: 'hazel.dlssidc@gmail.com', name: 'Hazel D. Delos Santos', role: 'junior_auditor', branchName: 'VISAYAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_hzldlssnts.sidc@gmail.com', email: 'hzldlssnts.sidc@gmail.com', name: 'Hazel D. Delos Santos (Visayas)', role: 'junior_auditor', branchName: 'VISAYAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_lilagrcntqd.sidc@gmail.com', email: 'lilagrcntqd.sidc@gmail.com', name: 'Lila Grace M. Antiquado', role: 'junior_auditor', branchName: 'VISAYAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_pclandicho.sidc@gmail.com', email: 'pclandicho.sidc@gmail.com', name: 'P. Landicho', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_chedrielbalmes08@gmail.com', email: 'chedrielbalmes08@gmail.com', name: 'Chedriel Balmes', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_syjer07.sidc@gmail.com', email: 'syjer07.sidc@gmail.com', name: 'Syjer', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'dir_sidc.icd2025@gmail.com', email: 'sidc.icd2025@gmail.com', name: 'SIDC ICD BSO', role: 'junior_auditor', branchName: 'BATANGAS', status: 'active', createdAt: '2026-01-01T00:00:00.000Z' },
 ];
 
 export const AdminView: React.FC<AdminViewProps> = ({
@@ -395,11 +438,17 @@ export const AdminView: React.FC<AdminViewProps> = ({
     }
   }, [roles]);
 
+  const roleNameInputRef = React.useRef<HTMLInputElement | null>(null);
+
   // Select a role in the Add Email / Auditor panel and load its editable fields inline
-  const handleSelectInputRole = (roleId: string) => {
+  const handleSelectInputRole = async (roleId: string) => {
     if (roleId === '__new__') {
       handleStartAddRole();
       return;
+    }
+    // If user was typing a new role and switches dropdown, save the typed new role first so it isn't lost
+    if (isAddingNewRole && roleFormName.trim()) {
+      await persistInlineRoleChanges({ forceCreateNew: true, silentToast: true });
     }
     setInputRole(roleId);
     setIsAddingNewRole(false);
@@ -420,6 +469,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setRoleFormDesc('');
     setRoleFormColor('indigo');
     setRoleFormPermissions(ROLE_PERMISSION_CATALOG.map((p) => p.key));
+    setTimeout(() => {
+      roleNameInputRef.current?.focus();
+    }, 30);
   };
 
   const handleStartEditRole = (roleDef: AdminRoleDefinition) => {
@@ -453,6 +505,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
       if (!options?.silentToast) {
         showToast('Please enter a Role Type name.', 'error');
       }
+      setTimeout(() => {
+        roleNameInputRef.current?.focus();
+      }, 30);
       return inputRole;
     }
 
@@ -461,6 +516,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     try {
       let nextRoles: AdminRoleDefinition[];
       let resolvedRoleId = editingRoleId || inputRole;
+      const nowIso = new Date().toISOString();
 
       if (shouldCreateNew) {
         const slugId = cleanName
@@ -479,6 +535,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
           color: roleFormColor,
           permissions: roleFormPermissions,
           isSystem: false,
+          updatedAt: nowIso,
         };
         nextRoles = [...roles, newRole];
         resolvedRoleId = newRole.id;
@@ -496,18 +553,22 @@ export const AdminView: React.FC<AdminViewProps> = ({
             description: roleFormDesc.trim(),
             color: roleFormColor,
             permissions: ensuredPerms,
+            updatedAt: nowIso,
           };
         });
         resolvedRoleId = targetId;
       }
 
+      setIsAddingNewRole(false);
       setRoles(nextRoles);
       setInputRole(resolvedRoleId);
       setEditingRoleId(resolvedRoleId);
-      setIsAddingNewRole(false);
 
       const saved = await saveAdminRoleDefinitions(nextRoles);
       setRoles(saved);
+      setInputRole(resolvedRoleId);
+      setEditingRoleId(resolvedRoleId);
+
       if (!options?.silentToast) {
         showToast(
           shouldCreateNew
@@ -679,7 +740,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
     }
     try {
       const info = await fetchMasterdataSheetsInfo(queryUrlParam, accessToken);
-      if (options?.syncConfigFromServer && info.spreadsheetUrl) {
+      const isUrlInputFocused =
+        typeof document !== 'undefined' &&
+        document.activeElement?.getAttribute?.('data-masterdata-url-input') === 'true';
+      if (
+        options?.syncConfigFromServer &&
+        info.spreadsheetUrl &&
+        !(options?.silent && isUrlInputFocused)
+      ) {
         setMasterdataSpreadsheetUrl(info.spreadsheetUrl);
         try {
           localStorage.setItem('countsheet_admin_masterdata_url_v1', info.spreadsheetUrl);
@@ -743,13 +811,30 @@ export const AdminView: React.FC<AdminViewProps> = ({
     }
   };
 
-  // Load Masterdata Sheets configuration and available tabs from server on mount
+  // Load Masterdata Sheets configuration and available tabs from server on mount & on live cross-device sync
   useEffect(() => {
     void loadAvailableMasterdataTabs(undefined, {
       silent: false,
       syncConfigFromServer: true,
     });
   }, [accessToken]);
+
+  useEffect(() => {
+    const refreshSheetsLive = () => {
+      if (isLoadingSheets) return;
+      void loadAvailableMasterdataTabs(undefined, {
+        silent: true,
+        syncConfigFromServer: true,
+      });
+    };
+
+    window.addEventListener(REALTIME_DATA_SYNC_EVENT, refreshSheetsLive);
+    window.addEventListener('masterdata-updated', refreshSheetsLive);
+    return () => {
+      window.removeEventListener(REALTIME_DATA_SYNC_EVENT, refreshSheetsLive);
+      window.removeEventListener('masterdata-updated', refreshSheetsLive);
+    };
+  }, [accessToken, isLoadingSheets]);
 
   const masterdataSheetSelectOptions = useMemo<SelectOption[]>(() => {
     const combined: string[] = [];
@@ -798,6 +883,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
     try {
       const res = await addMasterdataSheet(sheet, masterdataSpreadsheetUrl, accessToken);
       setMasterdataSheets(res.sheets);
+      await syncMasterdataFromServerIfUpdated(branch);
+      NotifyWebsiteUpdateAvailable();
       showToast(
         isSelectedSheetAlreadyLoaded
           ? `Updated sheet ${res.sheetName} (${res.addedCount.toLocaleString()} items)`
@@ -814,11 +901,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const handleRemoveSheet = async (sheetName: string) => {
     setIsLoadingSheets(true);
     try {
-      const res = await removeMasterdataSheet(sheetName);
+      const res = await removeMasterdataSheet(sheetName, accessToken);
       setMasterdataSheets(res.sheets || []);
       if (sheetName === '__ALL__' || inputSheetName.trim().toUpperCase() === sheetName.trim().toUpperCase()) {
         setInputSheetName('');
       }
+      await syncMasterdataFromServerIfUpdated(branch);
+      NotifyWebsiteUpdateAvailable();
       showToast(sheetName === '__ALL__' ? 'Removed all masterdata sheets' : `Removed sheet ${sheetName}`);
       void loadAvailableMasterdataTabs(masterdataSpreadsheetUrl, { silent: true });
     } catch (err: any) {
@@ -831,8 +920,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const handleSyncSheet = async (sheetName?: string) => {
     setIsLoadingSheets(true);
     try {
-      const res = await syncMasterdataSheet(sheetName, masterdataSpreadsheetUrl);
+      const res = await syncMasterdataSheet(sheetName, masterdataSpreadsheetUrl, accessToken);
       setMasterdataSheets(res.sheets);
+      await syncMasterdataFromServerIfUpdated(branch);
+      NotifyWebsiteUpdateAvailable();
       showToast(sheetName ? `Refreshed sheet ${sheetName}` : 'Refreshed all masterdata sheets');
       if (!sheetName) {
         void loadAvailableMasterdataTabs(masterdataSpreadsheetUrl, { silent: true });
@@ -858,10 +949,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
         setMasterdataSheets(res.sheets);
         showToast(`Saved Masterdata link & added sheet ${res.sheetName}`);
       } else {
-        const res = await syncMasterdataSheet(undefined, cleanUrl);
+        const res = await syncMasterdataSheet(undefined, cleanUrl, accessToken);
         setMasterdataSheets(res.sheets);
         showToast('Saved Masterdata sheets configuration.');
       }
+      await syncMasterdataFromServerIfUpdated(branch);
       void loadAvailableMasterdataTabs(cleanUrl, { silent: true });
       NotifyWebsiteUpdateAvailable();
     } catch (err: any) {
@@ -905,8 +997,16 @@ export const AdminView: React.FC<AdminViewProps> = ({
       setIsLoadingSync(true);
     }
     try {
+      const authHeaders: Record<string, string> =
+        accessToken && accessToken.trim()
+          ? { Authorization: `Bearer ${accessToken.trim()}` }
+          : {};
+
       const [dirRes, msgRes] = await Promise.all([
-        fetch('/api/admin/directory').catch(() => null),
+        fetch(`/api/admin/directory?_t=${Date.now()}`, {
+          cache: 'no-store',
+          headers: authHeaders,
+        }).catch(() => null),
         fetch('/api/admin/messages').catch(() => null),
       ]);
 
@@ -915,22 +1015,57 @@ export const AdminView: React.FC<AdminViewProps> = ({
         const remoteEntries: AdminDirectoryEntry[] = Array.isArray(dirData?.entries) ? dirData.entries : [];
         const discovered: Array<{ email: string; name: string; role: string; spreadsheet_name?: string }> =
           Array.isArray(dirData?.discoveredMembers) ? dirData.discoveredMembers : [];
+        const deletedSet = getLocalDeletedDirectoryIds();
+        const isDeleted = (item: { id?: string; email?: string }) => {
+          const idKey = String(item?.id || '').trim().toLowerCase();
+          const emailKey = String(item?.email || '').trim().toLowerCase();
+          if (emailKey === 'icdhubsystems@gmail.com') return false;
+          return (
+            (idKey && deletedSet.has(idKey)) ||
+            (emailKey && (deletedSet.has(emailKey) || deletedSet.has(`dir_${emailKey}`)))
+          );
+        };
+
+        let entriesToUpload: AdminDirectoryEntry[] = [];
 
         setDirectory((prev) => {
           const map = new Map<string, AdminDirectoryEntry>();
-          prev.forEach((item) => map.set(item.id || item.email.toLowerCase(), item));
+          prev.forEach((item) => {
+            if (!item || isDeleted(item)) return;
+            const k = (item.email || item.id || '').trim().toLowerCase();
+            if (k) map.set(k, item);
+          });
+
+          const remoteMap = new Map<string, AdminDirectoryEntry>();
           remoteEntries.forEach((item) => {
-            if (item && (item.id || item.email)) {
-              map.set(item.id || item.email.toLowerCase(), item);
+            if (item && (item.id || item.email) && !isDeleted(item)) {
+              const k = (item.email || item.id || '').trim().toLowerCase();
+              if (k) {
+                remoteMap.set(k, item);
+                const existing = map.get(k);
+                if (!existing) {
+                  map.set(k, item);
+                } else {
+                  const localTime = existing.updatedAt || existing.createdAt || '';
+                  const remoteTime = item.updatedAt || item.createdAt || '';
+                  if (!localTime || (remoteTime && remoteTime >= localTime)) {
+                    map.set(k, item);
+                  }
+                }
+              }
             }
           });
+
           discovered.forEach((d) => {
             const em = (d.email || '').trim().toLowerCase();
+            if (!em || em.endsWith('@sidc.local') || isDeleted({ email: em, id: `dir_${em}` })) {
+              return;
+            }
             const hasEmailAlready = Array.from(map.values()).some(
               (existing) => existing.email.toLowerCase() === em
             );
-            if (em && !hasEmailAlready && !em.endsWith('@sidc.local')) {
-              map.set(`dir_${em}`, {
+            if (!hasEmailAlready) {
+              map.set(em, {
                 id: `dir_${em}`,
                 email: em,
                 name: d.name || em.split('@')[0],
@@ -941,12 +1076,32 @@ export const AdminView: React.FC<AdminViewProps> = ({
               });
             }
           });
+
           const merged = Array.from(map.values());
+          entriesToUpload = merged.filter((item) => {
+            const k = (item.email || item.id || '').trim().toLowerCase();
+            if (!k) return false;
+            const rem = remoteMap.get(k);
+            if (!rem) return true;
+            return rem.role !== item.role || rem.name !== item.name;
+          });
+
           try {
             localStorage.setItem(LOCAL_DIR_KEY, JSON.stringify(merged));
           } catch {}
           return merged;
         });
+
+        if (entriesToUpload.length > 0) {
+          fetch('/api/admin/directory', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders,
+            },
+            body: JSON.stringify({ entries: entriesToUpload }),
+          }).catch(() => {});
+        }
       }
 
       if (msgRes && msgRes.ok) {
@@ -973,7 +1128,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   useEffect(() => {
     void syncWithServer({ silent: true });
-  }, [branch?.id]);
+  }, [branch?.id, accessToken]);
 
   // Extract active auditors from Monitoring blocks
   const activeMonitoringAuditors = useMemo(() => {
@@ -1048,6 +1203,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       createdAt: new Date().toISOString(),
     };
 
+    unmarkLocalDirectoryIdDeleted(id, cleanEmail);
     const nextList = [
       newEntry,
       ...directory.filter((item) => item.id !== id && (!cleanEmail || item.email.toLowerCase() !== cleanEmail)),
@@ -1061,7 +1217,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
     try {
       await fetch('/api/admin/directory', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken && accessToken.trim()
+            ? { Authorization: `Bearer ${accessToken.trim()}` }
+            : {}),
+        },
         body: JSON.stringify(newEntry),
       });
     } catch {}
@@ -1117,6 +1278,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       return;
     }
 
+    addedEntries.forEach((a) => unmarkLocalDirectoryIdDeleted(a.id, a.email));
     const addedIds = new Set(addedEntries.map((a) => a.id));
     const nextList = [...addedEntries, ...directory.filter((d) => !addedIds.has(d.id))];
     persistDirectoryLocal(nextList);
@@ -1128,7 +1290,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
     try {
       await fetch('/api/admin/directory', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken && accessToken.trim()
+            ? { Authorization: `Bearer ${accessToken.trim()}` }
+            : {}),
+        },
         body: JSON.stringify({ entries: addedEntries }),
       });
     } catch {}
@@ -1139,32 +1306,45 @@ export const AdminView: React.FC<AdminViewProps> = ({
     entry: AdminDirectoryEntry,
     newRole: AdminDirectoryEntry['role']
   ) => {
-    if (entry.role === newRole) return;
+    const resolvedNewRole = getRoleDefinitionById(newRole, roles).id;
+    if (entry.role === resolvedNewRole) return;
 
+    const nowIso = new Date().toISOString();
     const updatedEntry: AdminDirectoryEntry = {
       ...entry,
-      role: newRole,
+      role: resolvedNewRole,
+      updatedAt: nowIso,
     };
 
-    const nextList = directory.map((item) => (item.id === entry.id ? updatedEntry : item));
+    const nextList = directory.map((item) =>
+      item.id === entry.id ||
+      (entry.email && item.email.toLowerCase() === entry.email.toLowerCase())
+        ? updatedEntry
+        : item
+    );
     persistDirectoryLocal(nextList);
     broadcastDirectoryUpdate(nextList);
 
-    const isPromotingToAdmin = doesRoleHavePermission(newRole, 'admin_console', roles);
+    const isPromotingToAdmin = doesRoleHavePermission(resolvedNewRole, 'admin_console', roles);
     const wasAdmin = doesRoleHavePermission(entry.role, 'admin_console', roles);
 
     if (isPromotingToAdmin && !wasAdmin) {
-      showToast(`Assigned ${entry.name} to ${roleLabelText(newRole)} (Admin Console access granted)`);
+      showToast(`Assigned ${entry.name} to ${roleLabelText(resolvedNewRole)} (Admin Console access granted)`);
     } else if (!isPromotingToAdmin && wasAdmin) {
-      showToast(`Assigned ${entry.name} to ${roleLabelText(newRole)} (Admin Console access removed)`);
+      showToast(`Assigned ${entry.name} to ${roleLabelText(resolvedNewRole)} (Admin Console access removed)`);
     } else {
-      showToast(`Updated role for ${entry.name} to ${roleLabelText(newRole)}`);
+      showToast(`Updated role for ${entry.name} to ${roleLabelText(resolvedNewRole)}`);
     }
 
     try {
       await fetch('/api/admin/directory', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken && accessToken.trim()
+            ? { Authorization: `Bearer ${accessToken.trim()}` }
+            : {}),
+        },
         body: JSON.stringify(updatedEntry),
       });
     } catch (e) {
@@ -1202,26 +1382,39 @@ export const AdminView: React.FC<AdminViewProps> = ({
       return;
     }
 
+    const resolvedRole = getRoleDefinitionById(editUserForm.role || entry.role, roles).id;
+    const nowIso = new Date().toISOString();
     const updatedEntry: AdminDirectoryEntry = {
       ...entry,
       name: cleanName,
       email: cleanEmail,
-      role: editUserForm.role || entry.role,
-      branchName: '',
+      role: resolvedRole,
+      branchName: entry.branchName || '',
       status: editUserForm.status || entry.status || 'active',
+      updatedAt: nowIso,
     };
 
-    const nextList = directory.map((item) => (item.id === entry.id ? updatedEntry : item));
+    const nextList = directory.map((item) =>
+      item.id === entry.id ||
+      (entry.email && item.email.toLowerCase() === entry.email.toLowerCase())
+        ? updatedEntry
+        : item
+    );
     persistDirectoryLocal(nextList);
     broadcastDirectoryUpdate(nextList);
     setEditingUserId(null);
 
-    showToast(`Saved ${updatedEntry.name || updatedEntry.email}`);
+    showToast(`Saved ${updatedEntry.name || updatedEntry.email} as ${roleLabelText(resolvedRole)}`);
 
     try {
       await fetch('/api/admin/directory', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken && accessToken.trim()
+            ? { Authorization: `Bearer ${accessToken.trim()}` }
+            : {}),
+        },
         body: JSON.stringify(updatedEntry),
       });
     } catch (e) {
@@ -1229,8 +1422,78 @@ export const AdminView: React.FC<AdminViewProps> = ({
     }
   };
 
+  const [isSavingDirectory, setIsSavingDirectory] = useState(false);
+
+  // Save & sync all Emails & Auditors (including any currently open inline user edit)
+  const handleSaveAllDirectory = async () => {
+    setIsSavingDirectory(true);
+    try {
+      const nowIso = new Date().toISOString();
+      let listToSave: AdminDirectoryEntry[] = directory.map((item) => ({
+        ...item,
+        role: getRoleDefinitionById(item.role, roles).id,
+        updatedAt: item.updatedAt || nowIso,
+      }));
+
+      if (editingUserId) {
+        const activeEntry = listToSave.find((item) => item.id === editingUserId);
+        if (activeEntry) {
+          const cleanEmail = editUserForm.email.trim().toLowerCase() || activeEntry.email;
+          const cleanName =
+            editUserForm.name.trim() ||
+            (cleanEmail ? cleanEmail.split('@')[0] : activeEntry.name);
+          const resolvedRole = getRoleDefinitionById(
+            editUserForm.role || activeEntry.role,
+            roles
+          ).id;
+          const updatedActive: AdminDirectoryEntry = {
+            ...activeEntry,
+            name: cleanName,
+            email: cleanEmail,
+            role: resolvedRole,
+            status: editUserForm.status || activeEntry.status || 'active',
+            updatedAt: nowIso,
+          };
+          listToSave = listToSave.map((item) =>
+            item.id === editingUserId ? updatedActive : item
+          );
+          setEditingUserId(null);
+        }
+      }
+
+      persistDirectoryLocal(listToSave);
+      broadcastDirectoryUpdate(listToSave);
+
+      const authHeaders: Record<string, string> =
+        accessToken && accessToken.trim()
+          ? { Authorization: `Bearer ${accessToken.trim()}` }
+          : {};
+
+      await Promise.all([
+        fetch('/api/admin/directory', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders,
+          },
+          body: JSON.stringify({ entries: listToSave }),
+        }),
+        saveAdminRoleDefinitions(roles),
+      ]);
+
+      showToast(`Saved Emails & Auditors (${listToSave.length} entries)`);
+      NotifyWebsiteUpdateAvailable();
+    } catch (e) {
+      console.warn('Failed to save directory to server:', e);
+      showToast('Saved Emails & Auditors locally.', 'success');
+    } finally {
+      setIsSavingDirectory(false);
+    }
+  };
+
   // Remove email / auditor
   const handleRemoveEntry = async (entry: AdminDirectoryEntry) => {
+    markLocalDirectoryIdDeleted(entry.id, entry.email);
     const nextList = directory.filter((item) => item.id !== entry.id);
     persistDirectoryLocal(nextList);
     broadcastDirectoryUpdate(nextList);
@@ -1240,6 +1503,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
     try {
       await fetch(`/api/admin/directory/${encodeURIComponent(entry.id)}`, {
         method: 'DELETE',
+        headers:
+          accessToken && accessToken.trim()
+            ? { Authorization: `Bearer ${accessToken.trim()}` }
+            : {},
       });
     } catch {}
   };
@@ -1794,15 +2061,15 @@ export const AdminView: React.FC<AdminViewProps> = ({
       {/* Google Drive Links & Masterdata Sheets side-by-side on the same horizontal level */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
       {/* Google Drive Links Configuration: Forms Location, Inventory Template, Overall Count Template */}
-      <div className="lg:col-span-5 relative bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-blue-200/90 dark:border-blue-900/60 shadow-xs space-y-3">
+      <div className="lg:col-span-5 min-w-0 overflow-hidden relative bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-blue-200/90 dark:border-blue-900/60 shadow-xs space-y-3">
         <PanelDecoration position="top-right" tier="secondary" variant={1} />
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/25 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
               <Link2 className="w-4 h-4" />
             </div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
               Google Drive Links
             </h3>
           </div>
@@ -1849,7 +2116,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   value={formsLocationLink}
                   onChange={(e) => setFormsLocationLink(e.target.value)}
                   placeholder="https://drive.google.com/drive/folders/..."
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  className="w-full min-w-0 px-3 py-2 text-xs rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                 />
                 {parsedFormsResource && (
                   <a
@@ -1889,7 +2156,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   value={inventoryTemplateLink}
                   onChange={(e) => setInventoryTemplateLink(e.target.value)}
                   placeholder="https://docs.google.com/spreadsheets/d/..."
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  className="w-full min-w-0 px-3 py-2 text-xs rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                 />
                 {parsedInventoryResource && (
                   <a
@@ -1929,7 +2196,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   value={overallCountTemplateLink}
                   onChange={(e) => setOverallCountTemplateLink(e.target.value)}
                   placeholder="https://docs.google.com/spreadsheets/d/..."
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  className="w-full min-w-0 px-3 py-2 text-xs rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                 />
                 {parsedOverallResource && (
                   <a
@@ -1960,15 +2227,15 @@ export const AdminView: React.FC<AdminViewProps> = ({
       </div>
 
       {/* Masterdata Sheets: Additional Data (GRO, OTHERS + Custom Sheets) */}
-      <div className="lg:col-span-7 relative bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-emerald-200/90 dark:border-emerald-900/60 shadow-xs space-y-3">
+      <div className="lg:col-span-7 min-w-0 overflow-hidden relative bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-emerald-200/90 dark:border-emerald-900/60 shadow-xs space-y-3">
         <PanelDecoration position="top-right" tier="secondary" variant={2} />
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
               <FileSpreadsheet className="w-4 h-4" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-sm font-bold text-slate-900 dark:text-white">
                   Masterdata Sheets
@@ -1980,7 +2247,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
               onClick={() => handleSyncSheet()}
@@ -2007,13 +2274,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-          {/* Masterdata Sheets Google Sheet Link in the horizontal bar */}
-          <div className="flex items-center gap-1.5 flex-1 min-w-[220px]">
+        <div className="space-y-2.5 min-w-0">
+          {/* Row 1: Masterdata Sheets Google Sheet Link */}
+          <div className="flex items-center gap-1.5 w-full min-w-0">
             <div className="relative flex-1 min-w-0">
-              <Link2 className="w-3.5 h-3.5 text-emerald-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <Link2 className="w-3.5 h-3.5 text-emerald-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
+                data-masterdata-url-input="true"
                 value={masterdataSpreadsheetUrl}
                 onChange={(e) => setMasterdataSpreadsheetUrl(e.target.value)}
                 onBlur={() => {
@@ -2023,7 +2291,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 }}
                 placeholder="https://docs.google.com/spreadsheets/d/..."
                 aria-label="Masterdata Spreadsheet Link"
-                className="w-full pl-8 pr-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                className="w-full min-w-0 pl-8 pr-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800/90 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
               />
             </div>
 
@@ -2039,10 +2307,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </a>
           </div>
 
-          {/* Sheet Selector & Action Buttons */}
-          <form onSubmit={handleAddSheet} className="flex-1 flex items-center gap-1.5 min-w-0 flex-wrap sm:flex-nowrap">
-            <div className="flex-1 min-w-[180px]">
+          {/* Row 2: Sheet Selector & Action Buttons */}
+          <form onSubmit={handleAddSheet} className="flex flex-wrap items-center gap-1.5 w-full min-w-0">
+            <div className="flex-1 min-w-[170px]">
               <CustomSelect
+                className="w-full"
                 value={inputSheetName}
                 onChange={(val) => setInputSheetName(val)}
                 options={masterdataSheetSelectOptions}
@@ -2270,7 +2539,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <select
                       value={isAddingNewRole ? '__new__' : inputRole}
-                      onChange={(e) => handleSelectInputRole(e.target.value)}
+                      onChange={(e) => void handleSelectInputRole(e.target.value)}
                       aria-label="Select Role Type"
                       className="px-2.5 py-1.5 text-xs font-bold rounded-xl bg-white dark:bg-zinc-900 border border-purple-300 dark:border-purple-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer"
                     >
@@ -2279,13 +2548,26 @@ export const AdminView: React.FC<AdminViewProps> = ({
                           {r.name}
                         </option>
                       ))}
-                      <option value="__new__">+ Add New Role Type...</option>
+                      <option value="__new__">
+                        {isAddingNewRole && roleFormName.trim()
+                          ? `${roleFormName.trim()} (New Role)`
+                          : '+ Add New Role Type...'}
+                      </option>
                     </select>
 
                     <button
                       type="button"
                       onClick={() => {
-                        if (isAddingNewRole && roleFormName.trim()) {
+                        const currentSelectedDef = roles.find(
+                          (r) => r.id === (editingRoleId || inputRole)
+                        );
+                        const hasTypedDifferentRoleName =
+                          Boolean(roleFormName.trim()) &&
+                          (!currentSelectedDef ||
+                            currentSelectedDef.name.trim().toLowerCase() !==
+                              roleFormName.trim().toLowerCase());
+
+                        if ((isAddingNewRole && roleFormName.trim()) || hasTypedDifferentRoleName) {
                           void persistInlineRoleChanges({ forceCreateNew: true });
                         } else {
                           handleStartAddRole();
@@ -2299,7 +2581,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       title="Create a new Role Type"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Add Role</span>
+                      <span>
+                        {isAddingNewRole && roleFormName.trim() ? 'Save New Role' : 'Add Role'}
+                      </span>
                     </button>
 
                     {!isAddingNewRole &&
@@ -2331,6 +2615,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       {isAddingNewRole ? 'New Role Name' : 'Role Name'}
                     </label>
                     <input
+                      ref={roleNameInputRef}
                       type="text"
                       value={roleFormName}
                       onChange={(e) => setRoleFormName(e.target.value)}
@@ -2461,15 +2746,28 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 Emails &amp; Auditors ({directory.length})
               </div>
 
-              <div className="relative min-w-[220px] w-full sm:w-auto">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={dirSearch}
-                  onChange={(e) => setDirSearch(e.target.value)}
-                  placeholder="Search email, name, or role..."
-                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="relative flex-1 sm:min-w-[210px]">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={dirSearch}
+                    onChange={(e) => setDirSearch(e.target.value)}
+                    placeholder="Search email, name, or role..."
+                    className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSaveAllDirectory}
+                  disabled={isSavingDirectory}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shrink-0 shadow-2xs active:scale-98"
+                  title="Save all Emails & Auditors and role assignments"
+                >
+                  <Save className={`w-3.5 h-3.5 ${isSavingDirectory ? 'animate-pulse' : ''}`} />
+                  <span>{isSavingDirectory ? 'Saving...' : 'Save'}</span>
+                </button>
               </div>
             </div>
 
@@ -2598,13 +2896,25 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                 <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
                                   {entry.name}
                                 </span>
-                                <span
-                                  className={`text-[9.5px] font-bold uppercase px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${roleBadgeStyle(
+                                <select
+                                  value={entryRoleDef.id}
+                                  onChange={(e) => handleUpdateEntryRole(entry, e.target.value)}
+                                  aria-label={`Change role for ${entry.name || entry.email}`}
+                                  title="Click to change role"
+                                  className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded border cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 transition ${roleBadgeStyle(
                                     entry.role
                                   )}`}
                                 >
-                                  <span>{roleLabelText(entry.role)}</span>
-                                </span>
+                                  {roles.map((r) => (
+                                    <option
+                                      key={r.id}
+                                      value={r.id}
+                                      className="bg-white dark:bg-zinc-900 text-slate-900 dark:text-white font-semibold normal-case"
+                                    >
+                                      {r.name}
+                                    </option>
+                                  ))}
+                                </select>
                                 {liveFloorMatch && (
                                   <span className="text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
                                     Active on Sheet ({liveFloorMatch.encodingRanges.length + liveFloorMatch.checkingRanges.length} CS blocks)

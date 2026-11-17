@@ -26,6 +26,13 @@ export async function createSqlJsD1Database(): Promise<D1Database> {
     if (fs.existsSync(DB_FILE_PATH)) {
       const fileBuffer = fs.readFileSync(DB_FILE_PATH);
       db = new SQL.Database(fileBuffer);
+      if (fileBuffer.byteLength > 2 * 1024 * 1024) {
+        try {
+          db.run(`DELETE FROM user_workspace_state WHERE user_key LIKE 'global_masterdata_chunk_%' OR user_key = 'global_masterdata_meta_v1';`);
+          db.run(`VACUUM;`);
+          fs.writeFileSync(DB_FILE_PATH, Buffer.from(db.export()));
+        } catch {}
+      }
     } else {
       db = new SQL.Database();
     }

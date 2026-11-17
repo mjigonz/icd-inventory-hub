@@ -143,8 +143,13 @@ export const BranchView: React.FC<BranchViewProps> = ({
     const unsubscribe = subscribeToSavedBranches((list) => {
       setSavedBranches(list);
     });
+    const onMasterdataUpdated = () => {
+      getAllSavedBranches().then(setSavedBranches).catch(() => {});
+    };
+    window.addEventListener('masterdata-updated', onMasterdataUpdated);
     return () => {
       unsubscribe();
+      window.removeEventListener('masterdata-updated', onMasterdataUpdated);
     };
   }, [userEmail]);
 
